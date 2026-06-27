@@ -20,10 +20,11 @@ jobs:
 
       - run: npm install
 
-      - name: Test and build
-        run: |
-          npm test
-          npm run build
+      - name: Build
+        run: npm run build
+        # Note: `npm test` is intentionally not run here — it signs a license
+        # with scripts/.license-private.key, which is gitignored and never
+        # present on CI. Run tests locally where the signing key exists.
 
       - name: Verify plugin files
         run: |
