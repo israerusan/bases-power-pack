@@ -41,9 +41,18 @@ There's also a ribbon icon for the Kanban board.
 
 ### Premium / licensing
 
-Enter your license key in **Settings → Bases Power Pack → License**. The plugin validates the key against a configurable endpoint and caches the result; premium views unlock immediately on a successful check.
+Enter your license key in **Settings → Bases Power Pack → License**. Keys are verified **offline with Ed25519 signatures** (via [tweetnacl](https://www.npmjs.com/package/tweetnacl)) — no account, server, or network call. The result is cached in `isPro`; premium views and settings unlock immediately on a valid key.
 
-> The network validation call is currently **stubbed** for development (any key starting with `PREMIUM-` or ≥16 chars validates). Real billing via **Lemon Squeezy / Gumroad** is left as a clean `TODO(billing)` in `src/licenseManager.ts`.
+A license key is `base64url(payload).base64url(signature)`, signed by the author's private key and verified against the public key embedded in `src/license/publicKey.ts`.
+
+**Selling keys (author workflow):**
+
+```bash
+node scripts/keygen.mjs                 # one-time: create keypair (.license-private.key + public key)
+npm run license:generate -- buyer@email.com   # after a sale: mint a key to email the customer
+```
+
+> Billing/delivery (taking payment, emailing the key) is handled out-of-band by **Lemon Squeezy / Gumroad** — see the `TODO(billing)` in `src/license/LicenseManager.ts`. No plugin code changes are needed to wire a storefront; you just deliver the generated key.
 
 ---
 
@@ -51,8 +60,10 @@ Enter your license key in **Settings → Bases Power Pack → License**. The plu
 
 ```bash
 npm install
-npm run build      # type-checks then bundles to main.js
+npm run build      # bundles to main.js
 npm run dev        # watch mode
+npm run typecheck  # tsc --noEmit
+npm test           # offline license verification tests
 ```
 
 `npm run build` produces `main.js` in the project root alongside `manifest.json` and `styles.css` — the three files Obsidian loads.
@@ -79,15 +90,28 @@ bases-power-pack/
 ├── tsconfig.json
 ├── esbuild.config.mjs     # bundler config
 ├── styles.css
+├── .github/workflows/
+│   └── release.yml        # tag-driven GitHub release (build + attach assets)
+├── scripts/
+│   ├── keygen.mjs         # one-time Ed25519 keypair generator (author)
+│   ├── generate-license.mjs   # mint a customer key (author)
+│   └── customer-license-template.txt
+├── tests/
+│   └── license.test.mjs   # offline license sign/verify round-trip
 └── src/
     ├── main.ts            # plugin entry, commands, view registration
     ├── settings.ts        # settings interface + settings tab
-    ├── licenseManager.ts  # open-core license gate (stubbed network call)
+    ├── license/
+    │   ├── LicenseManager.ts  # offline Ed25519 verification
+    │   └── publicKey.ts       # embedded public key
+    ├── types/tweetnacl.d.ts   # minimal tweetnacl type shim
     └── views/
         ├── kanbanView.ts  # Lite (free) view
         └── calendarView.ts# Premium (gated) view
 ```
 
+> **Reference:** the licensing approach, settings-tab patterns, build/test setup, and project layout are adapted from the [Vault Spotlight](https://github.com/) plugin — see "Borrowed from Vault Spotlight" notes in the repo.
+
 ## License
 
-MIT (plugin source). Premium feature access is governed by a commercial license key.
+MIT (plugin source). Premium feature access is governed by a signed license key.

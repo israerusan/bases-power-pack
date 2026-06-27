@@ -160,7 +160,16 @@
   margin: 40px auto;
 }
 
-.bpp-settings-status {
-  margin: 8px 0;
+.bpp-license-status {
+  margin: 8px 0 16px;
   font-weight: 600;
+}
+
+.bpp-license-status a {
+  font-weight: 400;
+}
+
+/* Locked premium settings rows (mirrors Vault Spotlight's proSearch pattern) */
+.bpp-setting-locked {
+  opacity: 0.55;
 }

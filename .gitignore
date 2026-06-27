@@ -1,12 +1,13 @@
-# build / deps
 node_modules/
-main.js
-*.js.map
+main.js.map
+.DS_Store
+Thumbs.db
+.vscode/
 
 # obsidian local test vault artifacts
 data.json
 
-# os / editor
-.DS_Store
-Thumbs.db
-.vscode/
+# author-only license signing key — NEVER commit
+scripts/.license-private.key
+TEST_LICENSE.txt
+*.log

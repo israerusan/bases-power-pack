@@ -47,7 +47,7 @@ export class CalendarView extends ItemView {
     container.empty();
     container.addClass("bpp-view");
 
-    if (!this.plugin.licenseManager.isPremium()) {
+    if (!this.plugin.settings.isPro) {
       this.renderUpgradeNotice(container);
       return;
     }

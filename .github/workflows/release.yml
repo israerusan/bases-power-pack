@@ -1,0 +1,46 @@
+name: Release Obsidian plugin
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - run: npm install
+
+      - name: Test and build
+        run: |
+          npm test
+          npm run build
+
+      - name: Verify plugin files
+        run: |
+          test -f main.js
+          test -f manifest.json
+          test -f styles.css
+          test -f versions.json
+          node -e "const m=require('./manifest.json'); const t='${GITHUB_REF#refs/tags/}'; if(m.version!==t){console.error('manifest',m.version,'!= tag',t); process.exit(1)}; const v=require('./versions.json'); if(!v[m.version]){console.error('versions.json missing',m.version); process.exit(1)}"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          make_latest: true
+          files: |
+            main.js
+            manifest.json
+            styles.css
+            versions.json
+          generate_release_notes: true

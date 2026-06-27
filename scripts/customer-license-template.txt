@@ -1,0 +1,21 @@
+Thanks for buying Bases Power Pack!
+
+Your license key:
+{{LICENSE_KEY}}
+
+How to activate:
+1. Open Obsidian → Settings → Community plugins → Bases Power Pack
+2. Paste your license key into the License key field
+3. Premium views unlock immediately (offline — no login required)
+
+Premium features:
+- Calendar view (notes placed by a date property)
+- Gantt timeline view (roadmap)
+- Roll-ups & formula columns (roadmap)
+- Saved filters & view presets (roadmap)
+
+The free Kanban view stays available with or without a license.
+
+Need help? Reply to this email.
+
+— Bases Power Pack

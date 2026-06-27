@@ -2,127 +2,130 @@ import { App, PluginSettingTab, Setting } from "obsidian";
 import type BasesPowerPackPlugin from "./main";
 
 export interface BasesPowerPackSettings {
-  /** License */
-  licenseKey: string;
-  licenseEndpoint: string;
+	/** License */
+	licenseKey: string;
+	isPro: boolean;
+	licenseEmail: string;
+	purchaseUrl: string;
 
-  /** Kanban (lite) */
-  kanbanGroupBy: string;
+	/** Kanban (lite) */
+	kanbanGroupBy: string;
 
-  /** Calendar (premium) */
-  calendarDateProp: string;
+	/** Calendar (premium) */
+	calendarDateProp: string;
 }
 
 export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
-  licenseKey: "",
-  licenseEndpoint: "https://api.lemonsqueezy.com/v1/licenses/validate",
-  kanbanGroupBy: "status",
-  calendarDateProp: "due",
+	licenseKey: "",
+	isPro: false,
+	licenseEmail: "",
+	purchaseUrl: "https://example.gumroad.com/l/bases-power-pack",
+	kanbanGroupBy: "status",
+	calendarDateProp: "due",
 };
 
 export class BasesPowerPackSettingTab extends PluginSettingTab {
-  plugin: BasesPowerPackPlugin;
+	plugin: BasesPowerPackPlugin;
 
-  constructor(app: App, plugin: BasesPowerPackPlugin) {
-    super(app, plugin);
-    this.plugin = plugin;
-  }
+	constructor(app: App, plugin: BasesPowerPackPlugin) {
+		super(app, plugin);
+		this.plugin = plugin;
+	}
 
-  display(): void {
-    const { containerEl } = this;
-    containerEl.empty();
+	display(): void {
+		const { containerEl } = this;
+		containerEl.empty();
 
-    containerEl.createEl("h2", { text: "Bases Power Pack" });
+		// ---- License ---------------------------------------------------------
+		new Setting(containerEl).setName("License").setHeading();
 
-    // ---- License section -------------------------------------------------
-    containerEl.createEl("h3", { text: "License" });
+		new Setting(containerEl)
+			.setName("License key")
+			.setDesc("Enter your premium license key. Verified offline — no account or server required.")
+			.addText((text) =>
+				text
+					.setPlaceholder("payload.signature")
+					.setValue(this.plugin.settings.licenseKey)
+					.onChange((value) => {
+						this.plugin.settings.licenseKey = value;
+						void this.plugin.refreshLicense().then(() => this.display());
+					})
+			);
 
-    const status = this.plugin.licenseManager.getStatus();
-    const statusEl = containerEl.createDiv({ cls: "bpp-settings-status" });
-    statusEl.setText(
-      this.plugin.licenseManager.isPremium()
-        ? "✅ Premium active"
-        : "🔓 Lite tier (free). Enter a license key to unlock premium views."
-    );
-    if (status.message) {
-      containerEl.createEl("p", { cls: "bpp-muted", text: status.message });
-    }
+		const status = containerEl.createDiv({ cls: "bpp-license-status" });
+		if (this.plugin.settings.isPro) {
+			status.createEl("p", {
+				text: `✅ Premium active${this.plugin.settings.licenseEmail ? ` (${this.plugin.settings.licenseEmail})` : ""}.`,
+			});
+		} else {
+			status.createEl("p", {
+				text: "🔓 Lite tier active. Upgrade to unlock the calendar, Gantt, roll-ups, and saved filters.",
+			});
+			const link = status.createEl("a", {
+				text: "Get Bases Power Pack premium",
+				href: this.plugin.settings.purchaseUrl,
+			});
+			link.setAttr("target", "_blank");
+		}
 
-    new Setting(containerEl)
-      .setName("License key")
-      .setDesc("Your Bases Power Pack license key. Leave blank for the free lite tier.")
-      .addText((text) =>
-        text
-          .setPlaceholder("PREMIUM-XXXX-XXXX-XXXX")
-          .setValue(this.plugin.settings.licenseKey)
-          .onChange(async (value) => {
-            this.plugin.settings.licenseKey = value.trim();
-            await this.plugin.saveSettings();
-          })
-      );
+		new Setting(containerEl)
+			.setName("Purchase page URL")
+			.setDesc("Link shown for premium upgrades.")
+			.addText((text) =>
+				text
+					.setPlaceholder("https://your-store.com/product")
+					.setValue(this.plugin.settings.purchaseUrl)
+					.onChange((value) => {
+						this.plugin.settings.purchaseUrl = value.trim() || DEFAULT_SETTINGS.purchaseUrl;
+						void this.plugin.saveSettings();
+					})
+			);
 
-    new Setting(containerEl)
-      .setName("Validation endpoint")
-      .setDesc("License validation URL. Advanced — change only if self-hosting validation.")
-      .addText((text) =>
-        text
-          .setValue(this.plugin.settings.licenseEndpoint)
-          .onChange(async (value) => {
-            this.plugin.settings.licenseEndpoint = value.trim();
-            await this.plugin.saveSettings();
-          })
-      );
+		// ---- Kanban (lite) ---------------------------------------------------
+		new Setting(containerEl).setName("Kanban view (Lite)").setHeading();
 
-    new Setting(containerEl)
-      .setName("Verify license")
-      .setDesc("Re-check the license key against the validation endpoint.")
-      .addButton((btn) =>
-        btn
-          .setButtonText("Verify now")
-          .setCta()
-          .onClick(async () => {
-            btn.setButtonText("Checking…");
-            btn.setDisabled(true);
-            await this.plugin.refreshLicense();
-            this.display(); // re-render to show updated status
-          })
-      );
+		new Setting(containerEl)
+			.setName("Group by property")
+			.setDesc("Frontmatter property used to build kanban columns.")
+			.addText((text) =>
+				text.setValue(this.plugin.settings.kanbanGroupBy).onChange((value) => {
+					this.plugin.settings.kanbanGroupBy = value.trim() || "status";
+					void this.plugin.saveSettings();
+				})
+			);
 
-    // ---- View settings ---------------------------------------------------
-    containerEl.createEl("h3", { text: "Kanban view (Lite)" });
-    new Setting(containerEl)
-      .setName("Group by property")
-      .setDesc("Frontmatter property used to build kanban columns.")
-      .addText((text) =>
-        text
-          .setValue(this.plugin.settings.kanbanGroupBy)
-          .onChange(async (value) => {
-            this.plugin.settings.kanbanGroupBy = value.trim() || "status";
-            await this.plugin.saveSettings();
-          })
-      );
+		// ---- Calendar (premium) ---------------------------------------------
+		new Setting(containerEl).setName("Premium views").setHeading();
 
-    containerEl.createEl("h3", { text: "Calendar view (Premium)" });
-    new Setting(containerEl)
-      .setName("Date property")
-      .setDesc("Frontmatter date property used to place notes on the calendar.")
-      .addText((text) =>
-        text
-          .setValue(this.plugin.settings.calendarDateProp)
-          .onChange(async (value) => {
-            this.plugin.settings.calendarDateProp = value.trim() || "due";
-            await this.plugin.saveSettings();
-          })
-      );
+		// Gate premium settings inline — same pattern as Vault Spotlight's
+		// proSearch() helper: locked rows render a "(Premium)" hint instead of
+		// a control until the license is active.
+		const premium = (name: string, desc: string, render: (setting: Setting) => void) => {
+			const setting = new Setting(containerEl).setName(name).setDesc(desc);
+			if (!this.plugin.settings.isPro) {
+				setting.settingEl.addClass("bpp-setting-locked");
+				setting.descEl.appendText(" (Premium)");
+				return;
+			}
+			render(setting);
+		};
 
-    // ---- Premium roadmap -------------------------------------------------
-    containerEl.createEl("h3", { text: "Premium features" });
-    const list = containerEl.createEl("ul");
-    [
-      "Calendar view",
-      "Gantt timeline view",
-      "Roll-ups & formula columns",
-      "Saved filters & view presets",
-    ].forEach((f) => list.createEl("li", { text: f }));
-  }
+		premium(
+			"Calendar date property",
+			"Frontmatter date property used to place notes on the calendar.",
+			(setting) =>
+				setting.addText((text) =>
+					text.setValue(this.plugin.settings.calendarDateProp).onChange((value) => {
+						this.plugin.settings.calendarDateProp = value.trim() || "due";
+						void this.plugin.saveSettings();
+					})
+				)
+		);
+
+		const roadmap = containerEl.createDiv();
+		roadmap.createEl("p", {
+			cls: "bpp-muted",
+			text: "Also premium (roadmap): Gantt timeline, roll-ups & formula columns, saved filters & view presets.",
+		});
+	}
 }
