@@ -1,0 +1,166 @@
+/* Bases Power Pack styles */
+
+.bpp-view {
+  padding: 12px;
+  overflow: auto;
+}
+
+.bpp-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.bpp-toolbar h3 {
+  margin: 0;
+}
+
+.bpp-muted {
+  color: var(--text-muted);
+  font-size: 0.85em;
+}
+
+.bpp-badge {
+  font-size: 0.7em;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.bpp-badge-lite {
+  background: var(--background-modifier-border);
+  color: var(--text-muted);
+}
+
+.bpp-badge-premium {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+/* Kanban */
+.bpp-kanban-board {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.bpp-kanban-column {
+  background: var(--background-secondary);
+  border-radius: 8px;
+  padding: 8px;
+  min-width: 220px;
+  max-width: 260px;
+}
+
+.bpp-kanban-column-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  margin-bottom: 8px;
+  padding: 0 4px;
+}
+
+.bpp-count {
+  background: var(--background-modifier-border);
+  border-radius: 10px;
+  padding: 0 8px;
+  font-size: 0.8em;
+}
+
+.bpp-card {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+
+.bpp-card:hover {
+  border-color: var(--interactive-accent);
+}
+
+.bpp-card-title {
+  font-size: 0.9em;
+}
+
+/* Calendar */
+.bpp-cal-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bpp-cal-label {
+  min-width: 140px;
+  text-align: center;
+  font-weight: 600;
+}
+
+.bpp-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.bpp-cal-weekday {
+  font-size: 0.75em;
+  font-weight: 600;
+  text-align: center;
+  color: var(--text-muted);
+  padding: 4px 0;
+}
+
+.bpp-cal-cell {
+  min-height: 84px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 4px;
+  background: var(--background-primary);
+}
+
+.bpp-cal-empty {
+  background: transparent;
+  border: none;
+}
+
+.bpp-cal-daynum {
+  font-size: 0.75em;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.bpp-cal-event {
+  font-size: 0.75em;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border-radius: 4px;
+  padding: 1px 4px;
+  margin-bottom: 2px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Empty + upgrade states */
+.bpp-empty,
+.bpp-upgrade {
+  padding: 16px;
+  color: var(--text-muted);
+}
+
+.bpp-upgrade {
+  text-align: center;
+  max-width: 420px;
+  margin: 40px auto;
+}
+
+.bpp-settings-status {
+  margin: 8px 0;
+  font-weight: 600;
+}

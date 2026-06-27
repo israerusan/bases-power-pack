@@ -1,0 +1,12 @@
+# build / deps
+node_modules/
+main.js
+*.js.map
+
+# obsidian local test vault artifacts
+data.json
+
+# os / editor
+.DS_Store
+Thumbs.db
+.vscode/

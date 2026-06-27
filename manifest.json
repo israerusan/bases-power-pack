@@ -1,0 +1,11 @@
+{
+  "id": "bases-power-pack",
+  "name": "Bases Power Pack",
+  "version": "1.0.0",
+  "minAppVersion": "1.5.0",
+  "description": "Advanced database views and automation for Obsidian Bases: kanban, calendar, Gantt, roll-ups, formulas, and saved filters. Free lite tier plus license-gated premium features.",
+  "author": "Bases Power Pack",
+  "authorUrl": "https://example.com",
+  "fundingUrl": "https://example.com/buy",
+  "isDesktopOnly": false
+}
