@@ -9,6 +9,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(__dirname, "..");
 const PRODUCT = "bases-power-pack";
 
+// The private signing key is intentionally gitignored, so it is absent in CI
+// and on fresh clones. Skip the round-trip sign/verify when it isn't available.
+if (!fs.existsSync(path.join(root, "scripts/.license-private.key"))) {
+	console.log("license tests skipped (no signing key in this environment)");
+	process.exit(0);
+}
+
 const publicKeyTs = fs.readFileSync(path.join(root, "src/license/publicKey.ts"), "utf8");
 const match = publicKeyTs.match(/"([^"]+)"/);
 assert.ok(match, "public key should exist");

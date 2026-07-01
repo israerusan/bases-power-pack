@@ -2271,19 +2271,723 @@ __export(main_exports, {
   default: () => BasesPowerPackPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian4 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 
 // src/settings.ts
+var import_obsidian2 = require("obsidian");
+
+// src/engine/expression.ts
+var OPERATORS = [
+  "===",
+  "!==",
+  "==",
+  "!=",
+  "<=",
+  ">=",
+  "&&",
+  "||",
+  "<",
+  ">",
+  "+",
+  "-",
+  "*",
+  "/",
+  "%",
+  "!",
+  "(",
+  ")",
+  ",",
+  "?",
+  ":"
+];
+function tokenize(src) {
+  var _a;
+  const tokens = [];
+  let i = 0;
+  while (i < src.length) {
+    const ch = src[i];
+    if (ch === " " || ch === "	" || ch === "\n" || ch === "\r") {
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      let j = i + 1;
+      let str = "";
+      while (j < src.length && src[j] !== quote) {
+        if (src[j] === "\\" && j + 1 < src.length) {
+          const next = src[j + 1];
+          str += next === "n" ? "\n" : next === "t" ? "	" : next;
+          j += 2;
+          continue;
+        }
+        str += src[j];
+        j++;
+      }
+      if (j >= src.length) throw new ExprError(`Unterminated string at ${i}`);
+      tokens.push({ type: "str", value: str, pos: i });
+      i = j + 1;
+      continue;
+    }
+    if (isDigit(ch) || ch === "." && isDigit((_a = src[i + 1]) != null ? _a : "")) {
+      let j = i;
+      while (j < src.length && (isDigit(src[j]) || src[j] === ".")) j++;
+      tokens.push({ type: "num", value: src.slice(i, j), pos: i });
+      i = j;
+      continue;
+    }
+    if (isIdentStart(ch)) {
+      let j = i;
+      while (j < src.length && isIdentPart(src[j])) j++;
+      tokens.push({ type: "ident", value: src.slice(i, j), pos: i });
+      i = j;
+      continue;
+    }
+    const op = OPERATORS.find((o) => src.startsWith(o, i));
+    if (op) {
+      tokens.push({ type: "op", value: op, pos: i });
+      i += op.length;
+      continue;
+    }
+    throw new ExprError(`Unexpected character '${ch}' at ${i}`);
+  }
+  return tokens;
+}
+function isDigit(c) {
+  return c >= "0" && c <= "9";
+}
+function isIdentStart(c) {
+  return c >= "a" && c <= "z" || c >= "A" && c <= "Z" || c === "_" || c === "$";
+}
+function isIdentPart(c) {
+  return isIdentStart(c) || isDigit(c) || c === ".";
+}
+var ExprError = class extends Error {
+};
+var Parser = class {
+  constructor(tokens) {
+    this.tokens = tokens;
+    this.pos = 0;
+  }
+  parse() {
+    if (this.tokens.length === 0) throw new ExprError("Empty expression");
+    const node = this.ternary();
+    if (this.pos < this.tokens.length) {
+      throw new ExprError(`Unexpected token '${this.tokens[this.pos].value}'`);
+    }
+    return node;
+  }
+  peek() {
+    return this.tokens[this.pos];
+  }
+  eat(value) {
+    const tok = this.tokens[this.pos];
+    if (!tok) throw new ExprError("Unexpected end of expression");
+    if (value !== void 0 && tok.value !== value) {
+      throw new ExprError(`Expected '${value}' but got '${tok.value}'`);
+    }
+    this.pos++;
+    return tok;
+  }
+  isOp(value) {
+    const tok = this.peek();
+    return !!tok && tok.type === "op" && tok.value === value;
+  }
+  ternary() {
+    const cond = this.or();
+    if (this.isOp("?")) {
+      this.eat("?");
+      const a = this.ternary();
+      this.eat(":");
+      const b = this.ternary();
+      return { t: "ternary", c: cond, a, b };
+    }
+    return cond;
+  }
+  binary(next, ops) {
+    let left = next();
+    while (this.peek() && this.peek().type === "op" && ops.includes(this.peek().value)) {
+      const op = this.eat().value;
+      const right = next();
+      left = { t: "bin", op, a: left, b: right };
+    }
+    return left;
+  }
+  or() {
+    return this.binary(() => this.and(), ["||"]);
+  }
+  and() {
+    return this.binary(() => this.equality(), ["&&"]);
+  }
+  equality() {
+    return this.binary(() => this.compare(), ["==", "!=", "===", "!=="]);
+  }
+  compare() {
+    return this.binary(() => this.additive(), ["<", "<=", ">", ">="]);
+  }
+  additive() {
+    return this.binary(() => this.multiplicative(), ["+", "-"]);
+  }
+  multiplicative() {
+    return this.binary(() => this.unary(), ["*", "/", "%"]);
+  }
+  unary() {
+    if (this.isOp("!") || this.isOp("-")) {
+      const op = this.eat().value;
+      return { t: "unary", op, x: this.unary() };
+    }
+    return this.primary();
+  }
+  primary() {
+    const tok = this.peek();
+    if (!tok) throw new ExprError("Unexpected end of expression");
+    if (tok.type === "num") {
+      this.eat();
+      return { t: "num", v: Number(tok.value) };
+    }
+    if (tok.type === "str") {
+      this.eat();
+      return { t: "str", v: tok.value };
+    }
+    if (this.isOp("(")) {
+      this.eat("(");
+      const node = this.ternary();
+      this.eat(")");
+      return node;
+    }
+    if (tok.type === "ident") {
+      this.eat();
+      if (tok.value === "true") return { t: "bool", v: true };
+      if (tok.value === "false") return { t: "bool", v: false };
+      if (tok.value === "null") return { t: "null" };
+      if (this.isOp("(")) {
+        this.eat("(");
+        const args = [];
+        if (!this.isOp(")")) {
+          args.push(this.ternary());
+          while (this.isOp(",")) {
+            this.eat(",");
+            args.push(this.ternary());
+          }
+        }
+        this.eat(")");
+        return { t: "call", name: tok.value, args };
+      }
+      return { t: "ident", name: tok.value };
+    }
+    throw new ExprError(`Unexpected token '${tok.value}'`);
+  }
+};
+function toNumber(v) {
+  if (typeof v === "number") return v;
+  if (typeof v === "boolean") return v ? 1 : 0;
+  if (v instanceof Date) return v.getTime();
+  if (typeof v === "string") {
+    const n = parseFloat(v);
+    return Number.isNaN(n) ? NaN : n;
+  }
+  return NaN;
+}
+function toBool(v) {
+  if (v === null || v === void 0) return false;
+  if (typeof v === "boolean") return v;
+  if (typeof v === "number") return v !== 0 && !Number.isNaN(v);
+  if (typeof v === "string") return v.length > 0 && v.toLowerCase() !== "false";
+  if (Array.isArray(v)) return v.length > 0;
+  return true;
+}
+function toStr(v) {
+  if (v === null || v === void 0) return "";
+  if (v instanceof Date) return v.toISOString();
+  if (Array.isArray(v)) return v.map(toStr).join(", ");
+  return String(v);
+}
+function isEmpty(v) {
+  if (v === null || v === void 0) return true;
+  if (typeof v === "string") return v.trim().length === 0;
+  if (Array.isArray(v)) return v.length === 0;
+  return false;
+}
+function flatten(args) {
+  const out = [];
+  for (const a of args) {
+    if (Array.isArray(a)) out.push(...flatten(a));
+    else out.push(a);
+  }
+  return out;
+}
+function numeric(args) {
+  return flatten(args).map(toNumber).filter((n) => !Number.isNaN(n));
+}
+function compare(a, b) {
+  const na = toNumber(a);
+  const nb = toNumber(b);
+  if (!Number.isNaN(na) && !Number.isNaN(nb)) return na === nb ? 0 : na < nb ? -1 : 1;
+  const sa = toStr(a);
+  const sb = toStr(b);
+  return sa === sb ? 0 : sa < sb ? -1 : 1;
+}
+function looseEquals(a, b) {
+  if (a === null || b === null) return a === b || isEmpty(a) && isEmpty(b);
+  return compare(a, b) === 0;
+}
+var BUILTINS = {
+  sum: (a) => numeric(a).reduce((s, n) => s + n, 0),
+  avg: (a) => {
+    const nums = numeric(a);
+    return nums.length ? nums.reduce((s, n) => s + n, 0) / nums.length : 0;
+  },
+  min: (a) => {
+    const nums = numeric(a);
+    return nums.length ? Math.min(...nums) : null;
+  },
+  max: (a) => {
+    const nums = numeric(a);
+    return nums.length ? Math.max(...nums) : null;
+  },
+  count: (a) => flatten(a).filter((v) => !isEmpty(v)).length,
+  round: (a) => {
+    const n = toNumber(a[0]);
+    const digits = a[1] !== void 0 ? Math.max(0, Math.floor(toNumber(a[1]))) : 0;
+    const f = Math.pow(10, digits);
+    return Number.isNaN(n) ? null : Math.round(n * f) / f;
+  },
+  floor: (a) => Number.isNaN(toNumber(a[0])) ? null : Math.floor(toNumber(a[0])),
+  ceil: (a) => Number.isNaN(toNumber(a[0])) ? null : Math.ceil(toNumber(a[0])),
+  abs: (a) => Number.isNaN(toNumber(a[0])) ? null : Math.abs(toNumber(a[0])),
+  sqrt: (a) => {
+    const n = toNumber(a[0]);
+    return Number.isNaN(n) || n < 0 ? null : Math.sqrt(n);
+  },
+  length: (a) => {
+    const v = a[0];
+    if (Array.isArray(v)) return v.length;
+    return toStr(v).length;
+  },
+  lower: (a) => toStr(a[0]).toLowerCase(),
+  upper: (a) => toStr(a[0]).toUpperCase(),
+  trim: (a) => toStr(a[0]).trim(),
+  contains: (a) => {
+    const hay = a[0];
+    if (Array.isArray(hay)) return hay.some((x) => looseEquals(x, a[1]));
+    return toStr(hay).toLowerCase().includes(toStr(a[1]).toLowerCase());
+  },
+  startswith: (a) => toStr(a[0]).toLowerCase().startsWith(toStr(a[1]).toLowerCase()),
+  endswith: (a) => toStr(a[0]).toLowerCase().endsWith(toStr(a[1]).toLowerCase()),
+  empty: (a) => isEmpty(a[0]),
+  notempty: (a) => !isEmpty(a[0]),
+  number: (a) => {
+    const n = toNumber(a[0]);
+    return Number.isNaN(n) ? null : n;
+  },
+  string: (a) => toStr(a[0]),
+  concat: (a) => a.map(toStr).join(""),
+  join: (a) => flatten([a[0]]).map(toStr).join(a[1] !== void 0 ? toStr(a[1]) : ", "),
+  default: (a) => {
+    var _a;
+    return isEmpty(a[0]) ? (_a = a[1]) != null ? _a : null : a[0];
+  },
+  list: (a) => a,
+  date: (a) => {
+    const d = new Date(toStr(a[0]));
+    return Number.isNaN(d.getTime()) ? null : d;
+  },
+  datediff: (a) => {
+    const d1 = new Date(toStr(a[0]));
+    const d2 = new Date(toStr(a[1]));
+    if (Number.isNaN(d1.getTime()) || Number.isNaN(d2.getTime())) return null;
+    return Math.round((d1.getTime() - d2.getTime()) / 864e5);
+  }
+};
+function evalNode(node, scope) {
+  switch (node.t) {
+    case "num":
+      return node.v;
+    case "str":
+      return node.v;
+    case "bool":
+      return node.v;
+    case "null":
+      return null;
+    case "ident": {
+      const v = scope.get(node.name);
+      return normalizeValue(v);
+    }
+    case "unary": {
+      if (node.op === "!") return !toBool(evalNode(node.x, scope));
+      const n = toNumber(evalNode(node.x, scope));
+      return Number.isNaN(n) ? null : -n;
+    }
+    case "ternary":
+      return toBool(evalNode(node.c, scope)) ? evalNode(node.a, scope) : evalNode(node.b, scope);
+    case "bin":
+      return evalBinary(node, scope);
+    case "call":
+      return evalCall(node, scope);
+  }
+}
+function evalBinary(node, scope) {
+  if (node.op === "&&") {
+    return toBool(evalNode(node.a, scope)) ? toBool(evalNode(node.b, scope)) : false;
+  }
+  if (node.op === "||") {
+    const a2 = evalNode(node.a, scope);
+    return toBool(a2) ? true : toBool(evalNode(node.b, scope));
+  }
+  const a = evalNode(node.a, scope);
+  const b = evalNode(node.b, scope);
+  switch (node.op) {
+    case "==":
+    case "===":
+      return looseEquals(a, b);
+    case "!=":
+    case "!==":
+      return !looseEquals(a, b);
+    case "<":
+      return compare(a, b) < 0;
+    case "<=":
+      return compare(a, b) <= 0;
+    case ">":
+      return compare(a, b) > 0;
+    case ">=":
+      return compare(a, b) >= 0;
+    case "+": {
+      const na = toNumber(a);
+      const nb = toNumber(b);
+      if (!Number.isNaN(na) && !Number.isNaN(nb)) return na + nb;
+      return toStr(a) + toStr(b);
+    }
+    case "-":
+      return safeArith(toNumber(a) - toNumber(b));
+    case "*":
+      return safeArith(toNumber(a) * toNumber(b));
+    case "/": {
+      const d = toNumber(b);
+      return d === 0 ? null : safeArith(toNumber(a) / d);
+    }
+    case "%": {
+      const d = toNumber(b);
+      return d === 0 ? null : safeArith(toNumber(a) % d);
+    }
+  }
+  return null;
+}
+function evalCall(node, scope) {
+  const name = node.name.toLowerCase();
+  if (name === "if") {
+    return toBool(evalNode(node.args[0], scope)) ? evalNode(node.args[1], scope) : node.args[2] !== void 0 ? evalNode(node.args[2], scope) : null;
+  }
+  if (name === "prop") {
+    const key = toStr(evalNode(node.args[0], scope));
+    return normalizeValue(scope.get(key));
+  }
+  const fn = BUILTINS[name];
+  if (!fn) throw new ExprError(`Unknown function '${node.name}'`);
+  const args = node.args.map((a) => evalNode(a, scope));
+  return fn(args);
+}
+function safeArith(n) {
+  return Number.isFinite(n) ? n : null;
+}
+function normalizeValue(v) {
+  if (v === void 0) return null;
+  if (v === null || typeof v === "number" || typeof v === "string" || typeof v === "boolean") {
+    return v;
+  }
+  if (v instanceof Date) return v;
+  if (Array.isArray(v)) return v.map(normalizeValue);
+  return toStr(v);
+}
+var CACHE = /* @__PURE__ */ new Map();
+function compileExpression(source) {
+  const cached = CACHE.get(source);
+  if (cached) return cached;
+  const ast = new Parser(tokenize(source)).parse();
+  const compiled = {
+    source,
+    eval(scope) {
+      return evalNode(ast, scope);
+    }
+  };
+  if (CACHE.size > 500) CACHE.clear();
+  CACHE.set(source, compiled);
+  return compiled;
+}
+function evaluateSafe(source, scope) {
+  try {
+    return compileExpression(source).eval(scope);
+  } catch (e) {
+    return null;
+  }
+}
+
+// src/query/rollup.ts
+var AGGREGATIONS = [
+  "count",
+  "sum",
+  "avg",
+  "min",
+  "max",
+  "unique",
+  "filled",
+  "empty",
+  "range"
+];
+function isEmpty2(v) {
+  if (v === null || v === void 0) return true;
+  if (typeof v === "string") return v.trim().length === 0;
+  if (Array.isArray(v)) return v.length === 0;
+  return false;
+}
+function computeRollup(rollup, rows) {
+  const values = rows.map((r) => evaluateSafe(rollup.expression, r.scope));
+  switch (rollup.aggregation) {
+    case "count":
+      return String(rows.length);
+    case "filled":
+      return String(values.filter((v) => !isEmpty2(v)).length);
+    case "empty":
+      return String(values.filter(isEmpty2).length);
+    case "unique":
+      return String(new Set(values.filter((v) => !isEmpty2(v)).map(toStr)).size);
+    case "sum":
+      return formatNumber(numeric2(values).reduce((s, n) => s + n, 0));
+    case "avg": {
+      const nums = numeric2(values);
+      return nums.length ? formatNumber(nums.reduce((s, n) => s + n, 0) / nums.length) : "\u2014";
+    }
+    case "min": {
+      const nums = numeric2(values);
+      return nums.length ? formatNumber(Math.min(...nums)) : "\u2014";
+    }
+    case "max": {
+      const nums = numeric2(values);
+      return nums.length ? formatNumber(Math.max(...nums)) : "\u2014";
+    }
+    case "range": {
+      const nums = numeric2(values);
+      return nums.length ? `${formatNumber(Math.min(...nums))}\u2013${formatNumber(Math.max(...nums))}` : "\u2014";
+    }
+  }
+}
+function numeric2(values) {
+  return values.map(toNumber).filter((n) => !Number.isNaN(n));
+}
+function formatNumber(n) {
+  if (!Number.isFinite(n)) return "\u2014";
+  return String(Math.round(n * 100) / 100);
+}
+
+// src/views/viewData.ts
 var import_obsidian = require("obsidian");
+
+// src/model/row.ts
+function fileProps(note) {
+  return {
+    "file.name": note.name,
+    "file.path": note.path,
+    "file.folder": note.folder,
+    "file.ext": note.ext,
+    "file.tags": note.tags,
+    "file.ctime": note.ctime,
+    "file.mtime": note.mtime,
+    "file.size": note.size
+  };
+}
+function makeScope(note, formulas = {}) {
+  const base = { ...note.frontmatter, ...fileProps(note) };
+  const memo = /* @__PURE__ */ new Map();
+  const inProgress = /* @__PURE__ */ new Set();
+  const scope = {
+    get(name) {
+      if (name in base) return base[name];
+      if (name in formulas) {
+        if (memo.has(name)) return memo.get(name);
+        if (inProgress.has(name)) return null;
+        inProgress.add(name);
+        let result = null;
+        try {
+          result = compileExpression(formulas[name]).eval(scope);
+        } catch (e) {
+          result = null;
+        }
+        inProgress.delete(name);
+        memo.set(name, result);
+        return result;
+      }
+      return void 0;
+    }
+  };
+  return scope;
+}
+function makeRow(note, formulas = {}) {
+  return { id: note.path, name: note.name, note, scope: makeScope(note, formulas) };
+}
+
+// src/query/filter.ts
+function evaluateFilter(node, scope) {
+  if (node === null || node === void 0) return true;
+  if (typeof node === "string") {
+    if (node.trim().length === 0) return true;
+    return toBool(evaluateSafe(node, scope));
+  }
+  if (Array.isArray(node)) {
+    return node.every((child) => evaluateFilter(child, scope));
+  }
+  if ("and" in node && Array.isArray(node.and)) {
+    return node.and.every((child) => evaluateFilter(child, scope));
+  }
+  if ("or" in node && Array.isArray(node.or)) {
+    return node.or.some((child) => evaluateFilter(child, scope));
+  }
+  if ("not" in node) {
+    return !evaluateFilter(node.not, scope);
+  }
+  return true;
+}
+function andFilters(a, b) {
+  const parts = [];
+  if (a !== null && a !== void 0 && a !== "") parts.push(a);
+  if (b !== null && b !== void 0 && b !== "") parts.push(b);
+  if (parts.length === 0) return null;
+  if (parts.length === 1) return parts[0];
+  return { and: parts };
+}
+
+// src/bases/resolveRows.ts
+function resolveRows(notes, def, extraFilter) {
+  const filter = andFilters(def.filters, extraFilter);
+  const rows = [];
+  for (const note of notes) {
+    const row = makeRow(note, def.formulas);
+    if (evaluateFilter(filter, row.scope)) rows.push(row);
+  }
+  return rows;
+}
+
+// src/bases/baseDefinition.ts
+function emptyBaseDefinition() {
+  return { filters: null, formulas: {}, properties: {}, views: [] };
+}
+function asRecord(v) {
+  return v !== null && typeof v === "object" && !Array.isArray(v) ? v : {};
+}
+function normalizeBaseDefinition(raw) {
+  const obj = asRecord(raw);
+  const def = emptyBaseDefinition();
+  if (obj.filters !== void 0) {
+    def.filters = obj.filters;
+  }
+  const formulas = asRecord(obj.formulas);
+  for (const [name, expr] of Object.entries(formulas)) {
+    if (typeof expr === "string" && expr.trim().length > 0) {
+      def.formulas[name] = expr;
+    }
+  }
+  const props = asRecord(obj.properties);
+  for (const [key, meta] of Object.entries(props)) {
+    const m = asRecord(meta);
+    def.properties[key] = {
+      displayName: typeof m.displayName === "string" ? m.displayName : void 0
+    };
+  }
+  if (Array.isArray(obj.views)) {
+    for (const rawView of obj.views) {
+      const v = asRecord(rawView);
+      if (typeof v.type !== "string") continue;
+      def.views.push({
+        type: v.type,
+        name: typeof v.name === "string" ? v.name : v.type,
+        filters: v.filters,
+        group: typeof v.group === "string" ? v.group : typeof v.groupBy === "string" ? v.groupBy : void 0,
+        order: Array.isArray(v.order) ? v.order.filter((o) => typeof o === "string") : void 0
+      });
+    }
+  }
+  return def;
+}
+
+// src/views/viewData.ts
+function buildRawNotes(app) {
+  var _a, _b, _c, _d;
+  const notes = [];
+  for (const file of app.vault.getMarkdownFiles()) {
+    const cache = app.metadataCache.getFileCache(file);
+    const fm = { ...(_a = cache == null ? void 0 : cache.frontmatter) != null ? _a : {} };
+    delete fm.position;
+    const tags = (cache ? (_b = (0, import_obsidian.getAllTags)(cache)) != null ? _b : [] : []).map((t) => t.replace(/^#/, ""));
+    notes.push({
+      path: file.path,
+      name: file.basename,
+      folder: (_d = (_c = file.parent) == null ? void 0 : _c.path) != null ? _d : "",
+      ext: file.extension,
+      tags,
+      ctime: file.stat.ctime,
+      mtime: file.stat.mtime,
+      size: file.stat.size,
+      frontmatter: fm
+    });
+  }
+  return notes;
+}
+function listBaseFiles(app) {
+  return app.vault.getFiles().filter((f) => f.extension === "base").sort((a, b) => a.path.localeCompare(b.path));
+}
+async function loadBaseDefinition(app, path) {
+  if (!path) return null;
+  const file = app.vault.getAbstractFileByPath(path);
+  if (!(file instanceof import_obsidian.TFile)) return null;
+  try {
+    const raw = await app.vault.read(file);
+    return normalizeBaseDefinition((0, import_obsidian.parseYaml)(raw));
+  } catch (e) {
+    return null;
+  }
+}
+async function resolveViewRows(app, plugin) {
+  var _a;
+  const s = plugin.settings;
+  const notes = buildRawNotes(app);
+  if (!s.isPro) {
+    return { rows: resolveRows(notes, emptyBaseDefinition()), def: emptyBaseDefinition(), baseLabel: null, filterLabel: null };
+  }
+  const def = (_a = await loadBaseDefinition(app, s.activeBasePath)) != null ? _a : emptyBaseDefinition();
+  let extra = null;
+  let filterLabel = null;
+  if (s.activeFilterId) {
+    const sf = s.savedFilters.find((f) => f.id === s.activeFilterId);
+    if (sf) {
+      extra = sf.expression;
+      filterLabel = sf.name;
+    }
+  }
+  const rows = resolveRows(notes, def, extra);
+  const baseLabel = s.activeBasePath ? s.activeBasePath.split("/").pop().replace(/\.base$/, "") : null;
+  return { rows, def, baseLabel, filterLabel };
+}
+
+// src/settings.ts
 var DEFAULT_SETTINGS = {
   licenseKey: "",
   isPro: false,
   licenseEmail: "",
   purchaseUrl: "https://example.gumroad.com/l/bases-power-pack",
   kanbanGroupBy: "status",
-  calendarDateProp: "due"
+  calendarDateProp: "due",
+  ganttStartProp: "start",
+  ganttEndProp: "end",
+  activeBasePath: "",
+  savedFilters: [],
+  activeFilterId: "",
+  rollups: [],
+  cardFormula: ""
 };
-var BasesPowerPackSettingTab = class extends import_obsidian.PluginSettingTab {
+function genId(prefix) {
+  const c = globalThis.crypto;
+  if (c == null ? void 0 : c.randomUUID) return `${prefix}-${c.randomUUID()}`;
+  return `${prefix}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
+}
+var BasesPowerPackSettingTab = class extends import_obsidian2.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -2291,11 +2995,13 @@ var BasesPowerPackSettingTab = class extends import_obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian.Setting(containerEl).setName("License").setHeading();
-    new import_obsidian.Setting(containerEl).setName("License key").setDesc("Enter your premium license key. Verified offline \u2014 no account or server required.").addText(
+    new import_obsidian2.Setting(containerEl).setName("License").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("License key").setDesc("Enter your premium license key. Verified offline \u2014 no account or server required.").addText(
       (text) => text.setPlaceholder("payload.signature").setValue(this.plugin.settings.licenseKey).onChange((value) => {
         this.plugin.settings.licenseKey = value;
-        void this.plugin.refreshLicense().then(() => this.display());
+        void this.plugin.refreshLicense().then((changed) => {
+          if (changed) this.display();
+        });
       })
     );
     const status = containerEl.createDiv({ cls: "bpp-license-status" });
@@ -2305,7 +3011,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian.PluginSettingTab {
       });
     } else {
       status.createEl("p", {
-        text: "\u{1F513} Lite tier active. Upgrade to unlock the calendar, Gantt, roll-ups, and saved filters."
+        text: "\u{1F513} Lite tier active. Upgrade to unlock the calendar, Gantt, roll-ups, formulas, and saved filters."
       });
       const link = status.createEl("a", {
         text: "Get Bases Power Pack premium",
@@ -2313,44 +3019,175 @@ var BasesPowerPackSettingTab = class extends import_obsidian.PluginSettingTab {
       });
       link.setAttr("target", "_blank");
     }
-    new import_obsidian.Setting(containerEl).setName("Purchase page URL").setDesc("Link shown for premium upgrades.").addText(
+    new import_obsidian2.Setting(containerEl).setName("Purchase page URL").setDesc("Link shown for premium upgrades.").addText(
       (text) => text.setPlaceholder("https://your-store.com/product").setValue(this.plugin.settings.purchaseUrl).onChange((value) => {
         this.plugin.settings.purchaseUrl = value.trim() || DEFAULT_SETTINGS.purchaseUrl;
         void this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(containerEl).setName("Kanban view (Lite)").setHeading();
-    new import_obsidian.Setting(containerEl).setName("Group by property").setDesc("Frontmatter property used to build kanban columns.").addText(
+    new import_obsidian2.Setting(containerEl).setName("Kanban view (Lite)").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("Group by property").setDesc("Frontmatter property (or, with premium, a formula) used to build kanban columns.").addText(
       (text) => text.setValue(this.plugin.settings.kanbanGroupBy).onChange((value) => {
         this.plugin.settings.kanbanGroupBy = value.trim() || "status";
         void this.plugin.saveSettings();
       })
     );
-    new import_obsidian.Setting(containerEl).setName("Premium views").setHeading();
+    new import_obsidian2.Setting(containerEl).setName("Premium").setHeading();
     const premium = (name, desc, render) => {
-      const setting = new import_obsidian.Setting(containerEl).setName(name).setDesc(desc);
+      const setting = new import_obsidian2.Setting(containerEl).setName(name).setDesc(desc);
       if (!this.plugin.settings.isPro) {
         setting.settingEl.addClass("bpp-setting-locked");
         setting.descEl.appendText(" (Premium)");
-        return;
+        return false;
       }
       render(setting);
+      return true;
     };
+    premium(
+      "Active base",
+      "Read a .base file's filters and formulas as the data source for all views. Choose \u201CAll notes\u201D to run over the whole vault.",
+      (setting) => setting.addDropdown((dd) => {
+        dd.addOption("", "All notes");
+        for (const file of listBaseFiles(this.app)) {
+          dd.addOption(file.path, file.path.replace(/\.base$/, ""));
+        }
+        dd.setValue(this.plugin.settings.activeBasePath);
+        dd.onChange((value) => {
+          this.plugin.settings.activeBasePath = value;
+          void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+        });
+      })
+    );
     premium(
       "Calendar date property",
       "Frontmatter date property used to place notes on the calendar.",
       (setting) => setting.addText(
         (text) => text.setValue(this.plugin.settings.calendarDateProp).onChange((value) => {
           this.plugin.settings.calendarDateProp = value.trim() || "due";
-          void this.plugin.saveSettings();
+          void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
         })
       )
     );
-    const roadmap = containerEl.createDiv();
-    roadmap.createEl("p", {
-      cls: "bpp-muted",
-      text: "Also premium (roadmap): Gantt timeline, roll-ups & formula columns, saved filters & view presets."
-    });
+    premium(
+      "Gantt start property",
+      "Frontmatter date property for the start of each Gantt bar.",
+      (setting) => setting.addText(
+        (text) => text.setValue(this.plugin.settings.ganttStartProp).onChange((value) => {
+          this.plugin.settings.ganttStartProp = value.trim() || "start";
+          void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+        })
+      )
+    );
+    premium(
+      "Gantt end property",
+      "Frontmatter date property for the end of each Gantt bar (optional).",
+      (setting) => setting.addText(
+        (text) => text.setValue(this.plugin.settings.ganttEndProp).onChange((value) => {
+          this.plugin.settings.ganttEndProp = value.trim() || "end";
+          void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+        })
+      )
+    );
+    premium(
+      "Kanban card formula",
+      'An expression shown under each kanban card, e.g. round(done / total * 100, 0) + "%".',
+      (setting) => setting.addText(
+        (text) => text.setPlaceholder('round(done / total * 100, 0) + "%"').setValue(this.plugin.settings.cardFormula).onChange((value) => {
+          this.plugin.settings.cardFormula = value;
+          void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+        })
+      )
+    );
+    if (this.plugin.settings.isPro) {
+      this.renderRollups(containerEl);
+      this.renderSavedFilters(containerEl);
+    }
+  }
+  renderRollups(containerEl) {
+    new import_obsidian2.Setting(containerEl).setName("Roll-ups").setDesc("Aggregate an expression across the rows in each view (shown as a summary bar).").setHeading();
+    for (const rollup of this.plugin.settings.rollups) {
+      const row = new import_obsidian2.Setting(containerEl);
+      row.addText(
+        (t) => t.setPlaceholder("Label").setValue(rollup.label).onChange((v) => {
+          rollup.label = v;
+          void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+        })
+      );
+      row.addText(
+        (t) => t.setPlaceholder("expression, e.g. hours").setValue(rollup.expression).onChange((v) => {
+          rollup.expression = v;
+          void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+        })
+      );
+      row.addDropdown((dd) => {
+        for (const agg of AGGREGATIONS) dd.addOption(agg, agg);
+        dd.setValue(rollup.aggregation);
+        dd.onChange((v) => {
+          rollup.aggregation = v;
+          void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+        });
+      });
+      row.addExtraButton(
+        (b) => b.setIcon("trash").setTooltip("Remove roll-up").onClick(() => {
+          this.plugin.settings.rollups = this.plugin.settings.rollups.filter((r) => r.id !== rollup.id);
+          void this.plugin.saveSettings().then(() => {
+            this.plugin.refreshViews();
+            this.display();
+          });
+        })
+      );
+    }
+    new import_obsidian2.Setting(containerEl).addButton(
+      (b) => b.setButtonText("Add roll-up").setCta().onClick(() => {
+        this.plugin.settings.rollups.push({
+          id: genId("rollup"),
+          label: "Total",
+          expression: "1",
+          aggregation: "count"
+        });
+        void this.plugin.saveSettings().then(() => this.display());
+      })
+    );
+  }
+  renderSavedFilters(containerEl) {
+    new import_obsidian2.Setting(containerEl).setName("Saved filters").setDesc(`Named filter expressions selectable from each view's toolbar, e.g. status != "done" && priority > 2.`).setHeading();
+    for (const filter of this.plugin.settings.savedFilters) {
+      const row = new import_obsidian2.Setting(containerEl);
+      row.addText(
+        (t) => t.setPlaceholder("Name").setValue(filter.name).onChange((v) => {
+          filter.name = v;
+          void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+        })
+      );
+      row.addText(
+        (t) => t.setPlaceholder('expression, e.g. status != "done"').setValue(filter.expression).onChange((v) => {
+          filter.expression = v;
+          void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+        })
+      );
+      row.addExtraButton(
+        (b) => b.setIcon("trash").setTooltip("Remove saved filter").onClick(() => {
+          this.plugin.settings.savedFilters = this.plugin.settings.savedFilters.filter(
+            (f) => f.id !== filter.id
+          );
+          if (this.plugin.settings.activeFilterId === filter.id) this.plugin.settings.activeFilterId = "";
+          void this.plugin.saveSettings().then(() => {
+            this.plugin.refreshViews();
+            this.display();
+          });
+        })
+      );
+    }
+    new import_obsidian2.Setting(containerEl).addButton(
+      (b) => b.setButtonText("Add saved filter").setCta().onClick(() => {
+        this.plugin.settings.savedFilters.push({
+          id: genId("filter"),
+          name: "New filter",
+          expression: ""
+        });
+        void this.plugin.saveSettings().then(() => this.display());
+      })
+    );
   }
 };
 
@@ -2402,11 +3239,47 @@ function base64ToBytes(value) {
 }
 
 // src/views/kanbanView.ts
-var import_obsidian2 = require("obsidian");
+var import_obsidian3 = require("obsidian");
+
+// src/views/viewChrome.ts
+function renderContextControls(container, plugin, resolved, onChange) {
+  const bar = container.createDiv({ cls: "bpp-context" });
+  bar.createSpan({
+    cls: "bpp-muted",
+    text: resolved.baseLabel ? `Base: ${resolved.baseLabel}` : "Base: all notes"
+  });
+  if (!plugin.settings.isPro) return;
+  const filters = plugin.settings.savedFilters;
+  if (filters.length === 0) return;
+  const label = bar.createSpan({ cls: "bpp-muted", text: "Filter:" });
+  label.style.marginLeft = "auto";
+  const select = bar.createEl("select", { cls: "bpp-filter-select" });
+  select.createEl("option", { text: "None", value: "" });
+  for (const f of filters) {
+    const opt = select.createEl("option", { text: f.name, value: f.id });
+    if (f.id === plugin.settings.activeFilterId) opt.selected = true;
+  }
+  select.addEventListener("change", () => {
+    plugin.settings.activeFilterId = select.value;
+    void plugin.saveSettings().then(onChange);
+  });
+}
+function renderRollupBar(container, plugin, rows) {
+  if (!plugin.settings.isPro || plugin.settings.rollups.length === 0) return;
+  const bar = container.createDiv({ cls: "bpp-rollup-bar" });
+  for (const rollup of plugin.settings.rollups) {
+    const chip = bar.createDiv({ cls: "bpp-rollup" });
+    chip.createSpan({ cls: "bpp-rollup-label", text: rollup.label || rollup.aggregation });
+    chip.createSpan({ cls: "bpp-rollup-value", text: computeRollup(rollup, rows) });
+  }
+}
+
+// src/views/kanbanView.ts
 var VIEW_TYPE_KANBAN = "bpp-kanban-view";
-var KanbanView = class extends import_obsidian2.ItemView {
+var KanbanView = class extends import_obsidian3.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
+    this.renderToken = 0;
     this.plugin = plugin;
   }
   getViewType() {
@@ -2419,29 +3292,28 @@ var KanbanView = class extends import_obsidian2.ItemView {
     return "layout-dashboard";
   }
   async onOpen() {
-    this.render();
-    this.registerEvent(this.app.metadataCache.on("changed", () => this.render()));
+    await this.render();
+    this.registerEvent(this.app.metadataCache.on("changed", () => void this.render()));
   }
   async onClose() {
     this.contentEl.empty();
   }
-  render() {
+  async render() {
+    const token = ++this.renderToken;
+    const resolved = await resolveViewRows(this.app, this.plugin);
+    if (token !== this.renderToken) return;
     const groupBy = this.plugin.settings.kanbanGroupBy || "status";
     const container = this.contentEl;
     container.empty();
     container.addClass("bpp-view");
     const header = container.createDiv({ cls: "bpp-toolbar" });
     header.createEl("h3", { text: "Kanban" });
-    header.createEl("span", {
-      cls: "bpp-badge bpp-badge-lite",
-      text: "Lite"
-    });
-    header.createEl("span", {
-      cls: "bpp-muted",
-      text: `grouped by "${groupBy}"`
-    });
+    header.createEl("span", { cls: "bpp-badge bpp-badge-lite", text: "Lite" });
+    header.createEl("span", { cls: "bpp-muted", text: `grouped by "${groupBy}"` });
+    renderContextControls(container, this.plugin, resolved, () => void this.render());
+    renderRollupBar(container, this.plugin, resolved.rows);
+    const columns = this.collectColumns(resolved.rows, groupBy);
     const board = container.createDiv({ cls: "bpp-kanban-board" });
-    const columns = this.collectColumns(groupBy);
     if (columns.size === 0) {
       board.createDiv({
         cls: "bpp-empty",
@@ -2449,43 +3321,50 @@ var KanbanView = class extends import_obsidian2.ItemView {
       });
       return;
     }
-    for (const [colName, files] of columns) {
+    const cardFormula = this.plugin.settings.isPro ? this.plugin.settings.cardFormula.trim() : "";
+    for (const [colName, rows] of columns) {
       const col = board.createDiv({ cls: "bpp-kanban-column" });
       const colHead = col.createDiv({ cls: "bpp-kanban-column-head" });
       colHead.createSpan({ text: colName });
-      colHead.createSpan({ cls: "bpp-count", text: String(files.length) });
-      for (const file of files) {
+      colHead.createSpan({ cls: "bpp-count", text: String(rows.length) });
+      for (const row of rows) {
         const card = col.createDiv({ cls: "bpp-card" });
-        card.createDiv({ cls: "bpp-card-title", text: file.basename });
-        card.addEventListener("click", () => {
-          this.app.workspace.getLeaf(false).openFile(file);
-        });
+        card.createDiv({ cls: "bpp-card-title", text: row.name });
+        if (cardFormula) {
+          const val = evaluateSafe(cardFormula, row.scope);
+          if (val !== null && toStr(val) !== "") {
+            card.createDiv({ cls: "bpp-card-meta", text: toStr(val) });
+          }
+        }
+        card.addEventListener("click", () => this.openRow(row));
       }
     }
   }
-  /** Group markdown files by a frontmatter property into ordered columns. */
-  collectColumns(groupBy) {
-    var _a;
+  /** Group rows by a property/formula into ordered columns. */
+  collectColumns(rows, groupBy) {
     const columns = /* @__PURE__ */ new Map();
-    const files = this.app.vault.getMarkdownFiles();
-    for (const file of files) {
-      const cache = this.app.metadataCache.getFileCache(file);
-      const value = (_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a[groupBy];
-      if (value === void 0 || value === null) continue;
+    for (const row of rows) {
+      const value = row.scope.get(groupBy);
+      if (value === void 0 || value === null || value === "") continue;
       const colName = String(value);
       if (!columns.has(colName)) columns.set(colName, []);
-      columns.get(colName).push(file);
+      columns.get(colName).push(row);
     }
     return columns;
+  }
+  openRow(row) {
+    const file = this.app.vault.getAbstractFileByPath(row.id);
+    if (file instanceof import_obsidian3.TFile) void this.app.workspace.getLeaf(false).openFile(file);
   }
 };
 
 // src/views/calendarView.ts
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 var VIEW_TYPE_CALENDAR = "bpp-calendar-view";
-var CalendarView = class extends import_obsidian3.ItemView {
+var CalendarView = class extends import_obsidian4.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
+    this.renderToken = 0;
     this.plugin = plugin;
     const now = /* @__PURE__ */ new Date();
     this.cursor = { year: now.getFullYear(), month: now.getMonth() };
@@ -2500,20 +3379,25 @@ var CalendarView = class extends import_obsidian3.ItemView {
     return "calendar";
   }
   async onOpen() {
-    this.render();
-    this.registerEvent(this.app.metadataCache.on("changed", () => this.render()));
+    await this.render();
+    this.registerEvent(this.app.metadataCache.on("changed", () => void this.render()));
   }
   async onClose() {
     this.contentEl.empty();
   }
-  render() {
+  async render() {
+    const token = ++this.renderToken;
     const container = this.contentEl;
-    container.empty();
-    container.addClass("bpp-view");
     if (!this.plugin.settings.isPro) {
+      container.empty();
+      container.addClass("bpp-view");
       this.renderUpgradeNotice(container);
       return;
     }
+    const resolved = await resolveViewRows(this.app, this.plugin);
+    if (token !== this.renderToken) return;
+    container.empty();
+    container.addClass("bpp-view");
     const dateProp = this.plugin.settings.calendarDateProp || "due";
     const toolbar = container.createDiv({ cls: "bpp-toolbar" });
     toolbar.createEl("h3", { text: "Calendar" });
@@ -2524,26 +3408,29 @@ var CalendarView = class extends import_obsidian3.ItemView {
     const next = nav.createEl("button", { text: "\u203A" });
     prev.onclick = () => this.shiftMonth(-1);
     next.onclick = () => this.shiftMonth(1);
-    const monthName = new Date(this.cursor.year, this.cursor.month, 1).toLocaleString(
-      void 0,
-      { month: "long", year: "numeric" }
-    );
+    const monthName = new Date(this.cursor.year, this.cursor.month, 1).toLocaleString(void 0, {
+      month: "long",
+      year: "numeric"
+    });
     label.setText(monthName);
     toolbar.createSpan({ cls: "bpp-muted", text: `dates from "${dateProp}"` });
-    const byDay = this.collectByDay(dateProp);
+    renderContextControls(container, this.plugin, resolved, () => void this.render());
+    renderRollupBar(container, this.plugin, resolved.rows);
+    const byDay = this.collectByDay(resolved.rows, dateProp);
     this.renderGrid(container, byDay);
   }
   renderUpgradeNotice(container) {
     const box = container.createDiv({ cls: "bpp-upgrade" });
     box.createEl("h3", { text: "\u{1F4C5} Calendar is a Premium view" });
     box.createEl("p", {
-      text: "Unlock the calendar, Gantt, roll-ups and saved filters with a Bases Power Pack license."
+      text: "Unlock the calendar, Gantt timeline, roll-ups & formulas, and saved filters with a Bases Power Pack license."
     });
     const btn = box.createEl("button", { text: "Enter license key in settings", cls: "mod-cta" });
     btn.onclick = () => {
-      var _a, _b, _c, _d;
-      (_b = (_a = this.app.setting) == null ? void 0 : _a.open) == null ? void 0 : _b.call(_a);
-      (_d = (_c = this.app.setting) == null ? void 0 : _c.openTabById) == null ? void 0 : _d.call(_c, this.plugin.manifest.id);
+      var _a, _b;
+      const setting = this.app.setting;
+      (_a = setting == null ? void 0 : setting.open) == null ? void 0 : _a.call(setting);
+      (_b = setting == null ? void 0 : setting.openTabById) == null ? void 0 : _b.call(setting, this.plugin.manifest.id);
     };
   }
   shiftMonth(delta) {
@@ -2557,29 +3444,31 @@ var CalendarView = class extends import_obsidian3.ItemView {
       y += 1;
     }
     this.cursor = { year: y, month: m };
-    this.render();
+    void this.render();
   }
-  /** Map "YYYY-MM-DD" -> files whose date property falls on that day. */
-  collectByDay(dateProp) {
-    var _a, _b;
+  /** Map "YYYY-MM-DD" -> rows whose date property falls on that day. */
+  collectByDay(rows, dateProp) {
     const map = /* @__PURE__ */ new Map();
-    for (const file of this.app.vault.getMarkdownFiles()) {
-      const value = (_b = (_a = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter) == null ? void 0 : _b[dateProp];
-      if (!value) continue;
-      const key = this.normalizeDateKey(String(value));
+    for (const row of rows) {
+      const value = row.scope.get(dateProp);
+      if (value === void 0 || value === null || value === "") continue;
+      const key = this.normalizeDateKey(toStr(value));
       if (!key) continue;
       if (!map.has(key)) map.set(key, []);
-      map.get(key).push(file);
+      map.get(key).push(row);
     }
     return map;
   }
   normalizeDateKey(raw) {
+    const iso = raw.slice(0, 10);
+    const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (m) return iso;
     const d = new Date(raw);
     if (isNaN(d.getTime())) return null;
     const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
     const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
+    return `${y}-${mm}-${day}`;
   }
   renderGrid(container, byDay) {
     const grid = container.createDiv({ cls: "bpp-cal-grid" });
@@ -2599,19 +3488,215 @@ var CalendarView = class extends import_obsidian3.ItemView {
       const m = String(this.cursor.month + 1).padStart(2, "0");
       const d = String(day).padStart(2, "0");
       const key = `${this.cursor.year}-${m}-${d}`;
-      const files = byDay.get(key) || [];
-      for (const file of files) {
-        const ev = cell.createDiv({ cls: "bpp-cal-event", text: file.basename });
-        ev.addEventListener("click", () => {
-          this.app.workspace.getLeaf(false).openFile(file);
-        });
+      const rows = byDay.get(key) || [];
+      for (const row of rows) {
+        const ev = cell.createDiv({ cls: "bpp-cal-event", text: row.name });
+        ev.addEventListener("click", () => this.openRow(row));
       }
     }
   }
+  openRow(row) {
+    const file = this.app.vault.getAbstractFileByPath(row.id);
+    if (file instanceof import_obsidian4.TFile) void this.app.workspace.getLeaf(false).openFile(file);
+  }
 };
 
+// src/views/ganttView.ts
+var import_obsidian5 = require("obsidian");
+
+// src/query/gantt.ts
+function toDayNumber(value) {
+  if (!value) return null;
+  const iso = String(value).slice(0, 10);
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  let ms;
+  if (m) {
+    ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  } else {
+    const d = new Date(String(value));
+    if (Number.isNaN(d.getTime())) return null;
+    ms = Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+  }
+  return Math.floor(ms / 864e5);
+}
+function dayNumberToIso(day) {
+  const d = new Date(day * 864e5);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
+function buildGantt(input, defaultSpanDays = 1, maxDays = 120) {
+  const bars = [];
+  let skipped = 0;
+  for (const row of input) {
+    const startDay = toDayNumber(row.start);
+    if (startDay === null) {
+      skipped++;
+      continue;
+    }
+    let endDay = toDayNumber(row.end);
+    if (endDay === null || endDay < startDay) endDay = startDay + Math.max(0, defaultSpanDays - 1);
+    bars.push({
+      id: row.id,
+      name: row.name,
+      startIndex: 0,
+      span: endDay - startDay + 1,
+      startDate: dayNumberToIso(startDay),
+      endDate: dayNumberToIso(endDay),
+      startDay,
+      endDay
+    });
+  }
+  if (bars.length === 0) return { days: [], bars: [], skipped };
+  const minDay = Math.min(...bars.map((b) => b.startDay));
+  const maxDay = Math.min(Math.max(...bars.map((b) => b.endDay)), minDay + maxDays - 1);
+  const days = [];
+  for (let d = minDay; d <= maxDay; d++) days.push(dayNumberToIso(d));
+  const finalBars = bars.map((b) => {
+    const startIndex = b.startDay - minDay;
+    const clampedSpan = Math.min(b.span, maxDay - b.startDay + 1);
+    return {
+      id: b.id,
+      name: b.name,
+      startIndex,
+      span: Math.max(1, clampedSpan),
+      startDate: b.startDate,
+      endDate: b.endDate
+    };
+  });
+  finalBars.sort((a, b) => a.startIndex - b.startIndex || a.name.localeCompare(b.name));
+  return { days, bars: finalBars, skipped };
+}
+
+// src/views/ganttView.ts
+var VIEW_TYPE_GANTT = "bpp-gantt-view";
+var GanttView = class extends import_obsidian5.ItemView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.renderToken = 0;
+    this.plugin = plugin;
+  }
+  getViewType() {
+    return VIEW_TYPE_GANTT;
+  }
+  getDisplayText() {
+    return "Power Pack: Gantt";
+  }
+  getIcon() {
+    return "gantt-chart";
+  }
+  async onOpen() {
+    await this.render();
+    this.registerEvent(this.app.metadataCache.on("changed", () => void this.render()));
+  }
+  async onClose() {
+    this.contentEl.empty();
+  }
+  async render() {
+    const token = ++this.renderToken;
+    const container = this.contentEl;
+    if (!this.plugin.settings.isPro) {
+      container.empty();
+      container.addClass("bpp-view");
+      this.renderUpgradeNotice(container);
+      return;
+    }
+    const resolved = await resolveViewRows(this.app, this.plugin);
+    if (token !== this.renderToken) return;
+    container.empty();
+    container.addClass("bpp-view");
+    const startProp = this.plugin.settings.ganttStartProp || "start";
+    const endProp = this.plugin.settings.ganttEndProp || "end";
+    const toolbar = container.createDiv({ cls: "bpp-toolbar" });
+    toolbar.createEl("h3", { text: "Gantt" });
+    toolbar.createEl("span", { cls: "bpp-badge bpp-badge-premium", text: "Premium" });
+    toolbar.createSpan({ cls: "bpp-muted", text: `${startProp} \u2192 ${endProp}` });
+    renderContextControls(container, this.plugin, resolved, () => void this.render());
+    renderRollupBar(container, this.plugin, resolved.rows);
+    const rowByPath = /* @__PURE__ */ new Map();
+    const input = resolved.rows.map((row) => {
+      rowByPath.set(row.id, row);
+      return {
+        id: row.id,
+        name: row.name,
+        start: valueToDateString(row.scope.get(startProp)),
+        end: valueToDateString(row.scope.get(endProp))
+      };
+    });
+    const model = buildGantt(input, 1, 180);
+    if (model.bars.length === 0) {
+      container.createDiv({
+        cls: "bpp-empty",
+        text: `No notes with a "${startProp}" date found. Add "${startProp}: 2026-01-01" to a note's frontmatter to place it on the timeline.`
+      });
+      return;
+    }
+    const chart = container.createDiv({ cls: "bpp-gantt" });
+    const axis = chart.createDiv({ cls: "bpp-gantt-axis" });
+    axis.createDiv({ cls: "bpp-gantt-name bpp-gantt-axis-label", text: "Task" });
+    const axisTrack = axis.createDiv({ cls: "bpp-gantt-track" });
+    axisTrack.createSpan({ cls: "bpp-muted", text: model.days[0] });
+    const endLabel = axisTrack.createSpan({ cls: "bpp-muted", text: model.days[model.days.length - 1] });
+    endLabel.style.float = "right";
+    const total = model.days.length;
+    const todayDay = toDayNumber((/* @__PURE__ */ new Date()).toISOString().slice(0, 10));
+    const firstDay = toDayNumber(model.days[0]);
+    if (todayDay !== null && firstDay !== null) {
+      const offset = todayDay - firstDay;
+      if (offset >= 0 && offset < total) {
+        const marker = axisTrack.createDiv({ cls: "bpp-gantt-today" });
+        marker.style.left = `${offset / total * 100}%`;
+      }
+    }
+    for (const bar of model.bars) {
+      this.renderBar(chart, bar, total, rowByPath.get(bar.id));
+    }
+    if (model.skipped > 0) {
+      container.createDiv({
+        cls: "bpp-muted bpp-gantt-skipped",
+        text: `${model.skipped} note${model.skipped === 1 ? "" : "s"} without a valid "${startProp}" date not shown.`
+      });
+    }
+  }
+  renderBar(chart, bar, total, row) {
+    const rowEl = chart.createDiv({ cls: "bpp-gantt-row" });
+    const name = rowEl.createDiv({ cls: "bpp-gantt-name", text: bar.name });
+    if (row) name.addEventListener("click", () => this.openRow(row));
+    const track = rowEl.createDiv({ cls: "bpp-gantt-track" });
+    const barEl = track.createDiv({ cls: "bpp-gantt-bar" });
+    barEl.style.left = `${bar.startIndex / total * 100}%`;
+    barEl.style.width = `${Math.max(1 / total, bar.span / total) * 100}%`;
+    barEl.setAttr("title", `${bar.name}: ${bar.startDate} \u2192 ${bar.endDate}`);
+    if (row) barEl.addEventListener("click", () => this.openRow(row));
+  }
+  renderUpgradeNotice(container) {
+    const box = container.createDiv({ cls: "bpp-upgrade" });
+    box.createEl("h3", { text: "\u{1F4CA} Gantt is a Premium view" });
+    box.createEl("p", {
+      text: "Unlock the Gantt timeline, calendar, roll-ups & formulas, and saved filters with a Bases Power Pack license."
+    });
+    const btn = box.createEl("button", { text: "Enter license key in settings", cls: "mod-cta" });
+    btn.onclick = () => {
+      var _a, _b;
+      const setting = this.app.setting;
+      (_a = setting == null ? void 0 : setting.open) == null ? void 0 : _a.call(setting);
+      (_b = setting == null ? void 0 : setting.openTabById) == null ? void 0 : _b.call(setting, this.plugin.manifest.id);
+    };
+  }
+  openRow(row) {
+    const file = this.app.vault.getAbstractFileByPath(row.id);
+    if (file instanceof import_obsidian5.TFile) void this.app.workspace.getLeaf(false).openFile(file);
+  }
+};
+function valueToDateString(value) {
+  if (value === void 0 || value === null || value === "") return null;
+  return toStr(value);
+}
+
 // src/main.ts
-var BasesPowerPackPlugin = class extends import_obsidian4.Plugin {
+var ALL_VIEW_TYPES = [VIEW_TYPE_KANBAN, VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT];
+var BasesPowerPackPlugin = class extends import_obsidian6.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -2621,6 +3706,7 @@ var BasesPowerPackPlugin = class extends import_obsidian4.Plugin {
     await this.refreshLicense();
     this.registerView(VIEW_TYPE_KANBAN, (leaf) => new KanbanView(leaf, this));
     this.registerView(VIEW_TYPE_CALENDAR, (leaf) => new CalendarView(leaf, this));
+    this.registerView(VIEW_TYPE_GANTT, (leaf) => new GanttView(leaf, this));
     this.addRibbonIcon("layout-dashboard", "Bases Power Pack: Kanban", () => {
       void this.activateView(VIEW_TYPE_KANBAN);
     });
@@ -2632,23 +3718,30 @@ var BasesPowerPackPlugin = class extends import_obsidian4.Plugin {
     this.addCommand({
       id: "open-calendar-view",
       name: "Open Calendar view (Premium)",
-      checkCallback: (checking) => {
-        if (!this.settings.isPro) return false;
-        if (!checking) void this.activateView(VIEW_TYPE_CALENDAR);
-        return true;
-      }
+      checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_CALENDAR)
+    });
+    this.addCommand({
+      id: "open-gantt-view",
+      name: "Open Gantt view (Premium)",
+      checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_GANTT)
     });
     this.addCommand({
       id: "verify-license",
       name: "Verify license key",
       callback: async () => {
         await this.refreshLicense();
-        new import_obsidian4.Notice(this.settings.isPro ? "Premium active." : "Lite tier (no valid license).");
+        this.refreshViews();
+        new import_obsidian6.Notice(this.settings.isPro ? "Premium active." : "Lite tier (no valid license).");
       }
     });
     this.addSettingTab(new BasesPowerPackSettingTab(this.app, this));
   }
   onunload() {
+  }
+  premiumCommand(checking, viewType) {
+    if (!this.settings.isPro) return false;
+    if (!checking) void this.activateView(viewType);
+    return true;
   }
   /** Reveal (or create) a leaf hosting the given view type. */
   async activateView(viewType) {
@@ -2661,29 +3754,67 @@ var BasesPowerPackPlugin = class extends import_obsidian4.Plugin {
     }
     workspace.revealLeaf(leaf);
   }
-  /** Re-verify the license key (offline) and cache the result in settings. */
+  /**
+   * Re-render every open Power Pack view. Called after settings or license
+   * changes. Uses each view's render() — NOT onOpen(), which would re-register
+   * the metadataCache listener and stack duplicates on every keystroke.
+   */
+  refreshViews() {
+    var _a;
+    for (const viewType of ALL_VIEW_TYPES) {
+      for (const leaf of this.app.workspace.getLeavesOfType(viewType)) {
+        const view = leaf.view;
+        void ((_a = view.render) == null ? void 0 : _a.call(view));
+      }
+    }
+  }
+  /**
+   * Re-verify the license key (offline) and cache the result. Returns whether
+   * the Pro status or email actually changed, so callers can avoid needless
+   * UI rebuilds.
+   */
   async refreshLicense() {
     var _a;
+    const before = this.settings.isPro;
+    const beforeEmail = this.settings.licenseEmail;
     if (!this.settings.licenseKey) {
       this.settings.isPro = false;
       this.settings.licenseEmail = "";
-      await this.saveSettings();
-      return;
+    } else {
+      const result = LicenseManager.verify(this.settings.licenseKey);
+      this.settings.isPro = result.valid;
+      this.settings.licenseEmail = (_a = result.email) != null ? _a : "";
     }
-    const result = LicenseManager.verify(this.settings.licenseKey);
-    this.settings.isPro = result.valid;
-    this.settings.licenseEmail = (_a = result.email) != null ? _a : "";
-    await this.saveSettings();
-    this.app.workspace.getLeavesOfType(VIEW_TYPE_CALENDAR).forEach((leaf) => {
-      void leaf.view.onOpen();
-    });
+    const changed = before !== this.settings.isPro || beforeEmail !== this.settings.licenseEmail;
+    if (changed) {
+      await this.saveSettings();
+      this.refreshViews();
+    }
+    return changed;
   }
   async loadSettings() {
     const data = await this.loadData();
     const loaded = data !== null && typeof data === "object" ? data : {};
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
+    this.settings.savedFilters = sanitizeSavedFilters(this.settings.savedFilters);
+    this.settings.rollups = sanitizeRollups(this.settings.rollups);
+    if (typeof this.settings.activeBasePath !== "string") this.settings.activeBasePath = "";
+    if (typeof this.settings.activeFilterId !== "string") this.settings.activeFilterId = "";
+    if (typeof this.settings.cardFormula !== "string") this.settings.cardFormula = "";
   }
   async saveSettings() {
     await this.saveData(this.settings);
   }
 };
+function sanitizeSavedFilters(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (f) => !!f && typeof f === "object" && typeof f.id === "string" && typeof f.name === "string" && typeof f.expression === "string"
+  );
+}
+function sanitizeRollups(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (r) => !!r && typeof r === "object" && typeof r.id === "string" && typeof r.label === "string" && typeof r.expression === "string" && AGGREGATIONS.includes(r.aggregation)
+  );
+}

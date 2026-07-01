@@ -3,10 +3,16 @@ import {
 	BasesPowerPackSettings,
 	BasesPowerPackSettingTab,
 	DEFAULT_SETTINGS,
+	type SavedFilter,
 } from "./settings";
 import { LicenseManager } from "./license/LicenseManager";
+import { AGGREGATIONS, type Rollup } from "./query/rollup";
 import { KanbanView, VIEW_TYPE_KANBAN } from "./views/kanbanView";
 import { CalendarView, VIEW_TYPE_CALENDAR } from "./views/calendarView";
+import { GanttView, VIEW_TYPE_GANTT } from "./views/ganttView";
+
+const PREMIUM_VIEW_TYPES = [VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT];
+const ALL_VIEW_TYPES = [VIEW_TYPE_KANBAN, VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT];
 
 export default class BasesPowerPackPlugin extends Plugin {
 	settings: BasesPowerPackSettings = DEFAULT_SETTINGS;
@@ -16,10 +22,9 @@ export default class BasesPowerPackPlugin extends Plugin {
 		await this.refreshLicense();
 
 		// ---- Views -----------------------------------------------------------
-		// Kanban is the free "one extra view ungated" (lite tier).
 		this.registerView(VIEW_TYPE_KANBAN, (leaf) => new KanbanView(leaf, this));
-		// Calendar is premium; the view also enforces the gate on render.
 		this.registerView(VIEW_TYPE_CALENDAR, (leaf) => new CalendarView(leaf, this));
+		this.registerView(VIEW_TYPE_GANTT, (leaf) => new GanttView(leaf, this));
 
 		this.addRibbonIcon("layout-dashboard", "Bases Power Pack: Kanban", () => {
 			void this.activateView(VIEW_TYPE_KANBAN);
@@ -32,15 +37,16 @@ export default class BasesPowerPackPlugin extends Plugin {
 			callback: () => void this.activateView(VIEW_TYPE_KANBAN),
 		});
 
-		// Premium command: hidden from the palette unless the license is active.
 		this.addCommand({
 			id: "open-calendar-view",
 			name: "Open Calendar view (Premium)",
-			checkCallback: (checking) => {
-				if (!this.settings.isPro) return false;
-				if (!checking) void this.activateView(VIEW_TYPE_CALENDAR);
-				return true;
-			},
+			checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_CALENDAR),
+		});
+
+		this.addCommand({
+			id: "open-gantt-view",
+			name: "Open Gantt view (Premium)",
+			checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_GANTT),
 		});
 
 		this.addCommand({
@@ -48,6 +54,7 @@ export default class BasesPowerPackPlugin extends Plugin {
 			name: "Verify license key",
 			callback: async () => {
 				await this.refreshLicense();
+				this.refreshViews();
 				new Notice(this.settings.isPro ? "Premium active." : "Lite tier (no valid license).");
 			},
 		});
@@ -56,6 +63,12 @@ export default class BasesPowerPackPlugin extends Plugin {
 	}
 
 	onunload(): void {}
+
+	private premiumCommand(checking: boolean, viewType: string): boolean {
+		if (!this.settings.isPro) return false;
+		if (!checking) void this.activateView(viewType);
+		return true;
+	}
 
 	/** Reveal (or create) a leaf hosting the given view type. */
 	async activateView(viewType: string): Promise<void> {
@@ -69,23 +82,42 @@ export default class BasesPowerPackPlugin extends Plugin {
 		workspace.revealLeaf(leaf);
 	}
 
-	/** Re-verify the license key (offline) and cache the result in settings. */
-	async refreshLicense(): Promise<void> {
+	/**
+	 * Re-render every open Power Pack view. Called after settings or license
+	 * changes. Uses each view's render() — NOT onOpen(), which would re-register
+	 * the metadataCache listener and stack duplicates on every keystroke.
+	 */
+	refreshViews(): void {
+		for (const viewType of ALL_VIEW_TYPES) {
+			for (const leaf of this.app.workspace.getLeavesOfType(viewType)) {
+				const view = leaf.view as { render?: () => void | Promise<void> };
+				void view.render?.();
+			}
+		}
+	}
+
+	/**
+	 * Re-verify the license key (offline) and cache the result. Returns whether
+	 * the Pro status or email actually changed, so callers can avoid needless
+	 * UI rebuilds.
+	 */
+	async refreshLicense(): Promise<boolean> {
+		const before = this.settings.isPro;
+		const beforeEmail = this.settings.licenseEmail;
 		if (!this.settings.licenseKey) {
 			this.settings.isPro = false;
 			this.settings.licenseEmail = "";
-			await this.saveSettings();
-			return;
+		} else {
+			const result = LicenseManager.verify(this.settings.licenseKey);
+			this.settings.isPro = result.valid;
+			this.settings.licenseEmail = result.email ?? "";
 		}
-		const result = LicenseManager.verify(this.settings.licenseKey);
-		this.settings.isPro = result.valid;
-		this.settings.licenseEmail = result.email ?? "";
-		await this.saveSettings();
-
-		// Refresh any open premium views so they lock/unlock immediately.
-		this.app.workspace.getLeavesOfType(VIEW_TYPE_CALENDAR).forEach((leaf) => {
-			void (leaf.view as CalendarView).onOpen();
-		});
+		const changed = before !== this.settings.isPro || beforeEmail !== this.settings.licenseEmail;
+		if (changed) {
+			await this.saveSettings();
+			this.refreshViews();
+		}
+		return changed;
 	}
 
 	async loadSettings(): Promise<void> {
@@ -93,9 +125,40 @@ export default class BasesPowerPackPlugin extends Plugin {
 		const loaded =
 			data !== null && typeof data === "object" ? (data as Partial<BasesPowerPackSettings>) : {};
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
+
+		this.settings.savedFilters = sanitizeSavedFilters(this.settings.savedFilters);
+		this.settings.rollups = sanitizeRollups(this.settings.rollups);
+		if (typeof this.settings.activeBasePath !== "string") this.settings.activeBasePath = "";
+		if (typeof this.settings.activeFilterId !== "string") this.settings.activeFilterId = "";
+		if (typeof this.settings.cardFormula !== "string") this.settings.cardFormula = "";
 	}
 
 	async saveSettings(): Promise<void> {
 		await this.saveData(this.settings);
 	}
+}
+
+function sanitizeSavedFilters(value: unknown): SavedFilter[] {
+	if (!Array.isArray(value)) return [];
+	return value.filter(
+		(f): f is SavedFilter =>
+			!!f &&
+			typeof f === "object" &&
+			typeof (f as SavedFilter).id === "string" &&
+			typeof (f as SavedFilter).name === "string" &&
+			typeof (f as SavedFilter).expression === "string"
+	);
+}
+
+function sanitizeRollups(value: unknown): Rollup[] {
+	if (!Array.isArray(value)) return [];
+	return value.filter(
+		(r): r is Rollup =>
+			!!r &&
+			typeof r === "object" &&
+			typeof (r as Rollup).id === "string" &&
+			typeof (r as Rollup).label === "string" &&
+			typeof (r as Rollup).expression === "string" &&
+			AGGREGATIONS.includes((r as Rollup).aggregation)
+	);
 }
