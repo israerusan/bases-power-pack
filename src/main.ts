@@ -1,4 +1,4 @@
-import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
+import { Notice, Plugin, TFile, WorkspaceLeaf, normalizePath } from "obsidian";
 import {
 	BasesPowerPackSettings,
 	BasesPowerPackSettingTab,
@@ -14,8 +14,29 @@ import { GanttView, VIEW_TYPE_GANTT } from "./views/ganttView";
 const PREMIUM_VIEW_TYPES = [VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT];
 const ALL_VIEW_TYPES = [VIEW_TYPE_KANBAN, VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT];
 
+const VIEW_NAME_TO_TYPE: Record<string, string> = {
+	kanban: VIEW_TYPE_KANBAN,
+	calendar: VIEW_TYPE_CALENDAR,
+	gantt: VIEW_TYPE_GANTT,
+};
+
+/**
+ * Public API exposed as `window.basesPowerPack` so other plugins (e.g. Vault
+ * Spotlight's ".base result" actions) can open Power Pack views directly.
+ */
+export interface BasesPowerPackApi {
+	/**
+	 * Open a view, optionally switching the active base first. Returns false
+	 * (with a user-facing notice) when the view or the base source requires a
+	 * premium license, or when the base path doesn't resolve.
+	 */
+	openView: (view: "kanban" | "calendar" | "gantt", basePath?: string) => Promise<boolean>;
+	isPremiumActive: () => boolean;
+}
+
 export default class BasesPowerPackPlugin extends Plugin {
 	settings: BasesPowerPackSettings = DEFAULT_SETTINGS;
+	private api: BasesPowerPackApi | null = null;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -60,9 +81,54 @@ export default class BasesPowerPackPlugin extends Plugin {
 		});
 
 		this.addSettingTab(new BasesPowerPackSettingTab(this.app, this));
+
+		this.api = this.createApi();
+		(window as unknown as Record<string, unknown>).basesPowerPack = this.api;
 	}
 
-	onunload(): void {}
+	onunload(): void {
+		// Identity check: only remove the global if it's still OUR object — a
+		// second instance (e.g. a BRAT beta copy) may have claimed it since.
+		const globals = window as unknown as Record<string, unknown>;
+		if (this.api && globals.basesPowerPack === this.api) delete globals.basesPowerPack;
+		this.api = null;
+	}
+
+	private createApi(): BasesPowerPackApi {
+		return {
+			openView: async (view, basePath) => {
+				const viewType = VIEW_NAME_TO_TYPE[view];
+				if (!viewType) {
+					new Notice(`Bases Power Pack: unknown view "${String(view)}".`);
+					return false;
+				}
+				if (PREMIUM_VIEW_TYPES.includes(viewType) && !this.settings.isPro) {
+					new Notice("Bases Power Pack: this view requires a premium license.");
+					return false;
+				}
+				if (basePath) {
+					// Reading a .base as the data source is a premium feature.
+					if (!this.settings.isPro) {
+						new Notice("Bases Power Pack: opening a base as the data source requires premium.");
+						return false;
+					}
+					const file = this.app.vault.getAbstractFileByPath(normalizePath(basePath));
+					if (!(file instanceof TFile) || file.extension !== "base") {
+						new Notice("Bases Power Pack: base file not found.");
+						return false;
+					}
+					if (this.settings.activeBasePath !== file.path) {
+						this.settings.activeBasePath = file.path;
+						await this.saveSettings();
+						this.refreshViews();
+					}
+				}
+				await this.activateView(viewType);
+				return true;
+			},
+			isPremiumActive: () => this.settings.isPro,
+		};
+	}
 
 	private premiumCommand(checking: boolean, viewType: string): boolean {
 		if (!this.settings.isPro) return false;
@@ -100,8 +166,13 @@ export default class BasesPowerPackPlugin extends Plugin {
 	 * Re-verify the license key (offline) and cache the result. Returns whether
 	 * the Pro status or email actually changed, so callers can avoid needless
 	 * UI rebuilds.
+	 *
+	 * `persistUnchanged` is for the settings tab, where the key TEXT was just
+	 * edited: it must be saved even when the premium status didn't flip, or an
+	 * invalid/typo'd key silently vanishes on the next restart. Startup calls
+	 * leave it false so an unchanged verification never writes data.json.
 	 */
-	async refreshLicense(): Promise<boolean> {
+	async refreshLicense(persistUnchanged = false): Promise<boolean> {
 		const before = this.settings.isPro;
 		const beforeEmail = this.settings.licenseEmail;
 		if (!this.settings.licenseKey) {
@@ -113,10 +184,8 @@ export default class BasesPowerPackPlugin extends Plugin {
 			this.settings.licenseEmail = result.email ?? "";
 		}
 		const changed = before !== this.settings.isPro || beforeEmail !== this.settings.licenseEmail;
-		if (changed) {
-			await this.saveSettings();
-			this.refreshViews();
-		}
+		if (changed || persistUnchanged) await this.saveSettings();
+		if (changed) this.refreshViews();
 		return changed;
 	}
 
@@ -133,8 +202,14 @@ export default class BasesPowerPackPlugin extends Plugin {
 		if (typeof this.settings.cardFormula !== "string") this.settings.cardFormula = "";
 	}
 
+	// Serialize writes: overlapping saveData calls (e.g. per-keystroke license
+	// verification) could otherwise finish out of order, letting a stale
+	// serialization win on disk.
+	private savePromise: Promise<void> = Promise.resolve();
+
 	async saveSettings(): Promise<void> {
-		await this.saveData(this.settings);
+		this.savePromise = this.savePromise.then(() => this.saveData(this.settings));
+		return this.savePromise;
 	}
 }
 

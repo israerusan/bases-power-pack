@@ -87,7 +87,9 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 						// Re-verify on each keystroke (cheap, offline) but only rebuild
 						// the tab when Pro status actually flips — otherwise display()'s
 						// containerEl.empty() destroys the input mid-type.
-						void this.plugin.refreshLicense().then((changed) => {
+						// persistUnchanged: the key text changed, so it must be saved
+						// even when the premium status didn't flip.
+						void this.plugin.refreshLicense(true).then((changed) => {
 							if (changed) this.display();
 						});
 					})

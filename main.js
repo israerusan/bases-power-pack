@@ -2999,7 +2999,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian2.PluginSettingTab {
     new import_obsidian2.Setting(containerEl).setName("License key").setDesc("Enter your premium license key. Verified offline \u2014 no account or server required.").addText(
       (text) => text.setPlaceholder("payload.signature").setValue(this.plugin.settings.licenseKey).onChange((value) => {
         this.plugin.settings.licenseKey = value;
-        void this.plugin.refreshLicense().then((changed) => {
+        void this.plugin.refreshLicense(true).then((changed) => {
           if (changed) this.display();
         });
       })
@@ -3191,42 +3191,33 @@ var BasesPowerPackSettingTab = class extends import_obsidian2.PluginSettingTab {
   }
 };
 
-// src/license/LicenseManager.ts
+// src/shared/verifyLicense.mjs
 var import_tweetnacl = __toESM(require_nacl_fast(), 1);
-
-// src/license/publicKey.ts
-var LICENSE_PUBLIC_KEY = "5mo8rQSqI7nHL-B6OgY_I9Tc5X6vUo1YqbRPa2zs6TM";
-
-// src/license/LicenseManager.ts
-var _LicenseManager = class _LicenseManager {
-  static verify(licenseKey) {
-    const trimmed = licenseKey.trim();
-    if (!trimmed) {
-      return { valid: false, error: "No license key provided." };
-    }
-    const parts = trimmed.split(".");
-    if (parts.length !== 2) {
-      return { valid: false, error: "Invalid license format." };
-    }
-    try {
-      const payloadBytes = base64ToBytes(parts[0]);
-      const signature = base64ToBytes(parts[1]);
-      const publicKey = base64ToBytes(LICENSE_PUBLIC_KEY);
-      if (!import_tweetnacl.default.sign.detached.verify(payloadBytes, signature, publicKey)) {
-        return { valid: false, error: "Invalid license signature." };
-      }
-      const payload = JSON.parse(new TextDecoder().decode(payloadBytes));
-      if (payload.product !== _LicenseManager.PRODUCT) {
-        return { valid: false, error: "License is for a different product." };
-      }
-      return { valid: true, email: payload.email };
-    } catch (e) {
-      return { valid: false, error: "Could not parse license key." };
-    }
+function verifyLicense(licenseKey, product, publicKeyB64) {
+  const trimmed = String(licenseKey != null ? licenseKey : "").trim();
+  if (!trimmed) {
+    return { valid: false, error: "No license key provided." };
   }
-};
-_LicenseManager.PRODUCT = "bases-power-pack";
-var LicenseManager = _LicenseManager;
+  const parts = trimmed.split(".");
+  if (parts.length !== 2) {
+    return { valid: false, error: "Invalid license format." };
+  }
+  try {
+    const payloadBytes = base64ToBytes(parts[0]);
+    const signature = base64ToBytes(parts[1]);
+    const publicKey = base64ToBytes(publicKeyB64);
+    if (!import_tweetnacl.default.sign.detached.verify(payloadBytes, signature, publicKey)) {
+      return { valid: false, error: "Invalid license signature." };
+    }
+    const payload = JSON.parse(new TextDecoder().decode(payloadBytes));
+    if (payload.product !== product) {
+      return { valid: false, error: "License is for a different product." };
+    }
+    return { valid: true, email: payload.email };
+  } catch (e) {
+    return { valid: false, error: "Could not parse license key." };
+  }
+}
 function base64ToBytes(value) {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized + "=".repeat((4 - normalized.length % 4) % 4);
@@ -3237,6 +3228,18 @@ function base64ToBytes(value) {
   }
   return bytes;
 }
+
+// src/license/publicKey.ts
+var LICENSE_PUBLIC_KEY = "5mo8rQSqI7nHL-B6OgY_I9Tc5X6vUo1YqbRPa2zs6TM";
+
+// src/license/LicenseManager.ts
+var _LicenseManager = class _LicenseManager {
+  static verify(licenseKey) {
+    return verifyLicense(licenseKey, _LicenseManager.PRODUCT, LICENSE_PUBLIC_KEY);
+  }
+};
+_LicenseManager.PRODUCT = "bases-power-pack";
+var LicenseManager = _LicenseManager;
 
 // src/views/kanbanView.ts
 var import_obsidian3 = require("obsidian");
@@ -3695,11 +3698,22 @@ function valueToDateString(value) {
 }
 
 // src/main.ts
+var PREMIUM_VIEW_TYPES = [VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT];
 var ALL_VIEW_TYPES = [VIEW_TYPE_KANBAN, VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT];
+var VIEW_NAME_TO_TYPE = {
+  kanban: VIEW_TYPE_KANBAN,
+  calendar: VIEW_TYPE_CALENDAR,
+  gantt: VIEW_TYPE_GANTT
+};
 var BasesPowerPackPlugin = class extends import_obsidian6.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
+    this.api = null;
+    // Serialize writes: overlapping saveData calls (e.g. per-keystroke license
+    // verification) could otherwise finish out of order, letting a stale
+    // serialization win on disk.
+    this.savePromise = Promise.resolve();
   }
   async onload() {
     await this.loadSettings();
@@ -3735,8 +3749,47 @@ var BasesPowerPackPlugin = class extends import_obsidian6.Plugin {
       }
     });
     this.addSettingTab(new BasesPowerPackSettingTab(this.app, this));
+    this.api = this.createApi();
+    window.basesPowerPack = this.api;
   }
   onunload() {
+    const globals = window;
+    if (this.api && globals.basesPowerPack === this.api) delete globals.basesPowerPack;
+    this.api = null;
+  }
+  createApi() {
+    return {
+      openView: async (view, basePath) => {
+        const viewType = VIEW_NAME_TO_TYPE[view];
+        if (!viewType) {
+          new import_obsidian6.Notice(`Bases Power Pack: unknown view "${String(view)}".`);
+          return false;
+        }
+        if (PREMIUM_VIEW_TYPES.includes(viewType) && !this.settings.isPro) {
+          new import_obsidian6.Notice("Bases Power Pack: this view requires a premium license.");
+          return false;
+        }
+        if (basePath) {
+          if (!this.settings.isPro) {
+            new import_obsidian6.Notice("Bases Power Pack: opening a base as the data source requires premium.");
+            return false;
+          }
+          const file = this.app.vault.getAbstractFileByPath((0, import_obsidian6.normalizePath)(basePath));
+          if (!(file instanceof import_obsidian6.TFile) || file.extension !== "base") {
+            new import_obsidian6.Notice("Bases Power Pack: base file not found.");
+            return false;
+          }
+          if (this.settings.activeBasePath !== file.path) {
+            this.settings.activeBasePath = file.path;
+            await this.saveSettings();
+            this.refreshViews();
+          }
+        }
+        await this.activateView(viewType);
+        return true;
+      },
+      isPremiumActive: () => this.settings.isPro
+    };
   }
   premiumCommand(checking, viewType) {
     if (!this.settings.isPro) return false;
@@ -3772,8 +3825,13 @@ var BasesPowerPackPlugin = class extends import_obsidian6.Plugin {
    * Re-verify the license key (offline) and cache the result. Returns whether
    * the Pro status or email actually changed, so callers can avoid needless
    * UI rebuilds.
+   *
+   * `persistUnchanged` is for the settings tab, where the key TEXT was just
+   * edited: it must be saved even when the premium status didn't flip, or an
+   * invalid/typo'd key silently vanishes on the next restart. Startup calls
+   * leave it false so an unchanged verification never writes data.json.
    */
-  async refreshLicense() {
+  async refreshLicense(persistUnchanged = false) {
     var _a;
     const before = this.settings.isPro;
     const beforeEmail = this.settings.licenseEmail;
@@ -3786,10 +3844,8 @@ var BasesPowerPackPlugin = class extends import_obsidian6.Plugin {
       this.settings.licenseEmail = (_a = result.email) != null ? _a : "";
     }
     const changed = before !== this.settings.isPro || beforeEmail !== this.settings.licenseEmail;
-    if (changed) {
-      await this.saveSettings();
-      this.refreshViews();
-    }
+    if (changed || persistUnchanged) await this.saveSettings();
+    if (changed) this.refreshViews();
     return changed;
   }
   async loadSettings() {
@@ -3803,7 +3859,8 @@ var BasesPowerPackPlugin = class extends import_obsidian6.Plugin {
     if (typeof this.settings.cardFormula !== "string") this.settings.cardFormula = "";
   }
   async saveSettings() {
-    await this.saveData(this.settings);
+    this.savePromise = this.savePromise.then(() => this.saveData(this.settings));
+    return this.savePromise;
   }
 };
 function sanitizeSavedFilters(value) {
