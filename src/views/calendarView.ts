@@ -64,7 +64,7 @@ export class CalendarView extends ItemView {
 
 		const toolbar = container.createDiv({ cls: "bpp-toolbar" });
 		toolbar.createEl("h3", { text: "Calendar" });
-		toolbar.createEl("span", { cls: "bpp-badge bpp-badge-premium", text: "Premium" });
+		toolbar.createSpan({ cls: "bpp-badge bpp-badge-premium", text: "Premium" });
 
 		const nav = toolbar.createDiv({ cls: "bpp-cal-nav" });
 		const prev = nav.createEl("button", { text: "‹" });
@@ -91,7 +91,7 @@ export class CalendarView extends ItemView {
 		const box = container.createDiv({ cls: "bpp-upgrade" });
 		box.createEl("h3", { text: "📅 Calendar is a Premium view" });
 		box.createEl("p", {
-			text: "Unlock the calendar, Gantt timeline, roll-ups & formulas, and saved filters with a Bases Power Pack license.",
+			text: "Unlock the Calendar, Gantt timeline, roll-ups & formulas, and saved filters with a Bases Power Pack license.",
 		});
 		const btn = box.createEl("button", { text: "Enter license key in settings", cls: "mod-cta" });
 		btn.onclick = () => {

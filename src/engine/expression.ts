@@ -294,9 +294,15 @@ export function toBool(v: unknown): boolean {
 
 export function toStr(v: unknown): string {
 	if (v === null || v === undefined) return "";
+	if (typeof v === "string") return v;
+	if (typeof v === "number" || typeof v === "boolean" || typeof v === "bigint") return String(v);
 	if (v instanceof Date) return v.toISOString();
 	if (Array.isArray(v)) return v.map(toStr).join(", ");
-	return String(v);
+	try {
+		return JSON.stringify(v) ?? "";
+	} catch {
+		return "";
+	}
 }
 
 function isEmpty(v: unknown): boolean {

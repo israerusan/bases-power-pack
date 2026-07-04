@@ -63,7 +63,7 @@ export class GanttView extends ItemView {
 
 		const toolbar = container.createDiv({ cls: "bpp-toolbar" });
 		toolbar.createEl("h3", { text: "Gantt" });
-		toolbar.createEl("span", { cls: "bpp-badge bpp-badge-premium", text: "Premium" });
+		toolbar.createSpan({ cls: "bpp-badge bpp-badge-premium", text: "Premium" });
 		toolbar.createSpan({ cls: "bpp-muted", text: `${startProp} → ${endProp}` });
 
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
@@ -144,7 +144,7 @@ export class GanttView extends ItemView {
 		const box = container.createDiv({ cls: "bpp-upgrade" });
 		box.createEl("h3", { text: "📊 Gantt is a Premium view" });
 		box.createEl("p", {
-			text: "Unlock the Gantt timeline, calendar, roll-ups & formulas, and saved filters with a Bases Power Pack license.",
+			text: "Unlock the Gantt timeline, Calendar, roll-ups & formulas, and saved filters with a Bases Power Pack license.",
 		});
 		const btn = box.createEl("button", { text: "Enter license key in settings", cls: "mod-cta" });
 		btn.onclick = () => {

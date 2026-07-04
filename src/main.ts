@@ -103,13 +103,13 @@ export default class BasesPowerPackPlugin extends Plugin {
 					return false;
 				}
 				if (PREMIUM_VIEW_TYPES.includes(viewType) && !this.settings.isPro) {
-					new Notice("Bases Power Pack: this view requires a premium license.");
+					new Notice("Bases Power Pack: this view requires a Premium license.");
 					return false;
 				}
 				if (basePath) {
 					// Reading a .base as the data source is a premium feature.
 					if (!this.settings.isPro) {
-						new Notice("Bases Power Pack: opening a base as the data source requires premium.");
+						new Notice("Bases Power Pack: opening a base as the data source requires Premium.");
 						return false;
 					}
 					const file = this.app.vault.getAbstractFileByPath(normalizePath(basePath));

@@ -1,6 +1,6 @@
 {
 	"name": "bases-power-pack",
-	"version": "1.2.1",
+	"version": "1.2.2",
 	"description": "Advanced database views and automation on top of Bases — kanban, calendar, Gantt, roll-ups, formulas, and saved filters.",
 	"main": "main.js",
 	"type": "module",
@@ -8,6 +8,7 @@
 		"dev": "node esbuild.config.mjs",
 		"build": "node esbuild.config.mjs production",
 		"typecheck": "tsc -noEmit -skipLibCheck",
+		"lint": "eslint \"src/**/*.ts\"",
 		"test": "node scripts/sync-shared.mjs --check && node tests/engine.test.mjs && node tests/verify-license.test.mjs && node tests/license.test.mjs",
 		"license:generate": "node scripts/generate-license.mjs",
 		"version": "node version-bump.mjs && git add manifest.json versions.json",
@@ -25,7 +26,10 @@
 	"license": "MIT",
 	"devDependencies": {
 		"@types/node": "^24.0.0",
+		"@typescript-eslint/parser": "^8.62.1",
 		"esbuild": "^0.28.1",
+		"eslint": "^9.39.4",
+		"eslint-plugin-obsidianmd": "^0.4.1",
 		"obsidian": "1.7.2",
 		"typescript": "^5.8.3"
 	},
