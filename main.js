@@ -2497,10 +2497,17 @@ function toBool(v) {
   return true;
 }
 function toStr(v) {
+  var _a;
   if (v === null || v === void 0) return "";
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean" || typeof v === "bigint") return String(v);
   if (v instanceof Date) return v.toISOString();
   if (Array.isArray(v)) return v.map(toStr).join(", ");
-  return String(v);
+  try {
+    return (_a = JSON.stringify(v)) != null ? _a : "";
+  } catch (e) {
+    return "";
+  }
 }
 function isEmpty(v) {
   if (v === null || v === void 0) return true;
@@ -2996,7 +3003,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian2.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     new import_obsidian2.Setting(containerEl).setName("License").setHeading();
-    new import_obsidian2.Setting(containerEl).setName("License key").setDesc("Enter your premium license key. Verified offline \u2014 no account or server required.").addText(
+    new import_obsidian2.Setting(containerEl).setName("License key").setDesc("Enter your Premium license key. Verified offline \u2014 no account or server required.").addText(
       (text) => text.setPlaceholder("payload.signature").setValue(this.plugin.settings.licenseKey).onChange((value) => {
         this.plugin.settings.licenseKey = value;
         void this.plugin.refreshLicense(true).then((changed) => {
@@ -3011,22 +3018,22 @@ var BasesPowerPackSettingTab = class extends import_obsidian2.PluginSettingTab {
       });
     } else {
       status.createEl("p", {
-        text: "\u{1F513} Lite tier active. Upgrade to unlock the calendar, Gantt, roll-ups, formulas, and saved filters."
+        text: "\u{1F513} Lite tier active. Upgrade to unlock the Calendar, Gantt, roll-ups, formulas, and saved filters."
       });
       const link = status.createEl("a", {
-        text: "Get Bases Power Pack premium",
+        text: "Get Bases Power Pack Premium",
         href: this.plugin.settings.purchaseUrl
       });
       link.setAttr("target", "_blank");
     }
-    new import_obsidian2.Setting(containerEl).setName("Purchase page URL").setDesc("Link shown for premium upgrades.").addText(
+    new import_obsidian2.Setting(containerEl).setName("Purchase page URL").setDesc("Link shown for Premium upgrades.").addText(
       (text) => text.setPlaceholder("https://your-store.com/product").setValue(this.plugin.settings.purchaseUrl).onChange((value) => {
         this.plugin.settings.purchaseUrl = value.trim() || DEFAULT_SETTINGS.purchaseUrl;
         void this.plugin.saveSettings();
       })
     );
     new import_obsidian2.Setting(containerEl).setName("Kanban view (Lite)").setHeading();
-    new import_obsidian2.Setting(containerEl).setName("Group by property").setDesc("Frontmatter property (or, with premium, a formula) used to build kanban columns.").addText(
+    new import_obsidian2.Setting(containerEl).setName("Group by property").setDesc("Frontmatter property (or, with Premium, a formula) used to build Kanban columns.").addText(
       (text) => text.setValue(this.plugin.settings.kanbanGroupBy).onChange((value) => {
         this.plugin.settings.kanbanGroupBy = value.trim() || "status";
         void this.plugin.saveSettings();
@@ -3256,7 +3263,7 @@ function renderContextControls(container, plugin, resolved, onChange) {
   if (!plugin.settings.isPro) return;
   const filters = plugin.settings.savedFilters;
   if (filters.length === 0) return;
-  const label = bar.createSpan({ cls: "bpp-muted bpp-context-filter-label", text: "Filter:" });
+  bar.createSpan({ cls: "bpp-muted bpp-context-filter-label", text: "Filter:" });
   const select = bar.createEl("select", { cls: "bpp-filter-select" });
   select.createEl("option", { text: "None", value: "" });
   for (const f of filters) {
@@ -3312,8 +3319,8 @@ var KanbanView = class extends import_obsidian3.ItemView {
     container.addClass("bpp-view");
     const header = container.createDiv({ cls: "bpp-toolbar" });
     header.createEl("h3", { text: "Kanban" });
-    header.createEl("span", { cls: "bpp-badge bpp-badge-lite", text: "Lite" });
-    header.createEl("span", { cls: "bpp-muted", text: `grouped by "${groupBy}"` });
+    header.createSpan({ cls: "bpp-badge bpp-badge-lite", text: "Lite" });
+    header.createSpan({ cls: "bpp-muted", text: `grouped by "${groupBy}"` });
     renderContextControls(container, this.plugin, resolved, () => void this.render());
     renderRollupBar(container, this.plugin, resolved.rows);
     const columns = this.collectColumns(resolved.rows, groupBy);
@@ -3350,7 +3357,7 @@ var KanbanView = class extends import_obsidian3.ItemView {
     for (const row of rows) {
       const value = row.scope.get(groupBy);
       if (value === void 0 || value === null || value === "") continue;
-      const colName = String(value);
+      const colName = toStr(value);
       if (!columns.has(colName)) columns.set(colName, []);
       columns.get(colName).push(row);
     }
@@ -3405,7 +3412,7 @@ var CalendarView = class extends import_obsidian4.ItemView {
     const dateProp = this.plugin.settings.calendarDateProp || "due";
     const toolbar = container.createDiv({ cls: "bpp-toolbar" });
     toolbar.createEl("h3", { text: "Calendar" });
-    toolbar.createEl("span", { cls: "bpp-badge bpp-badge-premium", text: "Premium" });
+    toolbar.createSpan({ cls: "bpp-badge bpp-badge-premium", text: "Premium" });
     const nav = toolbar.createDiv({ cls: "bpp-cal-nav" });
     const prev = nav.createEl("button", { text: "\u2039" });
     const label = nav.createSpan({ cls: "bpp-cal-label" });
@@ -3427,7 +3434,7 @@ var CalendarView = class extends import_obsidian4.ItemView {
     const box = container.createDiv({ cls: "bpp-upgrade" });
     box.createEl("h3", { text: "\u{1F4C5} Calendar is a Premium view" });
     box.createEl("p", {
-      text: "Unlock the calendar, Gantt timeline, roll-ups & formulas, and saved filters with a Bases Power Pack license."
+      text: "Unlock the Calendar, Gantt timeline, roll-ups & formulas, and saved filters with a Bases Power Pack license."
     });
     const btn = box.createEl("button", { text: "Enter license key in settings", cls: "mod-cta" });
     btn.onclick = () => {
@@ -3614,7 +3621,7 @@ var GanttView = class extends import_obsidian5.ItemView {
     const endProp = this.plugin.settings.ganttEndProp || "end";
     const toolbar = container.createDiv({ cls: "bpp-toolbar" });
     toolbar.createEl("h3", { text: "Gantt" });
-    toolbar.createEl("span", { cls: "bpp-badge bpp-badge-premium", text: "Premium" });
+    toolbar.createSpan({ cls: "bpp-badge bpp-badge-premium", text: "Premium" });
     toolbar.createSpan({ cls: "bpp-muted", text: `${startProp} \u2192 ${endProp}` });
     renderContextControls(container, this.plugin, resolved, () => void this.render());
     renderRollupBar(container, this.plugin, resolved.rows);
@@ -3682,7 +3689,7 @@ var GanttView = class extends import_obsidian5.ItemView {
     const box = container.createDiv({ cls: "bpp-upgrade" });
     box.createEl("h3", { text: "\u{1F4CA} Gantt is a Premium view" });
     box.createEl("p", {
-      text: "Unlock the Gantt timeline, calendar, roll-ups & formulas, and saved filters with a Bases Power Pack license."
+      text: "Unlock the Gantt timeline, Calendar, roll-ups & formulas, and saved filters with a Bases Power Pack license."
     });
     const btn = box.createEl("button", { text: "Enter license key in settings", cls: "mod-cta" });
     btn.onclick = () => {
@@ -3771,12 +3778,12 @@ var BasesPowerPackPlugin = class extends import_obsidian6.Plugin {
           return false;
         }
         if (PREMIUM_VIEW_TYPES.includes(viewType) && !this.settings.isPro) {
-          new import_obsidian6.Notice("Bases Power Pack: this view requires a premium license.");
+          new import_obsidian6.Notice("Bases Power Pack: this view requires a Premium license.");
           return false;
         }
         if (basePath) {
           if (!this.settings.isPro) {
-            new import_obsidian6.Notice("Bases Power Pack: opening a base as the data source requires premium.");
+            new import_obsidian6.Notice("Bases Power Pack: opening a base as the data source requires Premium.");
             return false;
           }
           const file = this.app.vault.getAbstractFileByPath((0, import_obsidian6.normalizePath)(basePath));

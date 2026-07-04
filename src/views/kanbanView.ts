@@ -53,8 +53,8 @@ export class KanbanView extends ItemView {
 
 		const header = container.createDiv({ cls: "bpp-toolbar" });
 		header.createEl("h3", { text: "Kanban" });
-		header.createEl("span", { cls: "bpp-badge bpp-badge-lite", text: "Lite" });
-		header.createEl("span", { cls: "bpp-muted", text: `grouped by "${groupBy}"` });
+		header.createSpan({ cls: "bpp-badge bpp-badge-lite", text: "Lite" });
+		header.createSpan({ cls: "bpp-muted", text: `grouped by "${groupBy}"` });
 
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
 		renderRollupBar(container, this.plugin, resolved.rows);
@@ -98,7 +98,7 @@ export class KanbanView extends ItemView {
 		for (const row of rows) {
 			const value = row.scope.get(groupBy);
 			if (value === undefined || value === null || value === "") continue;
-			const colName = String(value);
+			const colName = toStr(value);
 			if (!columns.has(colName)) columns.set(colName, []);
 			columns.get(colName)!.push(row);
 		}

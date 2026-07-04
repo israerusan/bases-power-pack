@@ -77,7 +77,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("License key")
-			.setDesc("Enter your premium license key. Verified offline — no account or server required.")
+			.setDesc("Enter your Premium license key. Verified offline — no account or server required.")
 			.addText((text) =>
 				text
 					.setPlaceholder("payload.signature")
@@ -102,10 +102,10 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			});
 		} else {
 			status.createEl("p", {
-				text: "🔓 Lite tier active. Upgrade to unlock the calendar, Gantt, roll-ups, formulas, and saved filters.",
+				text: "🔓 Lite tier active. Upgrade to unlock the Calendar, Gantt, roll-ups, formulas, and saved filters.",
 			});
 			const link = status.createEl("a", {
-				text: "Get Bases Power Pack premium",
+				text: "Get Bases Power Pack Premium",
 				href: this.plugin.settings.purchaseUrl,
 			});
 			link.setAttr("target", "_blank");
@@ -113,7 +113,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Purchase page URL")
-			.setDesc("Link shown for premium upgrades.")
+			.setDesc("Link shown for Premium upgrades.")
 			.addText((text) =>
 				text
 					.setPlaceholder("https://your-store.com/product")
@@ -129,7 +129,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Group by property")
-			.setDesc("Frontmatter property (or, with premium, a formula) used to build kanban columns.")
+			.setDesc("Frontmatter property (or, with Premium, a formula) used to build Kanban columns.")
 			.addText((text) =>
 				text.setValue(this.plugin.settings.kanbanGroupBy).onChange((value) => {
 					this.plugin.settings.kanbanGroupBy = value.trim() || "status";
