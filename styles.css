@@ -102,6 +102,10 @@
   margin-bottom: 10px;
 }
 
+.bpp-context-filter-label {
+  margin-left: auto;
+}
+
 .bpp-filter-select {
   font-size: 0.85em;
 }
@@ -180,6 +184,10 @@
   height: 22px;
   background: var(--background-secondary);
   border-radius: 4px;
+}
+
+.bpp-gantt-axis-end {
+  float: right;
 }
 
 .bpp-gantt-bar {

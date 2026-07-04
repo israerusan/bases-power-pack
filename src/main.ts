@@ -145,7 +145,7 @@ export default class BasesPowerPackPlugin extends Plugin {
 			leaf = workspace.getLeaf("tab");
 			await leaf.setViewState({ type: viewType, active: true });
 		}
-		workspace.revealLeaf(leaf);
+		await workspace.revealLeaf(leaf);
 	}
 
 	/**

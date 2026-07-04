@@ -1,7 +1,7 @@
 {
 	"name": "bases-power-pack",
 	"version": "1.2.0",
-	"description": "Advanced database views and automation on top of Obsidian Bases — kanban, calendar, Gantt, roll-ups, formulas, and saved filters.",
+	"description": "Advanced database views and automation on top of Bases — kanban, calendar, Gantt, roll-ups, formulas, and saved filters.",
 	"main": "main.js",
 	"type": "module",
 	"scripts": {

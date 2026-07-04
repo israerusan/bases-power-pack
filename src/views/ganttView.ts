@@ -97,8 +97,10 @@ export class GanttView extends ItemView {
 		axis.createDiv({ cls: "bpp-gantt-name bpp-gantt-axis-label", text: "Task" });
 		const axisTrack = axis.createDiv({ cls: "bpp-gantt-track" });
 		axisTrack.createSpan({ cls: "bpp-muted", text: model.days[0] });
-		const endLabel = axisTrack.createSpan({ cls: "bpp-muted", text: model.days[model.days.length - 1] });
-		endLabel.style.float = "right";
+		axisTrack.createSpan({
+			cls: "bpp-muted bpp-gantt-axis-end",
+			text: model.days[model.days.length - 1],
+		});
 
 		const total = model.days.length;
 		const todayDay = toDayNumber(new Date().toISOString().slice(0, 10));
@@ -107,7 +109,7 @@ export class GanttView extends ItemView {
 			const offset = todayDay - firstDay;
 			if (offset >= 0 && offset < total) {
 				const marker = axisTrack.createDiv({ cls: "bpp-gantt-today" });
-				marker.style.left = `${(offset / total) * 100}%`;
+				marker.setCssProps({ left: `${(offset / total) * 100}%` });
 			}
 		}
 
@@ -130,8 +132,10 @@ export class GanttView extends ItemView {
 
 		const track = rowEl.createDiv({ cls: "bpp-gantt-track" });
 		const barEl = track.createDiv({ cls: "bpp-gantt-bar" });
-		barEl.style.left = `${(bar.startIndex / total) * 100}%`;
-		barEl.style.width = `${Math.max(1 / total, bar.span / total) * 100}%`;
+		barEl.setCssProps({
+			left: `${(bar.startIndex / total) * 100}%`,
+			width: `${Math.max(1 / total, bar.span / total) * 100}%`,
+		});
 		barEl.setAttr("title", `${bar.name}: ${bar.startDate} → ${bar.endDate}`);
 		if (row) barEl.addEventListener("click", () => this.openRow(row));
 	}

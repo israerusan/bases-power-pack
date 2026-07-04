@@ -55,7 +55,7 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 };
 
 export function genId(prefix: string): string {
-	const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+	const c = window.crypto;
 	if (c?.randomUUID) return `${prefix}-${c.randomUUID()}`;
 	return `${prefix}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
 }
@@ -155,7 +155,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 		premium(
 			"Active base",
 			"Read a .base file's filters and formulas as the data source for all views. Choose “All notes” to run over the whole vault.",
-			(setting) =>
+			(setting) => {
 				setting.addDropdown((dd) => {
 					dd.addOption("", "All notes");
 					for (const file of listBaseFiles(this.app)) {
@@ -166,43 +166,45 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 						this.plugin.settings.activeBasePath = value;
 						void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
 					});
-				})
+				});
+			}
 		);
 
 		premium(
 			"Calendar date property",
 			"Frontmatter date property used to place notes on the calendar.",
-			(setting) =>
+			(setting) => {
 				setting.addText((text) =>
 					text.setValue(this.plugin.settings.calendarDateProp).onChange((value) => {
 						this.plugin.settings.calendarDateProp = value.trim() || "due";
 						void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
 					})
-				)
+				);
+			}
 		);
 
-		premium("Gantt start property", "Frontmatter date property for the start of each Gantt bar.", (setting) =>
+		premium("Gantt start property", "Frontmatter date property for the start of each Gantt bar.", (setting) => {
 			setting.addText((text) =>
 				text.setValue(this.plugin.settings.ganttStartProp).onChange((value) => {
 					this.plugin.settings.ganttStartProp = value.trim() || "start";
 					void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
 				})
-			)
-		);
+			);
+		});
 
-		premium("Gantt end property", "Frontmatter date property for the end of each Gantt bar (optional).", (setting) =>
+		premium("Gantt end property", "Frontmatter date property for the end of each Gantt bar (optional).", (setting) => {
 			setting.addText((text) =>
 				text.setValue(this.plugin.settings.ganttEndProp).onChange((value) => {
 					this.plugin.settings.ganttEndProp = value.trim() || "end";
 					void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
 				})
-			)
-		);
+			);
+		});
 
 		premium(
 			"Kanban card formula",
 			"An expression shown under each kanban card, e.g. round(done / total * 100, 0) + \"%\".",
-			(setting) =>
+			(setting) => {
 				setting.addText((text) =>
 					text
 						.setPlaceholder('round(done / total * 100, 0) + "%"')
@@ -211,7 +213,8 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 							this.plugin.settings.cardFormula = value;
 							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
 						})
-				)
+				);
+			}
 		);
 
 		if (this.plugin.settings.isPro) {

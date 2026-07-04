@@ -22,8 +22,7 @@ export function renderContextControls(
 	const filters = plugin.settings.savedFilters;
 	if (filters.length === 0) return;
 
-	const label = bar.createSpan({ cls: "bpp-muted", text: "Filter:" });
-	label.style.marginLeft = "auto";
+	const label = bar.createSpan({ cls: "bpp-muted bpp-context-filter-label", text: "Filter:" });
 	const select = bar.createEl("select", { cls: "bpp-filter-select" });
 	select.createEl("option", { text: "None", value: "" });
 	for (const f of filters) {

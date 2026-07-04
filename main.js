@@ -2983,7 +2983,7 @@ var DEFAULT_SETTINGS = {
   cardFormula: ""
 };
 function genId(prefix) {
-  const c = globalThis.crypto;
+  const c = window.crypto;
   if (c == null ? void 0 : c.randomUUID) return `${prefix}-${c.randomUUID()}`;
   return `${prefix}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
 }
@@ -3046,57 +3046,59 @@ var BasesPowerPackSettingTab = class extends import_obsidian2.PluginSettingTab {
     premium(
       "Active base",
       "Read a .base file's filters and formulas as the data source for all views. Choose \u201CAll notes\u201D to run over the whole vault.",
-      (setting) => setting.addDropdown((dd) => {
-        dd.addOption("", "All notes");
-        for (const file of listBaseFiles(this.app)) {
-          dd.addOption(file.path, file.path.replace(/\.base$/, ""));
-        }
-        dd.setValue(this.plugin.settings.activeBasePath);
-        dd.onChange((value) => {
-          this.plugin.settings.activeBasePath = value;
-          void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+      (setting) => {
+        setting.addDropdown((dd) => {
+          dd.addOption("", "All notes");
+          for (const file of listBaseFiles(this.app)) {
+            dd.addOption(file.path, file.path.replace(/\.base$/, ""));
+          }
+          dd.setValue(this.plugin.settings.activeBasePath);
+          dd.onChange((value) => {
+            this.plugin.settings.activeBasePath = value;
+            void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+          });
         });
-      })
+      }
     );
     premium(
       "Calendar date property",
       "Frontmatter date property used to place notes on the calendar.",
-      (setting) => setting.addText(
-        (text) => text.setValue(this.plugin.settings.calendarDateProp).onChange((value) => {
-          this.plugin.settings.calendarDateProp = value.trim() || "due";
-          void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-        })
-      )
+      (setting) => {
+        setting.addText(
+          (text) => text.setValue(this.plugin.settings.calendarDateProp).onChange((value) => {
+            this.plugin.settings.calendarDateProp = value.trim() || "due";
+            void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+          })
+        );
+      }
     );
-    premium(
-      "Gantt start property",
-      "Frontmatter date property for the start of each Gantt bar.",
-      (setting) => setting.addText(
+    premium("Gantt start property", "Frontmatter date property for the start of each Gantt bar.", (setting) => {
+      setting.addText(
         (text) => text.setValue(this.plugin.settings.ganttStartProp).onChange((value) => {
           this.plugin.settings.ganttStartProp = value.trim() || "start";
           void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
         })
-      )
-    );
-    premium(
-      "Gantt end property",
-      "Frontmatter date property for the end of each Gantt bar (optional).",
-      (setting) => setting.addText(
+      );
+    });
+    premium("Gantt end property", "Frontmatter date property for the end of each Gantt bar (optional).", (setting) => {
+      setting.addText(
         (text) => text.setValue(this.plugin.settings.ganttEndProp).onChange((value) => {
           this.plugin.settings.ganttEndProp = value.trim() || "end";
           void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
         })
-      )
-    );
+      );
+    });
     premium(
       "Kanban card formula",
       'An expression shown under each kanban card, e.g. round(done / total * 100, 0) + "%".',
-      (setting) => setting.addText(
-        (text) => text.setPlaceholder('round(done / total * 100, 0) + "%"').setValue(this.plugin.settings.cardFormula).onChange((value) => {
-          this.plugin.settings.cardFormula = value;
-          void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-        })
-      )
+      (setting) => {
+        setting.addText(
+          (text) => text.setPlaceholder('round(done / total * 100, 0) + "%"').setValue(this.plugin.settings.cardFormula).onChange((value) => {
+            this.plugin.settings.cardFormula = value;
+            void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+          })
+        );
+      }
     );
     if (this.plugin.settings.isPro) {
       this.renderRollups(containerEl);
@@ -3254,8 +3256,7 @@ function renderContextControls(container, plugin, resolved, onChange) {
   if (!plugin.settings.isPro) return;
   const filters = plugin.settings.savedFilters;
   if (filters.length === 0) return;
-  const label = bar.createSpan({ cls: "bpp-muted", text: "Filter:" });
-  label.style.marginLeft = "auto";
+  const label = bar.createSpan({ cls: "bpp-muted bpp-context-filter-label", text: "Filter:" });
   const select = bar.createEl("select", { cls: "bpp-filter-select" });
   select.createEl("option", { text: "None", value: "" });
   for (const f of filters) {
@@ -3640,8 +3641,10 @@ var GanttView = class extends import_obsidian5.ItemView {
     axis.createDiv({ cls: "bpp-gantt-name bpp-gantt-axis-label", text: "Task" });
     const axisTrack = axis.createDiv({ cls: "bpp-gantt-track" });
     axisTrack.createSpan({ cls: "bpp-muted", text: model.days[0] });
-    const endLabel = axisTrack.createSpan({ cls: "bpp-muted", text: model.days[model.days.length - 1] });
-    endLabel.style.float = "right";
+    axisTrack.createSpan({
+      cls: "bpp-muted bpp-gantt-axis-end",
+      text: model.days[model.days.length - 1]
+    });
     const total = model.days.length;
     const todayDay = toDayNumber((/* @__PURE__ */ new Date()).toISOString().slice(0, 10));
     const firstDay = toDayNumber(model.days[0]);
@@ -3649,7 +3652,7 @@ var GanttView = class extends import_obsidian5.ItemView {
       const offset = todayDay - firstDay;
       if (offset >= 0 && offset < total) {
         const marker = axisTrack.createDiv({ cls: "bpp-gantt-today" });
-        marker.style.left = `${offset / total * 100}%`;
+        marker.setCssProps({ left: `${offset / total * 100}%` });
       }
     }
     for (const bar of model.bars) {
@@ -3668,8 +3671,10 @@ var GanttView = class extends import_obsidian5.ItemView {
     if (row) name.addEventListener("click", () => this.openRow(row));
     const track = rowEl.createDiv({ cls: "bpp-gantt-track" });
     const barEl = track.createDiv({ cls: "bpp-gantt-bar" });
-    barEl.style.left = `${bar.startIndex / total * 100}%`;
-    barEl.style.width = `${Math.max(1 / total, bar.span / total) * 100}%`;
+    barEl.setCssProps({
+      left: `${bar.startIndex / total * 100}%`,
+      width: `${Math.max(1 / total, bar.span / total) * 100}%`
+    });
     barEl.setAttr("title", `${bar.name}: ${bar.startDate} \u2192 ${bar.endDate}`);
     if (row) barEl.addEventListener("click", () => this.openRow(row));
   }
@@ -3805,7 +3810,7 @@ var BasesPowerPackPlugin = class extends import_obsidian6.Plugin {
       leaf = workspace.getLeaf("tab");
       await leaf.setViewState({ type: viewType, active: true });
     }
-    workspace.revealLeaf(leaf);
+    await workspace.revealLeaf(leaf);
   }
   /**
    * Re-render every open Power Pack view. Called after settings or license
