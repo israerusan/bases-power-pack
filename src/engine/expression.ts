@@ -294,9 +294,13 @@ export function toBool(v: unknown): boolean {
 
 export function toStr(v: unknown): string {
 	if (v === null || v === undefined) return "";
+	if (typeof v === "string") return v;
+	if (typeof v === "number" || typeof v === "boolean") return String(v);
 	if (v instanceof Date) return v.toISOString();
 	if (Array.isArray(v)) return v.map(toStr).join(", ");
-	return String(v);
+	// A bare object never occurs for a real Value (Date/array are handled above),
+	// but v is typed `unknown`; serialize instead of stringifying to "[object Object]".
+	return JSON.stringify(v);
 }
 
 function isEmpty(v: unknown): boolean {

@@ -98,7 +98,9 @@ export class KanbanView extends ItemView {
 		for (const row of rows) {
 			const value = row.scope.get(groupBy);
 			if (value === undefined || value === null || value === "") continue;
-			const colName = String(value);
+			// toStr is the engine's canonical value->string (handles Date/array); a bare
+			// String() here trips no-base-to-string on the unknown scope value.
+			const colName = toStr(value);
 			if (!columns.has(colName)) columns.set(colName, []);
 			columns.get(colName)!.push(row);
 		}
