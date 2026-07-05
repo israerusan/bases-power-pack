@@ -11,3 +11,6 @@ data.json
 scripts/.license-private.key
 TEST_LICENSE.txt
 *.log
+
+# Build output (produced by release CI / local build)
+dist/
