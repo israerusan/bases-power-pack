@@ -20,6 +20,9 @@ export interface BasesPowerPackSettings {
 	kanbanGroupBy: string;
 	kanbanCardFields: string[];
 	kanbanQuickAddFolder: string;
+	/** User-added empty columns, keyed by the group-by property they belong to. */
+	kanbanExtraColumns: Record<string, string[]>;
+	kanbanColorColumns: boolean;
 
 	/** Calendar (premium) */
 	calendarDateProp: string;
@@ -48,6 +51,8 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	kanbanGroupBy: "status",
 	kanbanCardFields: ["due", "priority"],
 	kanbanQuickAddFolder: "",
+	kanbanExtraColumns: {},
+	kanbanColorColumns: true,
 	calendarDateProp: "due",
 	ganttStartProp: "start",
 	ganttEndProp: "end",
@@ -161,6 +166,16 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 				text.setValue(this.plugin.settings.kanbanQuickAddFolder).onChange((value) => {
 					this.plugin.settings.kanbanQuickAddFolder = value.trim();
 					void this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName("Color columns")
+			.setDesc("Tint each column and its cards with a stable color derived from the column value. Add new columns directly from the board with the “+ Add column” tile.")
+			.addToggle((toggle) =>
+				toggle.setValue(this.plugin.settings.kanbanColorColumns).onChange((value) => {
+					this.plugin.settings.kanbanColorColumns = value;
+					void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
 				})
 			);
 

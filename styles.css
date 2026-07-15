@@ -104,6 +104,12 @@
   gap: 8px;
 }
 
+.bpp-column-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .bpp-column-add {
   width: 28px;
   height: 28px;
@@ -119,11 +125,67 @@
   color: var(--interactive-accent);
 }
 
+.bpp-column-remove {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 1.1em;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.bpp-column-remove:hover {
+  color: var(--text-error);
+}
+
 .bpp-count {
   background: var(--background-modifier-border);
   border-radius: 10px;
   padding: 0 8px;
   font-size: 0.8em;
+}
+
+/* Column coloring (Lite) — a stable hue per column value, cards inherit it. */
+.bpp-kanban-board.is-colored .bpp-kanban-column {
+  border-top: 3px solid hsl(var(--bpp-col-hue, 210) 55% 55%);
+}
+
+.bpp-kanban-board.is-colored .bpp-kanban-column .bpp-count {
+  background: hsl(var(--bpp-col-hue, 210) 55% 55% / 0.22);
+}
+
+.bpp-kanban-board.is-colored .bpp-card {
+  border-left: 3px solid hsl(var(--bpp-col-hue, 210) 55% 60%);
+}
+
+/* Add-column tile */
+.bpp-kanban-add-column {
+  background: transparent;
+  border: 1px dashed var(--background-modifier-border);
+  min-width: 200px;
+}
+
+.bpp-add-column-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bpp-add-column-btn {
+  cursor: pointer;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+}
+
+.bpp-add-column-btn:hover {
+  border-color: var(--interactive-accent);
+  color: var(--interactive-accent);
 }
 
 .bpp-card {

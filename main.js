@@ -2977,6 +2977,8 @@ var DEFAULT_SETTINGS = {
   kanbanGroupBy: "status",
   kanbanCardFields: ["due", "priority"],
   kanbanQuickAddFolder: "",
+  kanbanExtraColumns: {},
+  kanbanColorColumns: true,
   calendarDateProp: "due",
   ganttStartProp: "start",
   ganttEndProp: "end",
@@ -3046,6 +3048,12 @@ var BasesPowerPackSettingTab = class extends import_obsidian2.PluginSettingTab {
       (text) => text.setValue(this.plugin.settings.kanbanQuickAddFolder).onChange((value) => {
         this.plugin.settings.kanbanQuickAddFolder = value.trim();
         void this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian2.Setting(containerEl).setName("Color columns").setDesc("Tint each column and its cards with a stable color derived from the column value. Add new columns directly from the board with the \u201C+ Add column\u201D tile.").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.kanbanColorColumns).onChange((value) => {
+        this.plugin.settings.kanbanColorColumns = value;
+        void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
       })
     );
     new import_obsidian2.Setting(containerEl).setName("Premium").setHeading();
@@ -3264,7 +3272,7 @@ var import_obsidian3 = require("obsidian");
 
 // src/query/kanban.ts
 function buildKanbanColumns(rows, options) {
-  var _a;
+  var _a, _b;
   const groupBy = options.groupBy || "status";
   const search = normalize(options.search);
   const hidden = normalize(options.hideColumn);
@@ -3277,6 +3285,14 @@ function buildKanbanColumns(rows, options) {
     if (!columns.has(columnName)) columns.set(columnName, []);
     (_a = columns.get(columnName)) == null ? void 0 : _a.push(row);
   }
+  if (!search) {
+    for (const name of (_b = options.extraColumns) != null ? _b : []) {
+      const clean = name.trim();
+      if (!clean || columns.has(clean)) continue;
+      if (hidden && normalize(clean) === hidden) continue;
+      columns.set(clean, []);
+    }
+  }
   return Array.from(columns.entries()).map(([name, items]) => {
     var _a2;
     return {
@@ -3284,6 +3300,13 @@ function buildKanbanColumns(rows, options) {
       rows: sortRows(items, (_a2 = options.sortBy) != null ? _a2 : "manual")
     };
   });
+}
+function columnHue(name) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = hash * 31 + name.charCodeAt(i) >>> 0;
+  }
+  return hash % 360;
 }
 function getCardMeta(row, fields) {
   const lines = [];
@@ -3474,6 +3497,7 @@ var KanbanView = class extends import_obsidian3.ItemView {
     this.contentEl.empty();
   }
   async render() {
+    var _a;
     const token = ++this.renderToken;
     const resolved = await resolveViewRows(this.app, this.plugin);
     if (token !== this.renderToken) return;
@@ -3489,36 +3513,51 @@ var KanbanView = class extends import_obsidian3.ItemView {
     renderContextControls(container, this.plugin, resolved, () => void this.render());
     this.renderLiteControls(container);
     renderRollupBar(container, this.plugin, resolved.rows);
+    const extraColumns = (_a = this.plugin.settings.kanbanExtraColumns[groupBy]) != null ? _a : [];
     const columns = buildKanbanColumns(resolved.rows, {
       groupBy,
       search: this.search,
       hideColumn: this.hideDoneColumn ? "done" : "",
-      sortBy: this.sortBy
+      sortBy: this.sortBy,
+      extraColumns
     });
+    const colored = this.plugin.settings.kanbanColorColumns;
     const board = container.createDiv({ cls: "bpp-kanban-board" });
+    if (colored) board.addClass("is-colored");
     const rowById = new Map(resolved.rows.map((row) => [row.id, row]));
     if (columns.length === 0) {
       board.createDiv({
         cls: "bpp-empty",
-        text: this.search || this.hideDoneColumn ? "No cards match the current lite filters." : `No notes with a "${groupBy}" property found. Add "${groupBy}: To Do" to a note's frontmatter to populate the board.`
+        text: this.search || this.hideDoneColumn ? "No cards match the current lite filters." : `No notes with a "${groupBy}" property found. Add "${groupBy}: To Do" to a note's frontmatter, or add a column below.`
       });
+      if (!this.search) this.renderAddColumnTile(board, groupBy);
       return;
     }
     const cardFormula = this.plugin.settings.isPro ? this.plugin.settings.cardFormula.trim() : "";
     const metaFields = this.plugin.settings.kanbanCardFields;
     for (const column of columns) {
       const col = board.createDiv({ cls: "bpp-kanban-column" });
+      if (colored) col.style.setProperty("--bpp-col-hue", String(columnHue(column.name)));
       this.wireColumnDrop(col, column.name, groupBy, rowById);
       const colHead = col.createDiv({ cls: "bpp-kanban-column-head" });
       const colLabel = colHead.createDiv({ cls: "bpp-kanban-column-label" });
       colLabel.createSpan({ text: column.name });
       colLabel.createSpan({ cls: "bpp-count", text: String(column.rows.length) });
-      const addButton = colHead.createEl("button", {
+      const actions = colHead.createDiv({ cls: "bpp-column-actions" });
+      const addButton = actions.createEl("button", {
         cls: "bpp-column-add",
         text: "+",
         attr: { "aria-label": `Add note to ${column.name}` }
       });
       addButton.addEventListener("click", () => void this.quickAddNote(column.name, groupBy));
+      if (column.rows.length === 0 && extraColumns.includes(column.name)) {
+        const removeButton = actions.createEl("button", {
+          cls: "bpp-column-remove",
+          text: "\xD7",
+          attr: { "aria-label": `Remove column ${column.name}` }
+        });
+        removeButton.addEventListener("click", () => void this.removeExtraColumn(groupBy, column.name));
+      }
       for (const row of column.rows) {
         const card = col.createDiv({ cls: "bpp-card" });
         card.draggable = true;
@@ -3533,9 +3572,9 @@ var KanbanView = class extends import_obsidian3.ItemView {
           }
         }
         card.addEventListener("dragstart", (event) => {
-          var _a, _b;
+          var _a2, _b;
           card.addClass("is-dragging");
-          (_a = event.dataTransfer) == null ? void 0 : _a.setData("text/plain", row.id);
+          (_a2 = event.dataTransfer) == null ? void 0 : _a2.setData("text/plain", row.id);
           (_b = event.dataTransfer) == null ? void 0 : _b.setData("application/x-bpp-row", row.id);
           if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
         });
@@ -3543,6 +3582,49 @@ var KanbanView = class extends import_obsidian3.ItemView {
         card.addEventListener("click", () => this.openRow(row));
       }
     }
+    if (!this.search) this.renderAddColumnTile(board, groupBy);
+  }
+  renderAddColumnTile(board, groupBy) {
+    const tile = board.createDiv({ cls: "bpp-kanban-column bpp-kanban-add-column" });
+    const form = tile.createDiv({ cls: "bpp-add-column-form" });
+    const input = form.createEl("input", {
+      type: "text",
+      cls: "bpp-lite-input",
+      placeholder: "New column\u2026",
+      attr: { "aria-label": `Add a new "${groupBy}" column` }
+    });
+    const button = form.createEl("button", { cls: "bpp-add-column-btn", text: "+ Add column" });
+    const commit = () => {
+      const name = input.value.trim();
+      if (!name) return;
+      void this.addExtraColumn(groupBy, name);
+    };
+    button.addEventListener("click", commit);
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        commit();
+      }
+    });
+  }
+  async addExtraColumn(groupBy, name) {
+    var _a;
+    const map = this.plugin.settings.kanbanExtraColumns;
+    const existing = (_a = map[groupBy]) != null ? _a : [];
+    if (!existing.some((n) => n.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+      map[groupBy] = [...existing, name];
+      await this.plugin.saveSettings();
+    }
+    await this.render();
+  }
+  async removeExtraColumn(groupBy, name) {
+    var _a;
+    const map = this.plugin.settings.kanbanExtraColumns;
+    const next = ((_a = map[groupBy]) != null ? _a : []).filter((n) => n !== name);
+    if (next.length > 0) map[groupBy] = next;
+    else delete map[groupBy];
+    await this.plugin.saveSettings();
+    await this.render();
   }
   renderLiteControls(container) {
     const controls = container.createDiv({ cls: "bpp-lite-controls" });
@@ -4149,6 +4231,8 @@ var BasesPowerPackPlugin = class extends import_obsidian6.Plugin {
     this.settings.savedFilters = sanitizeSavedFilters(this.settings.savedFilters);
     this.settings.rollups = sanitizeRollups(this.settings.rollups);
     this.settings.kanbanCardFields = sanitizeStringArray(this.settings.kanbanCardFields, DEFAULT_SETTINGS.kanbanCardFields);
+    this.settings.kanbanExtraColumns = sanitizeStringMap(this.settings.kanbanExtraColumns);
+    if (typeof this.settings.kanbanColorColumns !== "boolean") this.settings.kanbanColorColumns = DEFAULT_SETTINGS.kanbanColorColumns;
     if (typeof this.settings.kanbanQuickAddFolder !== "string") this.settings.kanbanQuickAddFolder = "";
     if (typeof this.settings.activeBasePath !== "string") this.settings.activeBasePath = "";
     if (typeof this.settings.activeFilterId !== "string") this.settings.activeFilterId = "";
@@ -4176,4 +4260,13 @@ function sanitizeStringArray(value, fallback = []) {
   const parts = value.filter((item) => typeof item === "string").map((item) => item.trim()).filter(Boolean);
   const deduped = [...new Set(parts)];
   return deduped.length > 0 ? deduped : [...fallback];
+}
+function sanitizeStringMap(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const list = sanitizeStringArray(entry, []);
+    if (list.length > 0) out[key] = list;
+  }
+  return out;
 }

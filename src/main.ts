@@ -198,6 +198,8 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.settings.savedFilters = sanitizeSavedFilters(this.settings.savedFilters);
 		this.settings.rollups = sanitizeRollups(this.settings.rollups);
 		this.settings.kanbanCardFields = sanitizeStringArray(this.settings.kanbanCardFields, DEFAULT_SETTINGS.kanbanCardFields);
+		this.settings.kanbanExtraColumns = sanitizeStringMap(this.settings.kanbanExtraColumns);
+		if (typeof this.settings.kanbanColorColumns !== "boolean") this.settings.kanbanColorColumns = DEFAULT_SETTINGS.kanbanColorColumns;
 		if (typeof this.settings.kanbanQuickAddFolder !== "string") this.settings.kanbanQuickAddFolder = "";
 		if (typeof this.settings.activeBasePath !== "string") this.settings.activeBasePath = "";
 		if (typeof this.settings.activeFilterId !== "string") this.settings.activeFilterId = "";
@@ -245,4 +247,14 @@ function sanitizeStringArray(value: unknown, fallback: string[] = []): string[] 
 	const parts = value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean);
 	const deduped = [...new Set(parts)];
 	return deduped.length > 0 ? deduped : [...fallback];
+}
+
+function sanitizeStringMap(value: unknown): Record<string, string[]> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const out: Record<string, string[]> = {};
+	for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+		const list = sanitizeStringArray(entry, []);
+		if (list.length > 0) out[key] = list;
+	}
+	return out;
 }

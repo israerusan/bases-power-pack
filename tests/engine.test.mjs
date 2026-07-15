@@ -186,6 +186,24 @@ assert.deepEqual(
 	[{ name: "active", cards: ["Gamma", "Alpha"] }],
 	"buildKanbanColumns filters hidden columns, applies search, and sorts rows"
 );
+const boardWithExtra = kanban.buildKanbanColumns(kanbanRows, {
+	groupBy: "status",
+	extraColumns: ["blocked", "active"],
+});
+assert.deepEqual(
+	boardWithExtra.map((col) => [col.name, col.rows.length]),
+	[["active", 2], ["done", 1], ["blocked", 0]],
+	"buildKanbanColumns appends empty user-added columns and skips ones that already exist"
+);
+assert.deepEqual(
+	kanban.buildKanbanColumns(kanbanRows, { groupBy: "status", search: "gamma", extraColumns: ["blocked"] })
+		.map((col) => col.name),
+	["active"],
+	"extra columns are suppressed while a search is active"
+);
+assert.equal(kanban.columnHue("active"), kanban.columnHue("active"), "columnHue is stable for a value");
+assert.ok(kanban.columnHue("done") >= 0 && kanban.columnHue("done") < 360, "columnHue stays within the hue circle");
+
 assert.deepEqual(
 	kanban.getCardMeta(rowmod.makeRow({
 		...note,

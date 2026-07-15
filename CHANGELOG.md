@@ -3,6 +3,23 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-07-14
+
+### Added
+- **Add columns from the board (free).** A "+ Add column" tile creates a new
+  empty, droppable column for the group-by property — so you can drag a card to
+  a status no note has yet (e.g. move `status: open` → a freshly created `close`
+  column). Added columns are remembered per group-by property; an empty one can
+  be removed with its `×` (no notes are touched).
+- **Color-coded columns and cards (free).** Each column and its cards take a
+  stable color derived from the column value, so the board is scannable at a
+  glance. Toggle with the new **Color columns** setting (on by default).
+
+### Notes
+- Drag-and-drop still writes the exact column label to frontmatter; the new
+  add-column feature is what lets you introduce a status value that no note
+  currently has.
+
 ## [1.3.0] - 2026-07-14
 
 ### Added

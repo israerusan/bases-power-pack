@@ -3,6 +3,7 @@ import type BasesPowerPackPlugin from "../main";
 import type { Row } from "../model/row";
 import {
 	buildKanbanColumns,
+	columnHue,
 	getCardMeta,
 	type KanbanSort,
 } from "../query/kanban";
@@ -91,13 +92,17 @@ export class KanbanView extends ItemView {
 		this.renderLiteControls(container);
 		renderRollupBar(container, this.plugin, resolved.rows);
 
+		const extraColumns = this.plugin.settings.kanbanExtraColumns[groupBy] ?? [];
 		const columns = buildKanbanColumns(resolved.rows, {
 			groupBy,
 			search: this.search,
 			hideColumn: this.hideDoneColumn ? "done" : "",
 			sortBy: this.sortBy,
+			extraColumns,
 		});
+		const colored = this.plugin.settings.kanbanColorColumns;
 		const board = container.createDiv({ cls: "bpp-kanban-board" });
+		if (colored) board.addClass("is-colored");
 		const rowById = new Map(resolved.rows.map((row) => [row.id, row]));
 
 		if (columns.length === 0) {
@@ -105,8 +110,9 @@ export class KanbanView extends ItemView {
 				cls: "bpp-empty",
 				text: this.search || this.hideDoneColumn
 					? "No cards match the current lite filters."
-					: `No notes with a "${groupBy}" property found. Add "${groupBy}: To Do" to a note's frontmatter to populate the board.`,
+					: `No notes with a "${groupBy}" property found. Add "${groupBy}: To Do" to a note's frontmatter, or add a column below.`,
 			});
+			if (!this.search) this.renderAddColumnTile(board, groupBy);
 			return;
 		}
 
@@ -115,6 +121,7 @@ export class KanbanView extends ItemView {
 
 		for (const column of columns) {
 			const col = board.createDiv({ cls: "bpp-kanban-column" });
+			if (colored) col.style.setProperty("--bpp-col-hue", String(columnHue(column.name)));
 			this.wireColumnDrop(col, column.name, groupBy, rowById);
 
 			const colHead = col.createDiv({ cls: "bpp-kanban-column-head" });
@@ -122,12 +129,23 @@ export class KanbanView extends ItemView {
 			colLabel.createSpan({ text: column.name });
 			colLabel.createSpan({ cls: "bpp-count", text: String(column.rows.length) });
 
-			const addButton = colHead.createEl("button", {
+			const actions = colHead.createDiv({ cls: "bpp-column-actions" });
+			const addButton = actions.createEl("button", {
 				cls: "bpp-column-add",
 				text: "+",
 				attr: { "aria-label": `Add note to ${column.name}` },
 			});
 			addButton.addEventListener("click", () => void this.quickAddNote(column.name, groupBy));
+
+			// An empty user-added column can be removed — no notes are affected.
+			if (column.rows.length === 0 && extraColumns.includes(column.name)) {
+				const removeButton = actions.createEl("button", {
+					cls: "bpp-column-remove",
+					text: "×",
+					attr: { "aria-label": `Remove column ${column.name}` },
+				});
+				removeButton.addEventListener("click", () => void this.removeExtraColumn(groupBy, column.name));
+			}
 
 			for (const row of column.rows) {
 				const card = col.createDiv({ cls: "bpp-card" });
@@ -152,6 +170,51 @@ export class KanbanView extends ItemView {
 				card.addEventListener("click", () => this.openRow(row));
 			}
 		}
+
+		if (!this.search) this.renderAddColumnTile(board, groupBy);
+	}
+
+	private renderAddColumnTile(board: HTMLElement, groupBy: string): void {
+		const tile = board.createDiv({ cls: "bpp-kanban-column bpp-kanban-add-column" });
+		const form = tile.createDiv({ cls: "bpp-add-column-form" });
+		const input = form.createEl("input", {
+			type: "text",
+			cls: "bpp-lite-input",
+			placeholder: "New column…",
+			attr: { "aria-label": `Add a new "${groupBy}" column` },
+		});
+		const button = form.createEl("button", { cls: "bpp-add-column-btn", text: "+ Add column" });
+		const commit = (): void => {
+			const name = input.value.trim();
+			if (!name) return;
+			void this.addExtraColumn(groupBy, name);
+		};
+		button.addEventListener("click", commit);
+		input.addEventListener("keydown", (event) => {
+			if (event.key === "Enter") {
+				event.preventDefault();
+				commit();
+			}
+		});
+	}
+
+	private async addExtraColumn(groupBy: string, name: string): Promise<void> {
+		const map = this.plugin.settings.kanbanExtraColumns;
+		const existing = map[groupBy] ?? [];
+		if (!existing.some((n) => n.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+			map[groupBy] = [...existing, name];
+			await this.plugin.saveSettings();
+		}
+		await this.render();
+	}
+
+	private async removeExtraColumn(groupBy: string, name: string): Promise<void> {
+		const map = this.plugin.settings.kanbanExtraColumns;
+		const next = (map[groupBy] ?? []).filter((n) => n !== name);
+		if (next.length > 0) map[groupBy] = next;
+		else delete map[groupBy];
+		await this.plugin.saveSettings();
+		await this.render();
 	}
 
 	private renderLiteControls(container: HTMLElement): void {

@@ -9,6 +9,9 @@ export interface BuildKanbanColumnsOptions {
 	search?: string;
 	hideColumn?: string;
 	sortBy?: KanbanSort;
+	/** User-added column values that should appear even with no rows yet, so they
+	 * are droppable targets. Skipped while a search is active. */
+	extraColumns?: string[];
 }
 
 export interface KanbanColumn {
@@ -31,10 +34,30 @@ export function buildKanbanColumns(rows: Row[], options: BuildKanbanColumnsOptio
 		columns.get(columnName)?.push(row);
 	}
 
+	// Empty user-added columns only make sense on the unfiltered board.
+	if (!search) {
+		for (const name of options.extraColumns ?? []) {
+			const clean = name.trim();
+			if (!clean || columns.has(clean)) continue;
+			if (hidden && normalize(clean) === hidden) continue;
+			columns.set(clean, []);
+		}
+	}
+
 	return Array.from(columns.entries()).map(([name, items]) => ({
 		name,
 		rows: sortRows(items, options.sortBy ?? "manual"),
 	}));
+}
+
+/** Stable hue (0–359) for a column value, so a given status always gets the same
+ * color across renders without any configuration. */
+export function columnHue(name: string): number {
+	let hash = 0;
+	for (let i = 0; i < name.length; i++) {
+		hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+	}
+	return hash % 360;
 }
 
 export function getCardMeta(row: Row, fields: string[]): string[] {
