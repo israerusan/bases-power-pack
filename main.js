@@ -3257,7 +3257,7 @@ function base64ToBytes(value) {
 }
 
 // src/license/publicKey.ts
-var LICENSE_PUBLIC_KEY = "5mo8rQSqI7nHL-B6OgY_I9Tc5X6vUo1YqbRPa2zs6TM";
+var LICENSE_PUBLIC_KEY = "OATJwdDzi1ulsH9XHJd4z3P_yflngnhWaFszfEvMGsQ";
 
 // src/license/LicenseManager.ts
 var _LicenseManager = class _LicenseManager {
