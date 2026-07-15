@@ -2978,6 +2978,7 @@ var DEFAULT_SETTINGS = {
   kanbanCardFields: ["due", "priority"],
   kanbanQuickAddFolder: "",
   kanbanExtraColumns: {},
+  kanbanColumnOrder: {},
   kanbanColorColumns: true,
   calendarDateProp: "due",
   ganttStartProp: "start",
@@ -3272,7 +3273,7 @@ var import_obsidian3 = require("obsidian");
 
 // src/query/kanban.ts
 function buildKanbanColumns(rows, options) {
-  var _a, _b;
+  var _a, _b, _c;
   const groupBy = options.groupBy || "status";
   const search = normalize(options.search);
   const hidden = normalize(options.hideColumn);
@@ -3293,13 +3294,30 @@ function buildKanbanColumns(rows, options) {
       columns.set(clean, []);
     }
   }
-  return Array.from(columns.entries()).map(([name, items]) => {
+  const entries = Array.from(columns.entries());
+  const order = (_c = options.columnOrder) != null ? _c : [];
+  if (order.length > 0) {
+    const rank = new Map(order.map((name, index) => [name, index]));
+    entries.sort((a, b) => {
+      var _a2, _b2;
+      return ((_a2 = rank.get(a[0])) != null ? _a2 : Infinity) - ((_b2 = rank.get(b[0])) != null ? _b2 : Infinity);
+    });
+  }
+  return entries.map(([name, items]) => {
     var _a2;
     return {
       name,
       rows: sortRows(items, (_a2 = options.sortBy) != null ? _a2 : "manual")
     };
   });
+}
+function reorderColumns(order, moved, target) {
+  if (moved === target) return [...order];
+  const without = order.filter((name) => name !== moved);
+  const targetIndex = without.indexOf(target);
+  if (targetIndex === -1) return [...order];
+  without.splice(targetIndex, 0, moved);
+  return without;
 }
 function columnHue(name) {
   let hash = 0;
@@ -3497,7 +3515,7 @@ var KanbanView = class extends import_obsidian3.ItemView {
     this.contentEl.empty();
   }
   async render() {
-    var _a;
+    var _a, _b;
     const token = ++this.renderToken;
     const resolved = await resolveViewRows(this.app, this.plugin);
     if (token !== this.renderToken) return;
@@ -3519,8 +3537,10 @@ var KanbanView = class extends import_obsidian3.ItemView {
       search: this.search,
       hideColumn: this.hideDoneColumn ? "done" : "",
       sortBy: this.sortBy,
-      extraColumns
+      extraColumns,
+      columnOrder: (_b = this.plugin.settings.kanbanColumnOrder[groupBy]) != null ? _b : []
     });
+    const orderedNames = columns.map((column) => column.name);
     const colored = this.plugin.settings.kanbanColorColumns;
     const board = container.createDiv({ cls: "bpp-kanban-board" });
     if (colored) board.addClass("is-colored");
@@ -3538,8 +3558,9 @@ var KanbanView = class extends import_obsidian3.ItemView {
     for (const column of columns) {
       const col = board.createDiv({ cls: "bpp-kanban-column" });
       if (colored) col.style.setProperty("--bpp-col-hue", String(columnHue(column.name)));
-      this.wireColumnDrop(col, column.name, groupBy, rowById);
+      this.wireColumnDrop(col, column.name, groupBy, rowById, orderedNames);
       const colHead = col.createDiv({ cls: "bpp-kanban-column-head" });
+      this.makeColumnDraggable(col, colHead, column.name);
       const colLabel = colHead.createDiv({ cls: "bpp-kanban-column-label" });
       colLabel.createSpan({ text: column.name });
       colLabel.createSpan({ cls: "bpp-count", text: String(column.rows.length) });
@@ -3572,10 +3593,10 @@ var KanbanView = class extends import_obsidian3.ItemView {
           }
         }
         card.addEventListener("dragstart", (event) => {
-          var _a2, _b;
+          var _a2, _b2;
           card.addClass("is-dragging");
           (_a2 = event.dataTransfer) == null ? void 0 : _a2.setData("text/plain", row.id);
-          (_b = event.dataTransfer) == null ? void 0 : _b.setData("application/x-bpp-row", row.id);
+          (_b2 = event.dataTransfer) == null ? void 0 : _b2.setData("application/x-bpp-row", row.id);
           if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
         });
         card.addEventListener("dragend", () => card.removeClass("is-dragging"));
@@ -3667,23 +3688,53 @@ var KanbanView = class extends import_obsidian3.ItemView {
     });
     toggleWrap.createSpan({ cls: "bpp-muted", text: "Hide done" });
   }
-  wireColumnDrop(columnEl, columnName, groupBy, rowById) {
+  /** The whole column is a drop target for two kinds of drag: a card (move the
+   * note to this column) and a column header (reorder columns). They are told
+   * apart by the dataTransfer type. */
+  wireColumnDrop(columnEl, columnName, groupBy, rowById, orderedNames) {
     columnEl.addEventListener("dragover", (event) => {
+      var _a, _b;
+      const isColumn = ((_b = (_a = event.dataTransfer) == null ? void 0 : _a.types) != null ? _b : []).includes("application/x-bpp-column");
       event.preventDefault();
-      columnEl.addClass("is-drop-target");
+      columnEl.addClass(isColumn ? "is-col-drop-target" : "is-drop-target");
       if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
     });
-    columnEl.addEventListener("dragleave", () => columnEl.removeClass("is-drop-target"));
+    columnEl.addEventListener("dragleave", () => {
+      columnEl.removeClass("is-drop-target");
+      columnEl.removeClass("is-col-drop-target");
+    });
     columnEl.addEventListener("drop", (event) => {
-      var _a, _b;
+      var _a, _b, _c;
       event.preventDefault();
       columnEl.removeClass("is-drop-target");
-      const rowId = ((_a = event.dataTransfer) == null ? void 0 : _a.getData("application/x-bpp-row")) || ((_b = event.dataTransfer) == null ? void 0 : _b.getData("text/plain"));
+      columnEl.removeClass("is-col-drop-target");
+      const draggedColumn = (_a = event.dataTransfer) == null ? void 0 : _a.getData("application/x-bpp-column");
+      if (draggedColumn) {
+        void this.reorderColumn(groupBy, orderedNames, draggedColumn, columnName);
+        return;
+      }
+      const rowId = ((_b = event.dataTransfer) == null ? void 0 : _b.getData("application/x-bpp-row")) || ((_c = event.dataTransfer) == null ? void 0 : _c.getData("text/plain"));
       if (!rowId) return;
       const row = rowById.get(rowId);
       if (!row) return;
       void this.moveRowToColumn(row, groupBy, columnName);
     });
+  }
+  makeColumnDraggable(columnEl, colHead, columnName) {
+    colHead.draggable = true;
+    colHead.addEventListener("dragstart", (event) => {
+      var _a;
+      columnEl.addClass("is-col-dragging");
+      (_a = event.dataTransfer) == null ? void 0 : _a.setData("application/x-bpp-column", columnName);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    });
+    colHead.addEventListener("dragend", () => columnEl.removeClass("is-col-dragging"));
+  }
+  async reorderColumn(groupBy, orderedNames, moved, target) {
+    const next = reorderColumns(orderedNames, moved, target);
+    this.plugin.settings.kanbanColumnOrder[groupBy] = next;
+    await this.plugin.saveSettings();
+    await this.render();
   }
   async moveRowToColumn(row, groupBy, columnName) {
     const file = this.app.vault.getAbstractFileByPath(row.id);
@@ -4232,6 +4283,7 @@ var BasesPowerPackPlugin = class extends import_obsidian6.Plugin {
     this.settings.rollups = sanitizeRollups(this.settings.rollups);
     this.settings.kanbanCardFields = sanitizeStringArray(this.settings.kanbanCardFields, DEFAULT_SETTINGS.kanbanCardFields);
     this.settings.kanbanExtraColumns = sanitizeStringMap(this.settings.kanbanExtraColumns);
+    this.settings.kanbanColumnOrder = sanitizeStringMap(this.settings.kanbanColumnOrder);
     if (typeof this.settings.kanbanColorColumns !== "boolean") this.settings.kanbanColorColumns = DEFAULT_SETTINGS.kanbanColorColumns;
     if (typeof this.settings.kanbanQuickAddFolder !== "string") this.settings.kanbanQuickAddFolder = "";
     if (typeof this.settings.activeBasePath !== "string") this.settings.activeBasePath = "";

@@ -15,6 +15,7 @@ Advanced database views and automation on top of Obsidian's native **Bases** fea
 | **Kanban quick add** (create a note directly from a column) | ✅ | ✅ |
 | **Kanban drag-and-drop updates** (move a card, write frontmatter) | ✅ | ✅ |
 | **Kanban add / remove columns** (create a new status column from the board) | ✅ | ✅ |
+| **Kanban reorder columns** (drag a column header to reposition it) | ✅ | ✅ |
 | **Kanban color-coded columns & cards** (stable color per column value) | ✅ | ✅ |
 | **Kanban card metadata** (raw due / priority / owner / tags lines) | ✅ | ✅ |
 | **Calendar view** (notes placed by a date property) | — | ✅ |
@@ -30,7 +31,7 @@ Lite is now a genuinely useful kanban layer: create cards, move cards, search/so
 
 All three views run on a shared query engine. In the **Lite** tier they read standard frontmatter across the vault; in **Premium** they can instead take a `.base` file as their data source, applying its filters and formulas.
 
-- **Kanban** — groups rows by a configurable property (default `status`), supports quick search/sort/hide-done controls, lets you create a note directly from any column, add brand-new status columns from the board (so you can drag a card to a status no note has yet), and drag cards between columns to update frontmatter. Columns and their cards are color-coded by a stable hue per value (toggle in settings). Premium cards can also show a formula value (e.g. `round(done / total * 100, 0) + "%"`). Click a card to open the note.
+- **Kanban** — groups rows by a configurable property (default `status`), supports quick search/sort/hide-done controls, lets you create a note directly from any column, add brand-new status columns from the board (so you can drag a card to a status no note has yet), drag cards between columns to update frontmatter, and drag column headers to reorder the board. Columns and their cards are color-coded by a stable hue per value (toggle in settings). Premium cards can also show a formula value (e.g. `round(done / total * 100, 0) + "%"`). Click a card to open the note.
 - **Calendar** — month grid that places rows onto days using a configurable date property (default `due`). Navigate months with the arrows.
 - **Gantt** — horizontal timeline; each row becomes a bar from a start date property to an optional end date, with a "today" marker.
 

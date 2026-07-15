@@ -88,6 +88,14 @@
   background: var(--background-modifier-hover);
 }
 
+.bpp-kanban-column.is-col-drop-target {
+  border-left: 3px solid var(--interactive-accent);
+}
+
+.bpp-kanban-column.is-col-dragging {
+  opacity: 0.5;
+}
+
 .bpp-kanban-column-head {
   display: flex;
   justify-content: space-between;
@@ -96,6 +104,11 @@
   margin-bottom: 8px;
   padding: 0 4px;
   gap: 8px;
+  cursor: grab;
+}
+
+.bpp-kanban-column-head:active {
+  cursor: grabbing;
 }
 
 .bpp-kanban-column-label {
@@ -162,7 +175,8 @@
 }
 
 /* Add-column tile */
-.bpp-kanban-add-column {
+.bpp-kanban-add-column,
+.bpp-kanban-board.is-colored .bpp-kanban-add-column {
   background: transparent;
   border: 1px dashed var(--background-modifier-border);
   min-width: 200px;

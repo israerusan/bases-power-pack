@@ -3,6 +3,15 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-07-14
+
+### Added
+- **Reorder columns by dragging their headers (free).** Grab a column header and
+  drop it on another column to change the left-to-right order. The order is
+  remembered per group-by property; columns you haven't placed keep their natural
+  order after the ones you have. Card drag-and-drop (move a note between columns)
+  is unaffected — the two drags are told apart by their payload.
+
 ## [1.4.0] - 2026-07-14
 
 ### Added

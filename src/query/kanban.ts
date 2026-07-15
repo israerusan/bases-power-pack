@@ -12,6 +12,9 @@ export interface BuildKanbanColumnsOptions {
 	/** User-added column values that should appear even with no rows yet, so they
 	 * are droppable targets. Skipped while a search is active. */
 	extraColumns?: string[];
+	/** Explicit left-to-right column order (by value). Columns not listed keep
+	 * their natural order after the listed ones. */
+	columnOrder?: string[];
 }
 
 export interface KanbanColumn {
@@ -44,10 +47,29 @@ export function buildKanbanColumns(rows: Row[], options: BuildKanbanColumnsOptio
 		}
 	}
 
-	return Array.from(columns.entries()).map(([name, items]) => ({
+	const entries = Array.from(columns.entries());
+	const order = options.columnOrder ?? [];
+	if (order.length > 0) {
+		const rank = new Map(order.map((name, index) => [name, index]));
+		// Stable sort: listed columns by their rank, everything else keeps insertion order after.
+		entries.sort((a, b) => (rank.get(a[0]) ?? Infinity) - (rank.get(b[0]) ?? Infinity));
+	}
+
+	return entries.map(([name, items]) => ({
 		name,
 		rows: sortRows(items, options.sortBy ?? "manual"),
 	}));
+}
+
+/** Move `moved` to sit immediately before `target` in the column order. Returns a
+ * new array; a no-op (same value, or unknown target) returns a copy unchanged. */
+export function reorderColumns(order: string[], moved: string, target: string): string[] {
+	if (moved === target) return [...order];
+	const without = order.filter((name) => name !== moved);
+	const targetIndex = without.indexOf(target);
+	if (targetIndex === -1) return [...order];
+	without.splice(targetIndex, 0, moved);
+	return without;
 }
 
 /** Stable hue (0–359) for a column value, so a given status always gets the same

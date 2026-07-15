@@ -205,6 +205,15 @@ assert.equal(kanban.columnHue("active"), kanban.columnHue("active"), "columnHue 
 assert.ok(kanban.columnHue("done") >= 0 && kanban.columnHue("done") < 360, "columnHue stays within the hue circle");
 
 assert.deepEqual(
+	kanban.buildKanbanColumns(kanbanRows, { groupBy: "status", columnOrder: ["done", "active"] }).map((col) => col.name),
+	["done", "active"],
+	"columnOrder controls the left-to-right column order"
+);
+assert.deepEqual(kanban.reorderColumns(["a", "b", "c"], "c", "a"), ["c", "a", "b"], "reorderColumns moves a column before its target");
+assert.deepEqual(kanban.reorderColumns(["a", "b", "c"], "a", "a"), ["a", "b", "c"], "reorderColumns is a no-op onto itself");
+assert.deepEqual(kanban.reorderColumns(["a", "b", "c"], "a", "z"), ["a", "b", "c"], "reorderColumns leaves order unchanged for an unknown target");
+
+assert.deepEqual(
 	kanban.getCardMeta(rowmod.makeRow({
 		...note,
 		frontmatter: { status: "active", due: "2026-01-20", priority: 2, owner: "Ada", tags: ["ship", "urgent"] },

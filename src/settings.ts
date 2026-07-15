@@ -22,6 +22,8 @@ export interface BasesPowerPackSettings {
 	kanbanQuickAddFolder: string;
 	/** User-added empty columns, keyed by the group-by property they belong to. */
 	kanbanExtraColumns: Record<string, string[]>;
+	/** Explicit column order per group-by property, set by dragging column headers. */
+	kanbanColumnOrder: Record<string, string[]>;
 	kanbanColorColumns: boolean;
 
 	/** Calendar (premium) */
@@ -52,6 +54,7 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	kanbanCardFields: ["due", "priority"],
 	kanbanQuickAddFolder: "",
 	kanbanExtraColumns: {},
+	kanbanColumnOrder: {},
 	kanbanColorColumns: true,
 	calendarDateProp: "due",
 	ganttStartProp: "start",

@@ -5,6 +5,7 @@ import {
 	buildKanbanColumns,
 	columnHue,
 	getCardMeta,
+	reorderColumns,
 	type KanbanSort,
 } from "../query/kanban";
 import {
@@ -99,7 +100,10 @@ export class KanbanView extends ItemView {
 			hideColumn: this.hideDoneColumn ? "done" : "",
 			sortBy: this.sortBy,
 			extraColumns,
+			columnOrder: this.plugin.settings.kanbanColumnOrder[groupBy] ?? [],
 		});
+		// The displayed order — the basis for a header-drag reorder.
+		const orderedNames = columns.map((column) => column.name);
 		const colored = this.plugin.settings.kanbanColorColumns;
 		const board = container.createDiv({ cls: "bpp-kanban-board" });
 		if (colored) board.addClass("is-colored");
@@ -122,9 +126,10 @@ export class KanbanView extends ItemView {
 		for (const column of columns) {
 			const col = board.createDiv({ cls: "bpp-kanban-column" });
 			if (colored) col.style.setProperty("--bpp-col-hue", String(columnHue(column.name)));
-			this.wireColumnDrop(col, column.name, groupBy, rowById);
+			this.wireColumnDrop(col, column.name, groupBy, rowById, orderedNames);
 
 			const colHead = col.createDiv({ cls: "bpp-kanban-column-head" });
+			this.makeColumnDraggable(col, colHead, column.name);
 			const colLabel = colHead.createDiv({ cls: "bpp-kanban-column-label" });
 			colLabel.createSpan({ text: column.name });
 			colLabel.createSpan({ cls: "bpp-count", text: String(column.rows.length) });
@@ -262,27 +267,65 @@ export class KanbanView extends ItemView {
 		toggleWrap.createSpan({ cls: "bpp-muted", text: "Hide done" });
 	}
 
+	/** The whole column is a drop target for two kinds of drag: a card (move the
+	 * note to this column) and a column header (reorder columns). They are told
+	 * apart by the dataTransfer type. */
 	private wireColumnDrop(
 		columnEl: HTMLElement,
 		columnName: string,
 		groupBy: string,
-		rowById: Map<string, Row>
+		rowById: Map<string, Row>,
+		orderedNames: string[]
 	): void {
 		columnEl.addEventListener("dragover", (event) => {
+			const isColumn = (event.dataTransfer?.types ?? []).includes("application/x-bpp-column");
 			event.preventDefault();
-			columnEl.addClass("is-drop-target");
+			columnEl.addClass(isColumn ? "is-col-drop-target" : "is-drop-target");
 			if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
 		});
-		columnEl.addEventListener("dragleave", () => columnEl.removeClass("is-drop-target"));
+		columnEl.addEventListener("dragleave", () => {
+			columnEl.removeClass("is-drop-target");
+			columnEl.removeClass("is-col-drop-target");
+		});
 		columnEl.addEventListener("drop", (event) => {
 			event.preventDefault();
 			columnEl.removeClass("is-drop-target");
+			columnEl.removeClass("is-col-drop-target");
+
+			const draggedColumn = event.dataTransfer?.getData("application/x-bpp-column");
+			if (draggedColumn) {
+				void this.reorderColumn(groupBy, orderedNames, draggedColumn, columnName);
+				return;
+			}
+
 			const rowId = event.dataTransfer?.getData("application/x-bpp-row") || event.dataTransfer?.getData("text/plain");
 			if (!rowId) return;
 			const row = rowById.get(rowId);
 			if (!row) return;
 			void this.moveRowToColumn(row, groupBy, columnName);
 		});
+	}
+
+	private makeColumnDraggable(columnEl: HTMLElement, colHead: HTMLElement, columnName: string): void {
+		colHead.draggable = true;
+		colHead.addEventListener("dragstart", (event) => {
+			columnEl.addClass("is-col-dragging");
+			event.dataTransfer?.setData("application/x-bpp-column", columnName);
+			if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+		});
+		colHead.addEventListener("dragend", () => columnEl.removeClass("is-col-dragging"));
+	}
+
+	private async reorderColumn(
+		groupBy: string,
+		orderedNames: string[],
+		moved: string,
+		target: string
+	): Promise<void> {
+		const next = reorderColumns(orderedNames, moved, target);
+		this.plugin.settings.kanbanColumnOrder[groupBy] = next;
+		await this.plugin.saveSettings();
+		await this.render();
 	}
 
 	private async moveRowToColumn(row: Row, groupBy: string, columnName: string): Promise<void> {

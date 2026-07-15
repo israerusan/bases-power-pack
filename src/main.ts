@@ -199,6 +199,7 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.settings.rollups = sanitizeRollups(this.settings.rollups);
 		this.settings.kanbanCardFields = sanitizeStringArray(this.settings.kanbanCardFields, DEFAULT_SETTINGS.kanbanCardFields);
 		this.settings.kanbanExtraColumns = sanitizeStringMap(this.settings.kanbanExtraColumns);
+		this.settings.kanbanColumnOrder = sanitizeStringMap(this.settings.kanbanColumnOrder);
 		if (typeof this.settings.kanbanColorColumns !== "boolean") this.settings.kanbanColorColumns = DEFAULT_SETTINGS.kanbanColorColumns;
 		if (typeof this.settings.kanbanQuickAddFolder !== "string") this.settings.kanbanQuickAddFolder = "";
 		if (typeof this.settings.activeBasePath !== "string") this.settings.activeBasePath = "";
