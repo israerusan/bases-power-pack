@@ -18,6 +18,8 @@ export interface BasesPowerPackSettings {
 
 	/** Kanban (lite) */
 	kanbanGroupBy: string;
+	kanbanCardFields: string[];
+	kanbanQuickAddFolder: string;
 
 	/** Calendar (premium) */
 	calendarDateProp: string;
@@ -44,6 +46,8 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	licenseEmail: "",
 	purchaseUrl: "https://example.gumroad.com/l/bases-power-pack",
 	kanbanGroupBy: "status",
+	kanbanCardFields: ["due", "priority"],
+	kanbanQuickAddFolder: "",
 	calendarDateProp: "due",
 	ganttStartProp: "start",
 	ganttEndProp: "end",
@@ -133,6 +137,29 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			.addText((text) =>
 				text.setValue(this.plugin.settings.kanbanGroupBy).onChange((value) => {
 					this.plugin.settings.kanbanGroupBy = value.trim() || "status";
+					void this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName("Card detail fields")
+			.setDesc("Comma-separated raw properties to show on free kanban cards, e.g. due, priority, owner, tags.")
+			.addText((text) =>
+				text.setValue(this.plugin.settings.kanbanCardFields.join(", ")).onChange((value) => {
+					this.plugin.settings.kanbanCardFields = value
+						.split(",")
+						.map((part) => part.trim())
+						.filter(Boolean);
+					void this.plugin.saveSettings();
+				})
+			);
+
+		new Setting(containerEl)
+			.setName("Quick add folder")
+			.setDesc("Optional folder for the kanban + button. Leave blank to create notes at the vault root.")
+			.addText((text) =>
+				text.setValue(this.plugin.settings.kanbanQuickAddFolder).onChange((value) => {
+					this.plugin.settings.kanbanQuickAddFolder = value.trim();
 					void this.plugin.saveSettings();
 				})
 			);

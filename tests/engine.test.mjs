@@ -14,6 +14,8 @@ await build({
 			export * as filter from "./src/query/filter.ts";
 			export * as rollup from "./src/query/rollup.ts";
 			export * as gantt from "./src/query/gantt.ts";
+			export * as kanban from "./src/query/kanban.ts";
+			export * as kanbanActions from "./src/query/kanbanActions.ts";
 			export * as base from "./src/bases/baseDefinition.ts";
 			export * as resolve from "./src/bases/resolveRows.ts";
 			export * as rowmod from "./src/model/row.ts";
@@ -29,7 +31,7 @@ await build({
 });
 
 const m = await import(`file://${outfile.replace(/\\/g, "/")}`);
-const { expr, filter, rollup, gantt, base, resolve, rowmod } = m;
+const { expr, filter, rollup, gantt, kanban, kanbanActions, base, resolve, rowmod } = m;
 
 // ---- expression engine -----------------------------------------------------
 const scope = {
@@ -154,6 +156,66 @@ assert.equal(barA.startIndex, 0, "A starts at column 0");
 assert.equal(barA.span, 3, "A spans 3 days");
 assert.equal(barB.startIndex, 1, "B starts at column 1");
 assert.equal(barB.span, 1, "B has default 1-day span");
+
+// ---- kanban helpers ---------------------------------------------------------
+const kanbanRows = [
+	r,
+	rowmod.makeRow({
+		...note,
+		path: "Projects/Beta.md",
+		name: "Beta",
+		mtime: 50,
+		frontmatter: { status: "done", due: "2026-02-01", priority: 1, owner: "Max" },
+	}),
+	rowmod.makeRow({
+		...note,
+		path: "Projects/Gamma.md",
+		name: "Gamma",
+		mtime: 100,
+		frontmatter: { status: "active", due: "2026-01-15", priority: 3, owner: "Ada" },
+	}),
+];
+const board = kanban.buildKanbanColumns(kanbanRows, {
+	groupBy: "status",
+	search: "a",
+	hideColumn: "done",
+	sortBy: "due-asc",
+});
+assert.deepEqual(
+	board.map((col) => ({ name: col.name, cards: col.rows.map((row) => row.name) })),
+	[{ name: "active", cards: ["Gamma", "Alpha"] }],
+	"buildKanbanColumns filters hidden columns, applies search, and sorts rows"
+);
+assert.deepEqual(
+	kanban.getCardMeta(rowmod.makeRow({
+		...note,
+		frontmatter: { status: "active", due: "2026-01-20", priority: 2, owner: "Ada", tags: ["ship", "urgent"] },
+	}), ["due", "priority", "owner", "tags"]),
+	["due: 2026-01-20", "priority: 2", "owner: Ada", "tags: ship, urgent"],
+	"getCardMeta renders raw metadata lines for lite cards"
+);
+
+// ---- kanban actions ---------------------------------------------------------
+assert.deepEqual(
+	kanbanActions.setKanbanGroupValue({ status: "todo", owner: "Ada" }, "status", "done"),
+	{ status: "done", owner: "Ada" },
+	"setKanbanGroupValue updates the grouped property for drag/drop moves"
+);
+assert.equal(
+	kanbanActions.buildQuickAddPath("Inbox/Boards", "New done 2026-01-15 09-30"),
+	"Inbox/Boards/New done 2026-01-15 09-30.md",
+	"buildQuickAddPath places quick-add notes in the configured folder"
+);
+assert.equal(
+	kanbanActions.buildQuickAddContent("status", "done", "New done 2026-01-15 09-30"),
+	'---\nstatus: "done"\n---\n\n# New done 2026-01-15 09-30\n',
+	"buildQuickAddContent creates note content with frontmatter and heading"
+);
+assert.equal(
+	kanbanActions.buildQuickAddContent("status", "Blocked: waiting", "New card"),
+	'---\nstatus: "Blocked: waiting"\n---\n\n# New card\n',
+	"buildQuickAddContent quotes YAML-significant column names so frontmatter stays valid"
+);
 
 fs.unlinkSync(outfile);
 console.log("engine tests passed");

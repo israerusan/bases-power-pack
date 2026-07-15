@@ -2498,9 +2498,11 @@ function toBool(v) {
 }
 function toStr(v) {
   if (v === null || v === void 0) return "";
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
   if (v instanceof Date) return v.toISOString();
   if (Array.isArray(v)) return v.map(toStr).join(", ");
-  return String(v);
+  return JSON.stringify(v);
 }
 function isEmpty(v) {
   if (v === null || v === void 0) return true;
@@ -2973,6 +2975,8 @@ var DEFAULT_SETTINGS = {
   licenseEmail: "",
   purchaseUrl: "https://example.gumroad.com/l/bases-power-pack",
   kanbanGroupBy: "status",
+  kanbanCardFields: ["due", "priority"],
+  kanbanQuickAddFolder: "",
   calendarDateProp: "due",
   ganttStartProp: "start",
   ganttEndProp: "end",
@@ -3029,6 +3033,18 @@ var BasesPowerPackSettingTab = class extends import_obsidian2.PluginSettingTab {
     new import_obsidian2.Setting(containerEl).setName("Group by property").setDesc("Frontmatter property (or, with premium, a formula) used to build kanban columns.").addText(
       (text) => text.setValue(this.plugin.settings.kanbanGroupBy).onChange((value) => {
         this.plugin.settings.kanbanGroupBy = value.trim() || "status";
+        void this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian2.Setting(containerEl).setName("Card detail fields").setDesc("Comma-separated raw properties to show on free kanban cards, e.g. due, priority, owner, tags.").addText(
+      (text) => text.setValue(this.plugin.settings.kanbanCardFields.join(", ")).onChange((value) => {
+        this.plugin.settings.kanbanCardFields = value.split(",").map((part) => part.trim()).filter(Boolean);
+        void this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian2.Setting(containerEl).setName("Quick add folder").setDesc("Optional folder for the kanban + button. Leave blank to create notes at the vault root.").addText(
+      (text) => text.setValue(this.plugin.settings.kanbanQuickAddFolder).onChange((value) => {
+        this.plugin.settings.kanbanQuickAddFolder = value.trim();
         void this.plugin.saveSettings();
       })
     );
@@ -3246,6 +3262,145 @@ var LicenseManager = _LicenseManager;
 // src/views/kanbanView.ts
 var import_obsidian3 = require("obsidian");
 
+// src/query/kanban.ts
+function buildKanbanColumns(rows, options) {
+  var _a;
+  const groupBy = options.groupBy || "status";
+  const search = normalize(options.search);
+  const hidden = normalize(options.hideColumn);
+  const columns = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const columnName = toStr(row.scope.get(groupBy));
+    if (!columnName) continue;
+    if (hidden && normalize(columnName) === hidden) continue;
+    if (search && !matchesSearch(row, search, columnName)) continue;
+    if (!columns.has(columnName)) columns.set(columnName, []);
+    (_a = columns.get(columnName)) == null ? void 0 : _a.push(row);
+  }
+  return Array.from(columns.entries()).map(([name, items]) => {
+    var _a2;
+    return {
+      name,
+      rows: sortRows(items, (_a2 = options.sortBy) != null ? _a2 : "manual")
+    };
+  });
+}
+function getCardMeta(row, fields) {
+  const lines = [];
+  for (const field of fields) {
+    const formatted = formatField(row, field);
+    if (formatted) lines.push(`${field}: ${formatted}`);
+  }
+  return lines;
+}
+function matchesSearch(row, search, columnName) {
+  const haystacks = [
+    row.name,
+    row.note.path,
+    row.note.folder,
+    columnName,
+    ...row.note.tags
+  ];
+  return haystacks.some((value) => normalize(value).includes(search));
+}
+function sortRows(rows, sortBy) {
+  const copy = [...rows];
+  if (sortBy === "manual") return copy;
+  copy.sort((a, b) => compareRows(a, b, sortBy));
+  return copy;
+}
+function compareRows(a, b, sortBy) {
+  switch (sortBy) {
+    case "name-asc":
+      return compareText(a.name, b.name);
+    case "name-desc":
+      return compareText(b.name, a.name);
+    case "due-asc":
+      return compareDateValue(a.scope.get("due"), b.scope.get("due")) || compareText(a.name, b.name);
+    case "priority-desc":
+      return compareNumberValue(b.scope.get("priority"), a.scope.get("priority")) || compareText(a.name, b.name);
+    case "mtime-desc":
+      return compareNumberValue(b.scope.get("file.mtime"), a.scope.get("file.mtime")) || compareText(a.name, b.name);
+    default:
+      return 0;
+  }
+}
+function compareText(a, b) {
+  return a.localeCompare(b, void 0, { sensitivity: "base" });
+}
+function compareNumberValue(a, b) {
+  const av = numberOrNull(a);
+  const bv = numberOrNull(b);
+  if (av === null && bv === null) return 0;
+  if (av === null) return 1;
+  if (bv === null) return -1;
+  return av - bv;
+}
+function compareDateValue(a, b) {
+  const av = timeOrNull(a);
+  const bv = timeOrNull(b);
+  if (av === null && bv === null) return 0;
+  if (av === null) return 1;
+  if (bv === null) return -1;
+  return av - bv;
+}
+function timeOrNull(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : null;
+}
+function numberOrNull(value) {
+  if (value === void 0 || value === null || value === "") return null;
+  const n = toNumber(value);
+  return Number.isFinite(n) ? n : null;
+}
+function formatField(row, field) {
+  const value = row.scope.get(field);
+  if (value === void 0 || value === null || value === "") return null;
+  if (Array.isArray(value)) {
+    const parts = value.map((item) => toStr(item)).filter(Boolean);
+    return parts.length > 0 ? parts.join(", ") : null;
+  }
+  return toStr(value) || null;
+}
+function normalize(value) {
+  return toStr(value).trim().toLocaleLowerCase();
+}
+
+// src/query/kanbanActions.ts
+function setKanbanGroupValue(frontmatter, groupBy, columnName) {
+  return {
+    ...frontmatter,
+    [groupBy || "status"]: columnName
+  };
+}
+function buildQuickAddPath(folder, title) {
+  const cleanFolder = trimSlashes(folder.trim());
+  const cleanTitle = title.trim() || "Untitled";
+  return cleanFolder ? `${cleanFolder}/${cleanTitle}.md` : `${cleanTitle}.md`;
+}
+function buildQuickAddContent(groupBy, columnName, title) {
+  const key = groupBy || "status";
+  const heading = title.trim() || `New ${columnName}`;
+  return `---
+${key}: ${JSON.stringify(columnName)}
+---
+
+# ${heading}
+`;
+}
+function buildQuickAddTitle(columnName, now = /* @__PURE__ */ new Date()) {
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mi = String(now.getMinutes()).padStart(2, "0");
+  return `New ${columnName} ${yyyy}-${mm}-${dd} ${hh}-${mi}`;
+}
+function trimSlashes(value) {
+  return value.replace(/^[/\\]+|[/\\]+$/g, "");
+}
+
 // src/views/viewChrome.ts
 function renderContextControls(container, plugin, resolved, onChange) {
   const bar = container.createDiv({ cls: "bpp-context" });
@@ -3256,7 +3411,7 @@ function renderContextControls(container, plugin, resolved, onChange) {
   if (!plugin.settings.isPro) return;
   const filters = plugin.settings.savedFilters;
   if (filters.length === 0) return;
-  const label = bar.createSpan({ cls: "bpp-muted bpp-context-filter-label", text: "Filter:" });
+  bar.createSpan({ cls: "bpp-muted bpp-context-filter-label", text: "Filter:" });
   const select = bar.createEl("select", { cls: "bpp-filter-select" });
   select.createEl("option", { text: "None", value: "" });
   for (const f of filters) {
@@ -3280,10 +3435,25 @@ function renderRollupBar(container, plugin, rows) {
 
 // src/views/kanbanView.ts
 var VIEW_TYPE_KANBAN = "bpp-kanban-view";
+var SORT_OPTIONS = [
+  { value: "manual", label: "Default order" },
+  { value: "name-asc", label: "Name \u2191" },
+  { value: "name-desc", label: "Name \u2193" },
+  { value: "due-asc", label: "Due date" },
+  { value: "priority-desc", label: "Priority" },
+  { value: "mtime-desc", label: "Recently changed" }
+];
 var KanbanView = class extends import_obsidian3.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.renderToken = 0;
+    this.search = "";
+    this.hideDoneColumn = false;
+    this.sortBy = "manual";
+    /** The live search input, so a re-render can tell whether it had focus before
+     * container.empty() destroys it, and hand focus back to its replacement. */
+    this.searchInputEl = null;
+    this.restoreSearchFocus = false;
     this.plugin = plugin;
   }
   getViewType() {
@@ -3300,6 +3470,7 @@ var KanbanView = class extends import_obsidian3.ItemView {
     this.registerEvent(this.app.metadataCache.on("changed", () => void this.render()));
   }
   async onClose() {
+    this.searchInputEl = null;
     this.contentEl.empty();
   }
   async render() {
@@ -3308,6 +3479,7 @@ var KanbanView = class extends import_obsidian3.ItemView {
     if (token !== this.renderToken) return;
     const groupBy = this.plugin.settings.kanbanGroupBy || "status";
     const container = this.contentEl;
+    this.restoreSearchFocus = this.searchInputEl !== null && document.activeElement === this.searchInputEl;
     container.empty();
     container.addClass("bpp-view");
     const header = container.createDiv({ cls: "bpp-toolbar" });
@@ -3315,46 +3487,163 @@ var KanbanView = class extends import_obsidian3.ItemView {
     header.createEl("span", { cls: "bpp-badge bpp-badge-lite", text: "Lite" });
     header.createEl("span", { cls: "bpp-muted", text: `grouped by "${groupBy}"` });
     renderContextControls(container, this.plugin, resolved, () => void this.render());
+    this.renderLiteControls(container);
     renderRollupBar(container, this.plugin, resolved.rows);
-    const columns = this.collectColumns(resolved.rows, groupBy);
+    const columns = buildKanbanColumns(resolved.rows, {
+      groupBy,
+      search: this.search,
+      hideColumn: this.hideDoneColumn ? "done" : "",
+      sortBy: this.sortBy
+    });
     const board = container.createDiv({ cls: "bpp-kanban-board" });
-    if (columns.size === 0) {
+    const rowById = new Map(resolved.rows.map((row) => [row.id, row]));
+    if (columns.length === 0) {
       board.createDiv({
         cls: "bpp-empty",
-        text: `No notes with a "${groupBy}" property found. Add "${groupBy}: To Do" to a note's frontmatter to populate the board.`
+        text: this.search || this.hideDoneColumn ? "No cards match the current lite filters." : `No notes with a "${groupBy}" property found. Add "${groupBy}: To Do" to a note's frontmatter to populate the board.`
       });
       return;
     }
     const cardFormula = this.plugin.settings.isPro ? this.plugin.settings.cardFormula.trim() : "";
-    for (const [colName, rows] of columns) {
+    const metaFields = this.plugin.settings.kanbanCardFields;
+    for (const column of columns) {
       const col = board.createDiv({ cls: "bpp-kanban-column" });
+      this.wireColumnDrop(col, column.name, groupBy, rowById);
       const colHead = col.createDiv({ cls: "bpp-kanban-column-head" });
-      colHead.createSpan({ text: colName });
-      colHead.createSpan({ cls: "bpp-count", text: String(rows.length) });
-      for (const row of rows) {
+      const colLabel = colHead.createDiv({ cls: "bpp-kanban-column-label" });
+      colLabel.createSpan({ text: column.name });
+      colLabel.createSpan({ cls: "bpp-count", text: String(column.rows.length) });
+      const addButton = colHead.createEl("button", {
+        cls: "bpp-column-add",
+        text: "+",
+        attr: { "aria-label": `Add note to ${column.name}` }
+      });
+      addButton.addEventListener("click", () => void this.quickAddNote(column.name, groupBy));
+      for (const row of column.rows) {
         const card = col.createDiv({ cls: "bpp-card" });
+        card.draggable = true;
         card.createDiv({ cls: "bpp-card-title", text: row.name });
+        for (const line of getCardMeta(row, metaFields)) {
+          card.createDiv({ cls: "bpp-card-meta", text: line });
+        }
         if (cardFormula) {
           const val = evaluateSafe(cardFormula, row.scope);
           if (val !== null && toStr(val) !== "") {
-            card.createDiv({ cls: "bpp-card-meta", text: toStr(val) });
+            card.createDiv({ cls: "bpp-card-meta bpp-card-meta-premium", text: toStr(val) });
           }
         }
+        card.addEventListener("dragstart", (event) => {
+          var _a, _b;
+          card.addClass("is-dragging");
+          (_a = event.dataTransfer) == null ? void 0 : _a.setData("text/plain", row.id);
+          (_b = event.dataTransfer) == null ? void 0 : _b.setData("application/x-bpp-row", row.id);
+          if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+        });
+        card.addEventListener("dragend", () => card.removeClass("is-dragging"));
         card.addEventListener("click", () => this.openRow(row));
       }
     }
   }
-  /** Group rows by a property/formula into ordered columns. */
-  collectColumns(rows, groupBy) {
-    const columns = /* @__PURE__ */ new Map();
-    for (const row of rows) {
-      const value = row.scope.get(groupBy);
-      if (value === void 0 || value === null || value === "") continue;
-      const colName = String(value);
-      if (!columns.has(colName)) columns.set(colName, []);
-      columns.get(colName).push(row);
+  renderLiteControls(container) {
+    const controls = container.createDiv({ cls: "bpp-lite-controls" });
+    const searchWrap = controls.createDiv({ cls: "bpp-lite-control" });
+    searchWrap.createSpan({ cls: "bpp-muted", text: "Search" });
+    const searchInput = searchWrap.createEl("input", {
+      type: "search",
+      cls: "bpp-lite-input",
+      placeholder: "Filter cards\u2026"
+    });
+    searchInput.value = this.search;
+    this.searchInputEl = searchInput;
+    searchInput.addEventListener("input", () => {
+      this.search = searchInput.value;
+      void this.render();
+    });
+    if (this.restoreSearchFocus) {
+      this.restoreSearchFocus = false;
+      searchInput.focus();
+      const end = searchInput.value.length;
+      searchInput.setSelectionRange(end, end);
     }
-    return columns;
+    const sortWrap = controls.createDiv({ cls: "bpp-lite-control" });
+    sortWrap.createSpan({ cls: "bpp-muted", text: "Sort" });
+    const sortSelect = sortWrap.createEl("select", { cls: "bpp-lite-select" });
+    for (const option of SORT_OPTIONS) {
+      const el = sortSelect.createEl("option", { text: option.label, value: option.value });
+      if (option.value === this.sortBy) el.selected = true;
+    }
+    sortSelect.addEventListener("change", () => {
+      this.sortBy = sortSelect.value;
+      void this.render();
+    });
+    const toggleWrap = controls.createDiv({ cls: "bpp-lite-control bpp-lite-control-toggle" });
+    const toggle = toggleWrap.createEl("input", { type: "checkbox" });
+    toggle.checked = this.hideDoneColumn;
+    toggle.addEventListener("change", () => {
+      this.hideDoneColumn = toggle.checked;
+      void this.render();
+    });
+    toggleWrap.createSpan({ cls: "bpp-muted", text: "Hide done" });
+  }
+  wireColumnDrop(columnEl, columnName, groupBy, rowById) {
+    columnEl.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      columnEl.addClass("is-drop-target");
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    });
+    columnEl.addEventListener("dragleave", () => columnEl.removeClass("is-drop-target"));
+    columnEl.addEventListener("drop", (event) => {
+      var _a, _b;
+      event.preventDefault();
+      columnEl.removeClass("is-drop-target");
+      const rowId = ((_a = event.dataTransfer) == null ? void 0 : _a.getData("application/x-bpp-row")) || ((_b = event.dataTransfer) == null ? void 0 : _b.getData("text/plain"));
+      if (!rowId) return;
+      const row = rowById.get(rowId);
+      if (!row) return;
+      void this.moveRowToColumn(row, groupBy, columnName);
+    });
+  }
+  async moveRowToColumn(row, groupBy, columnName) {
+    const file = this.app.vault.getAbstractFileByPath(row.id);
+    if (!(file instanceof import_obsidian3.TFile)) return;
+    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
+      const target = frontmatter;
+      const next = setKanbanGroupValue(target, groupBy, columnName);
+      for (const [key, value] of Object.entries(next)) target[key] = value;
+    });
+    await this.render();
+  }
+  async quickAddNote(columnName, groupBy) {
+    const title = buildQuickAddTitle(columnName);
+    const basePath = (0, import_obsidian3.normalizePath)(buildQuickAddPath(this.plugin.settings.kanbanQuickAddFolder, title));
+    const path = await this.makeUniquePath(basePath);
+    await this.ensureFolder(path);
+    const file = await this.app.vault.create(path, buildQuickAddContent(groupBy, columnName, title));
+    new import_obsidian3.Notice(`Created ${file.basename}`);
+    await this.app.workspace.getLeaf("tab").openFile(file);
+    await this.render();
+  }
+  async ensureFolder(path) {
+    const parts = path.split("/");
+    parts.pop();
+    let current = "";
+    for (const part of parts) {
+      current = current ? `${current}/${part}` : part;
+      const normalized = (0, import_obsidian3.normalizePath)(current);
+      if (!normalized) continue;
+      if (this.app.vault.getAbstractFileByPath(normalized)) continue;
+      await this.app.vault.createFolder(normalized);
+    }
+  }
+  async makeUniquePath(basePath) {
+    if (!this.app.vault.getAbstractFileByPath(basePath)) return basePath;
+    const suffix = ".md";
+    const stem = basePath.endsWith(suffix) ? basePath.slice(0, -suffix.length) : basePath;
+    for (let i = 2; i < 1e3; i++) {
+      const candidate = `${stem} ${i}${suffix}`;
+      if (!this.app.vault.getAbstractFileByPath(candidate)) return candidate;
+    }
+    throw new Error(`Could not find free path for ${basePath}`);
   }
   openRow(row) {
     const file = this.app.vault.getAbstractFileByPath(row.id);
@@ -3859,6 +4148,8 @@ var BasesPowerPackPlugin = class extends import_obsidian6.Plugin {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
     this.settings.savedFilters = sanitizeSavedFilters(this.settings.savedFilters);
     this.settings.rollups = sanitizeRollups(this.settings.rollups);
+    this.settings.kanbanCardFields = sanitizeStringArray(this.settings.kanbanCardFields, DEFAULT_SETTINGS.kanbanCardFields);
+    if (typeof this.settings.kanbanQuickAddFolder !== "string") this.settings.kanbanQuickAddFolder = "";
     if (typeof this.settings.activeBasePath !== "string") this.settings.activeBasePath = "";
     if (typeof this.settings.activeFilterId !== "string") this.settings.activeFilterId = "";
     if (typeof this.settings.cardFormula !== "string") this.settings.cardFormula = "";
@@ -3879,4 +4170,10 @@ function sanitizeRollups(value) {
   return value.filter(
     (r) => !!r && typeof r === "object" && typeof r.id === "string" && typeof r.label === "string" && typeof r.expression === "string" && AGGREGATIONS.includes(r.aggregation)
   );
+}
+function sanitizeStringArray(value, fallback = []) {
+  if (!Array.isArray(value)) return [...fallback];
+  const parts = value.filter((item) => typeof item === "string").map((item) => item.trim()).filter(Boolean);
+  const deduped = [...new Set(parts)];
+  return deduped.length > 0 ? deduped : [...fallback];
 }

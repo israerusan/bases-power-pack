@@ -197,6 +197,8 @@ export default class BasesPowerPackPlugin extends Plugin {
 
 		this.settings.savedFilters = sanitizeSavedFilters(this.settings.savedFilters);
 		this.settings.rollups = sanitizeRollups(this.settings.rollups);
+		this.settings.kanbanCardFields = sanitizeStringArray(this.settings.kanbanCardFields, DEFAULT_SETTINGS.kanbanCardFields);
+		if (typeof this.settings.kanbanQuickAddFolder !== "string") this.settings.kanbanQuickAddFolder = "";
 		if (typeof this.settings.activeBasePath !== "string") this.settings.activeBasePath = "";
 		if (typeof this.settings.activeFilterId !== "string") this.settings.activeFilterId = "";
 		if (typeof this.settings.cardFormula !== "string") this.settings.cardFormula = "";
@@ -236,4 +238,11 @@ function sanitizeRollups(value: unknown): Rollup[] {
 			typeof (r as Rollup).expression === "string" &&
 			AGGREGATIONS.includes((r as Rollup).aggregation)
 	);
+}
+
+function sanitizeStringArray(value: unknown, fallback: string[] = []): string[] {
+	if (!Array.isArray(value)) return [...fallback];
+	const parts = value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean);
+	const deduped = [...new Set(parts)];
+	return deduped.length > 0 ? deduped : [...fallback];
 }

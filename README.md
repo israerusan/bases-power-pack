@@ -11,6 +11,10 @@ Advanced database views and automation on top of Obsidian's native **Bases** fea
 | Feature | Lite (free) | Premium (~$29 one-time) |
 | --- | :---: | :---: |
 | **Kanban view** (group notes by a frontmatter property) | ✅ | ✅ |
+| **Kanban quick filters** (search, sort, hide done) | ✅ | ✅ |
+| **Kanban quick add** (create a note directly from a column) | ✅ | ✅ |
+| **Kanban drag-and-drop updates** (move a card, write frontmatter) | ✅ | ✅ |
+| **Kanban card metadata** (raw due / priority / owner / tags lines) | ✅ | ✅ |
 | **Calendar view** (notes placed by a date property) | — | ✅ |
 | **Gantt timeline view** (bars from start/end dates) | — | ✅ |
 | **Roll-ups** (aggregate an expression across rows) | — | ✅ |
@@ -18,13 +22,13 @@ Advanced database views and automation on top of Obsidian's native **Bases** fea
 | **Saved filters & view presets** | — | ✅ |
 | **`.base` file as data source** (read Bases filters + formulas) | — | ✅ |
 
-The **Kanban view is the free "one extra view"** — fully usable with no license. Everything else is gated behind the license check (`LicenseManager.verify`), enforced at render time, not just hidden in the UI.
+Lite is now a genuinely useful kanban layer: create cards, move cards, search/sort the board, and see core metadata without paying. Premium still owns the database brains — calendar, Gantt, formulas, roll-ups, saved filters, and `.base`-driven workflows.
 
 ### How the views work
 
 All three views run on a shared query engine. In the **Lite** tier they read standard frontmatter across the vault; in **Premium** they can instead take a `.base` file as their data source, applying its filters and formulas.
 
-- **Kanban** — groups rows by a configurable property (default `status`), or by any formula. Premium cards can show a formula value (e.g. `round(done / total * 100, 0) + "%"`). Click a card to open the note.
+- **Kanban** — groups rows by a configurable property (default `status`), supports quick search/sort/hide-done controls, lets you create a note directly from any column, and lets you drag cards between columns to update frontmatter. Premium cards can also show a formula value (e.g. `round(done / total * 100, 0) + "%"`). Click a card to open the note.
 - **Calendar** — month grid that places rows onto days using a configurable date property (default `due`). Navigate months with the arrows.
 - **Gantt** — horizontal timeline; each row becomes a bar from a start date property to an optional end date, with a "today" marker.
 
