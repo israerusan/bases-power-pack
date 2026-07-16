@@ -20,6 +20,7 @@ await build({
 			export * as undo from "./src/query/undo.ts";
 			export * as search from "./src/query/search.ts";
 			export * as wip from "./src/query/wip.ts";
+			export * as hierarchy from "./src/query/hierarchy.ts";
 			export * as kanban from "./src/query/kanban.ts";
 			export * as kanbanActions from "./src/query/kanbanActions.ts";
 			export * as base from "./src/bases/baseDefinition.ts";
@@ -37,7 +38,7 @@ await build({
 });
 
 const m = await import(`file://${outfile.replace(/\\/g, "/")}`);
-const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, kanban, kanbanActions, base, resolve, rowmod } = m;
+const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, hierarchy, kanban, kanbanActions, base, resolve, rowmod } = m;
 
 // ---- expression engine -----------------------------------------------------
 const scope = {
@@ -479,6 +480,99 @@ assert.equal(wip.dropWouldExceed(2, 3), false, "a 3rd card fills but doesn't exc
 assert.equal(wip.dropWouldExceed(99, null), false, "no limit never blocks a drop");
 assert.equal(wip.formatWipCount(3, 5), "3 / 5", "count renders with a limit");
 assert.equal(wip.formatWipCount(3, null), "3", "count renders bare without a limit");
+
+// ---- hierarchy / outline ----------------------------------------------------
+const H = hierarchy;
+const node = (id, parentRef, done = false, order = null, name = id) => ({ id, name, parentRef, order, done });
+
+// resolveParentRef: path passthrough, wikilink/alias strip, .md completion, empty.
+const known = new Set(["Projects/Alpha.md", "Tasks/One.md"]);
+assert.equal(H.resolveParentRef("Projects/Alpha.md", known), "Projects/Alpha.md", "known path passes through");
+assert.equal(H.resolveParentRef("[[Projects/Alpha.md|Alpha]]", known), "Projects/Alpha.md", "wikilink+alias stripped");
+assert.equal(H.resolveParentRef("Projects/Alpha", known), "Projects/Alpha.md", "bare path gets .md when that resolves");
+assert.equal(H.resolveParentRef("", known), null, "empty ref is null");
+assert.equal(H.resolveParentRef("Ghost/Nope.md", known), "Ghost/Nope.md", "unknown ref returned as-is for missing detection");
+
+// Forest: two roots, nesting, a leaf.
+const f1 = H.buildForest([
+	node("Tasks/One.md", "Projects/Alpha.md"),
+	node("Projects/Alpha.md", null),
+	node("Projects/Beta.md", null),
+], new Set(["Tasks/One.md", "Projects/Alpha.md", "Projects/Beta.md"]));
+assert.equal(f1.roots.length, 2, "two top-level roots");
+const alpha = f1.byId.get("Projects/Alpha.md");
+assert.equal(alpha.children.length, 1, "Alpha has one child");
+assert.equal(alpha.children[0].id, "Tasks/One.md", "One nests under Alpha");
+
+// Missing parent → quarantined root, flagged.
+const f2 = H.buildForest([node("a.md", "gone.md")], new Set(["a.md"]));
+assert.equal(f2.roots[0].missingParent, true, "dangling parent flagged as missing");
+assert.equal(f2.roots.length, 1, "missing-parent node is a root");
+
+// Ghost parent: parent exists in vault but is filtered out of the rows.
+const f3 = H.buildForest([node("child.md", "parent.md")], new Set(["child.md", "parent.md"]));
+assert.equal(f3.roots.length, 1, "one root (the ghost)");
+assert.equal(f3.roots[0].ghost, true, "filtered-out parent becomes a ghost");
+assert.equal(f3.roots[0].children[0].id, "child.md", "child nests under the ghost");
+
+// Cycle: A<->B both quarantined, no infinite recursion.
+const f4 = H.buildForest([node("A.md", "B.md"), node("B.md", "A.md")], new Set(["A.md", "B.md"]));
+assert.equal(f4.roots.length, 2, "both cyclic nodes are roots");
+assert.ok(f4.byId.get("A.md").cycle && f4.byId.get("B.md").cycle, "both flagged as cycle");
+assert.doesNotThrow(() => H.flattenForest(f4, new Set()), "flatten a cycle without overflow");
+// Self-cycle.
+const f5 = H.buildForest([node("s.md", "s.md")], new Set(["s.md"]));
+assert.equal(f5.byId.get("s.md").cycle, true, "self-parent flagged as cycle");
+
+// Metrics: progress rolls up over leaves only.
+const f6 = H.buildForest([
+	node("proj.md", null),
+	node("t1.md", "proj.md", true),
+	node("t2.md", "proj.md", false),
+], new Set(["proj.md", "t1.md", "t2.md"]));
+const proj = f6.byId.get("proj.md");
+assert.equal(proj.metrics.descendantCount, 2, "descendant count counts both tasks");
+assert.equal(proj.metrics.leafTotal, 2, "two leaf tasks");
+assert.equal(proj.metrics.leafDone, 1, "one done");
+assert.equal(proj.metrics.progress, 50, "progress = 50% over leaves");
+
+// Flatten respects collapse + order.
+const f7 = H.buildForest([
+	node("p.md", null),
+	node("b.md", "p.md", false, 2, "b"),
+	node("a.md", "p.md", false, 1, "a"),
+], new Set(["p.md", "a.md", "b.md"]));
+const orderOf = (id) => ({ "a.md": 1, "b.md": 2 })[id] ?? null;
+const openFlat = H.flattenForest(f7, new Set(), orderOf);
+assert.deepEqual(openFlat.map((r) => r.id), ["p.md", "a.md", "b.md"], "children sorted by order field");
+const collapsedFlat = H.flattenForest(f7, new Set(["p.md"]), orderOf);
+assert.deepEqual(collapsedFlat.map((r) => r.id), ["p.md"], "collapsed parent hides its children");
+assert.equal(collapsedFlat[0].hasChildren, true, "collapsed parent still reports children");
+
+// canReparent: cycle prevention + no-ops.
+const rp = H.buildForest([
+	node("root.md", null),
+	node("mid.md", "root.md"),
+	node("leaf.md", "mid.md"),
+], new Set(["root.md", "mid.md", "leaf.md"]));
+assert.equal(H.canReparent("root.md", "leaf.md", rp.byId).ok, false, "can't move a note under its own descendant");
+assert.equal(H.canReparent("leaf.md", "leaf.md", rp.byId).ok, false, "can't parent to self");
+assert.equal(H.canReparent("mid.md", "mid.md", rp.byId).ok, false, "already-there self is rejected");
+assert.equal(H.canReparent("leaf.md", "root.md", rp.byId).ok, true, "a valid reparent is allowed");
+assert.equal(H.canReparent("mid.md", null, rp.byId).ok, true, "detaching to root is allowed");
+assert.equal(H.canReparent("root.md", null, rp.byId).ok, false, "already-a-root detach is a no-op");
+
+// Rename retarget: only children pointing at the old path.
+assert.deepEqual(
+	H.childrenToRetarget("Projects/Alpha.md", "Projects/Alpha2.md", [
+		node("x.md", "Projects/Alpha.md"),
+		node("y.md", "Projects/Other.md"),
+		node("z.md", "Projects/Alpha.md"),
+	]),
+	["x.md", "z.md"],
+	"retarget selects exactly the children of the renamed note"
+);
+assert.deepEqual(H.childrenToRetarget("p.md", "p.md", [node("x.md", "p.md")]), [], "no-op rename retargets nothing");
 
 fs.unlinkSync(outfile);
 console.log("engine tests passed");

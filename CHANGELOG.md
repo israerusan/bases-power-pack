@@ -3,6 +3,36 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.9.0] - 2026-07-16
+
+Adds the one axis the product was missing: **structure**. Status (Kanban), time
+(Calendar), and duration (Gantt) were covered; now notes can nest.
+
+### Added — Outline / hierarchy view (Premium)
+- **A new tree view.** Link notes with a `parent` frontmatter property holding
+  the parent note's path, and the Outline view renders the whole forest as an
+  indented, collapsible tree (Month/Week/Agenda-style toolbar with search,
+  expand-all / collapse-all).
+- **Branch roll-ups.** Every parent shows a descendant count and a
+  **done / total** progress bar rolled up over its leaf tasks.
+- **Drag to reparent.** Drag a row onto another to nest it, or onto the top
+  strip to detach it — all undoable. Right-click to add a child note, set or
+  clear the parent, and the shared open / rename / delete actions.
+- **Safe by construction.** Parent cycles and dangling parent paths are flagged
+  and quarantined instead of crashing; a parent filtered out of the current view
+  appears as a faint placeholder so its children stay nested; validation runs
+  against the whole vault so a move can never create a hidden cycle.
+- **Rename-safe.** Renaming or moving a parent note automatically repoints every
+  child that referenced it, as a single undo step (rename events are coalesced,
+  so moving a folder is one pass, not one per file).
+- New settings: Outline parent property, optional sibling-order property, and a
+  quick-add folder.
+
+### Internal
+- New pure, unit-tested core `query/hierarchy.ts` (forest build with cycle /
+  missing / ghost handling, flatten-by-expansion, branch metrics, reparent
+  validation, rename retarget), exercised by ~30 new assertions.
+
 ## [1.8.0] - 2026-07-16
 
 "Control & Confidence." Makes every destructive edit reversible, brings the

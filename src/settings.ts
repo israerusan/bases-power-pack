@@ -58,6 +58,11 @@ export interface BasesPowerPackSettings {
 	ganttProgressProp: string;
 	ganttMilestoneProp: string;
 
+	/** Hierarchy / Outline (premium) */
+	hierarchyParentProp: string;
+	hierarchyOrderProp: string;
+	hierarchyQuickAddFolder: string;
+
 	/** Bases integration (premium) */
 	activeBasePath: string;
 
@@ -97,6 +102,9 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	ganttEndProp: "end",
 	ganttProgressProp: "progress",
 	ganttMilestoneProp: "milestone",
+	hierarchyParentProp: "parent",
+	hierarchyOrderProp: "order",
+	hierarchyQuickAddFolder: "",
 	activeBasePath: "",
 	savedFilters: [],
 	activeFilterId: "",
@@ -326,6 +334,51 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 							this.plugin.settings.ganttMilestoneProp = value.trim();
 							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
 						})
+				);
+			}
+		);
+
+		premium(
+			"Outline parent property",
+			"Frontmatter property holding the vault-relative path of a note's parent (builds the Outline tree).",
+			(setting) => {
+				setting.addText((text) =>
+					text
+						.setPlaceholder("parent")
+						.setValue(this.plugin.settings.hierarchyParentProp)
+						.onChange((value) => {
+							this.plugin.settings.hierarchyParentProp = value.trim() || "parent";
+							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+						})
+				);
+			}
+		);
+
+		premium(
+			"Outline order property",
+			"Optional numeric frontmatter property for sibling order in the Outline. Blank falls back to sorting by name.",
+			(setting) => {
+				setting.addText((text) =>
+					text
+						.setPlaceholder("order")
+						.setValue(this.plugin.settings.hierarchyOrderProp)
+						.onChange((value) => {
+							this.plugin.settings.hierarchyOrderProp = value.trim();
+							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+						})
+				);
+			}
+		);
+
+		premium(
+			"Outline quick-add folder",
+			"Optional folder for child notes created from the Outline (leave blank for the vault root).",
+			(setting) => {
+				setting.addText((text) =>
+					text.setValue(this.plugin.settings.hierarchyQuickAddFolder).onChange((value) => {
+						this.plugin.settings.hierarchyQuickAddFolder = value.trim();
+						void this.plugin.saveSettings();
+					})
 				);
 			}
 		);

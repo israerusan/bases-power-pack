@@ -2271,7 +2271,7 @@ __export(main_exports, {
   default: () => BasesPowerPackPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian8 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 
 // src/settings.ts
 var import_obsidian2 = require("obsidian");
@@ -3347,6 +3347,9 @@ var DEFAULT_SETTINGS = {
   ganttEndProp: "end",
   ganttProgressProp: "progress",
   ganttMilestoneProp: "milestone",
+  hierarchyParentProp: "parent",
+  hierarchyOrderProp: "order",
+  hierarchyQuickAddFolder: "",
   activeBasePath: "",
   savedFilters: [],
   activeFilterId: "",
@@ -3507,6 +3510,42 @@ var BasesPowerPackSettingTab = class extends import_obsidian2.PluginSettingTab {
           (text) => text.setPlaceholder("milestone").setValue(this.plugin.settings.ganttMilestoneProp).onChange((value) => {
             this.plugin.settings.ganttMilestoneProp = value.trim();
             void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+          })
+        );
+      }
+    );
+    premium(
+      "Outline parent property",
+      "Frontmatter property holding the vault-relative path of a note's parent (builds the Outline tree).",
+      (setting) => {
+        setting.addText(
+          (text) => text.setPlaceholder("parent").setValue(this.plugin.settings.hierarchyParentProp).onChange((value) => {
+            this.plugin.settings.hierarchyParentProp = value.trim() || "parent";
+            void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+          })
+        );
+      }
+    );
+    premium(
+      "Outline order property",
+      "Optional numeric frontmatter property for sibling order in the Outline. Blank falls back to sorting by name.",
+      (setting) => {
+        setting.addText(
+          (text) => text.setPlaceholder("order").setValue(this.plugin.settings.hierarchyOrderProp).onChange((value) => {
+            this.plugin.settings.hierarchyOrderProp = value.trim();
+            void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+          })
+        );
+      }
+    );
+    premium(
+      "Outline quick-add folder",
+      "Optional folder for child notes created from the Outline (leave blank for the vault root).",
+      (setting) => {
+        setting.addText(
+          (text) => text.setValue(this.plugin.settings.hierarchyQuickAddFolder).onChange((value) => {
+            this.plugin.settings.hierarchyQuickAddFolder = value.trim();
+            void this.plugin.saveSettings();
           })
         );
       }
@@ -5414,15 +5453,535 @@ function valueToDateString(value) {
   return toStr(value);
 }
 
+// src/views/hierarchyView.ts
+var import_obsidian8 = require("obsidian");
+
+// src/query/hierarchy.ts
+function baseName(path) {
+  var _a;
+  const tail = (_a = path.split("/").pop()) != null ? _a : path;
+  return tail.replace(/\.md$/i, "");
+}
+function resolveParentRef(raw, knownPaths) {
+  if (typeof raw !== "string") return null;
+  let s = raw.trim();
+  if (!s) return null;
+  const link = /^\[\[(.+?)\]\]$/.exec(s);
+  if (link) s = link[1];
+  const bar = s.indexOf("|");
+  if (bar !== -1) s = s.slice(0, bar);
+  s = s.trim().replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!s) return null;
+  if (knownPaths.has(s)) return s;
+  if (!/\.md$/i.test(s) && knownPaths.has(`${s}.md`)) return `${s}.md`;
+  return s;
+}
+function emptyMetrics() {
+  return { descendantCount: 0, leafTotal: 0, leafDone: 0, progress: 0 };
+}
+function makeNode(input) {
+  return {
+    id: input.id,
+    name: input.name,
+    parentRef: input.parentRef,
+    done: input.done,
+    children: [],
+    ghost: false,
+    missingParent: false,
+    cycle: false,
+    metrics: emptyMetrics()
+  };
+}
+function makeGhost(path) {
+  return {
+    id: path,
+    name: baseName(path),
+    parentRef: null,
+    done: false,
+    children: [],
+    ghost: true,
+    missingParent: false,
+    cycle: false,
+    metrics: emptyMetrics()
+  };
+}
+function buildForest(inputs, knownPaths = /* @__PURE__ */ new Set()) {
+  const byId = /* @__PURE__ */ new Map();
+  for (const input of inputs) byId.set(input.id, makeNode(input));
+  const cyclic = /* @__PURE__ */ new Set();
+  for (const input of inputs) {
+    const seen = /* @__PURE__ */ new Set();
+    let cur = input.id;
+    while (cur !== null) {
+      if (seen.has(cur)) {
+        cyclic.add(input.id);
+        break;
+      }
+      seen.add(cur);
+      const node = byId.get(cur);
+      const p = node ? node.parentRef : null;
+      cur = p !== null && byId.has(p) ? p : null;
+    }
+  }
+  const roots = [];
+  const ghosts = /* @__PURE__ */ new Map();
+  for (const input of inputs) {
+    const node = byId.get(input.id);
+    if (cyclic.has(input.id)) {
+      node.cycle = true;
+      roots.push(node);
+      continue;
+    }
+    const p = node.parentRef;
+    if (p === null) {
+      roots.push(node);
+      continue;
+    }
+    const parent = byId.get(p);
+    if (parent) {
+      parent.children.push(node);
+      continue;
+    }
+    if (knownPaths.has(p)) {
+      let ghost = ghosts.get(p);
+      if (!ghost) {
+        ghost = makeGhost(p);
+        ghosts.set(p, ghost);
+        roots.push(ghost);
+      }
+      ghost.children.push(node);
+    } else {
+      node.missingParent = true;
+      roots.push(node);
+    }
+  }
+  for (const root of roots) computeMetrics(root);
+  return { roots, byId };
+}
+function computeMetrics(node) {
+  if (node.children.length === 0) {
+    const isLeafTask = !node.ghost;
+    node.metrics = {
+      descendantCount: 0,
+      leafTotal: isLeafTask ? 1 : 0,
+      leafDone: isLeafTask && node.done ? 1 : 0,
+      progress: isLeafTask ? node.done ? 100 : 0 : null
+    };
+    return node.metrics;
+  }
+  let descendantCount = 0;
+  let leafTotal = 0;
+  let leafDone = 0;
+  for (const child of node.children) {
+    const m = computeMetrics(child);
+    descendantCount += (child.ghost ? 0 : 1) + m.descendantCount;
+    leafTotal += m.leafTotal;
+    leafDone += m.leafDone;
+  }
+  node.metrics = {
+    descendantCount,
+    leafTotal,
+    leafDone,
+    progress: leafTotal > 0 ? Math.round(leafDone / leafTotal * 100) : null
+  };
+  return node.metrics;
+}
+function compareSiblings(a, b, orderOf) {
+  const ao = orderOf(a.id);
+  const bo = orderOf(b.id);
+  const av = ao === null ? Number.POSITIVE_INFINITY : ao;
+  const bv = bo === null ? Number.POSITIVE_INFINITY : bo;
+  if (av !== bv) return av - bv;
+  const byName = a.name.localeCompare(b.name, void 0, { sensitivity: "base" });
+  if (byName !== 0) return byName;
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+function flattenForest(forest, collapsed, orderOf = () => null, maxDepth = 100) {
+  const out = [];
+  const walk = (nodes, depth) => {
+    if (depth > maxDepth) return;
+    const sorted = [...nodes].sort((a, b) => compareSiblings(a, b, orderOf));
+    for (const node of sorted) {
+      const hasChildren = node.children.length > 0;
+      const isCollapsed = collapsed.has(node.id);
+      out.push({
+        id: node.id,
+        name: node.name,
+        depth,
+        hasChildren,
+        collapsed: isCollapsed,
+        ghost: node.ghost,
+        missingParent: node.missingParent,
+        cycle: node.cycle,
+        metrics: node.metrics
+      });
+      if (hasChildren && !isCollapsed) walk(node.children, depth + 1);
+    }
+  };
+  walk(forest.roots, 0);
+  return out;
+}
+function isAncestorOrSelf(ancestorId, nodeId, byId) {
+  let cur = nodeId;
+  const seen = /* @__PURE__ */ new Set();
+  while (cur !== null) {
+    if (cur === ancestorId) return true;
+    if (seen.has(cur)) return false;
+    seen.add(cur);
+    const node = byId.get(cur);
+    cur = node ? node.parentRef : null;
+  }
+  return false;
+}
+function canReparent(childId, newParentId, byId) {
+  const child = byId.get(childId);
+  if (!child) return { ok: false, reason: "unknown note" };
+  if (newParentId === null) {
+    return child.parentRef === null ? { ok: false, reason: "already a root" } : { ok: true };
+  }
+  if (childId === newParentId) return { ok: false, reason: "a note can't be its own parent" };
+  if (child.parentRef === newParentId) return { ok: false, reason: "already there" };
+  if (!byId.has(newParentId)) return { ok: false, reason: "unknown parent" };
+  if (isAncestorOrSelf(childId, newParentId, byId)) {
+    return { ok: false, reason: "can't move a note under its own descendant" };
+  }
+  return { ok: true };
+}
+
+// src/views/hierarchyView.ts
+var VIEW_TYPE_HIERARCHY = "bpp-hierarchy-view";
+var DND_TREE = "application/x-bpp-tree";
+var HierarchyView = class extends PowerPackView {
+  constructor() {
+    super(...arguments);
+    this.search = "";
+    this.searchInputEl = null;
+    this.restoreSearchFocus = false;
+    /** Collapsed node ids — session-only UI state, never written to frontmatter. */
+    this.collapsed = /* @__PURE__ */ new Set();
+  }
+  getViewType() {
+    return VIEW_TYPE_HIERARCHY;
+  }
+  getDisplayText() {
+    return "Power Pack: Outline";
+  }
+  getIcon() {
+    return "list-tree";
+  }
+  async onClose() {
+    this.searchInputEl = null;
+    await super.onClose();
+  }
+  async render() {
+    var _a;
+    const token = ++this.renderToken;
+    const container = this.contentEl;
+    if (!this.plugin.settings.isPro) {
+      container.empty();
+      container.addClass("bpp-view");
+      this.renderUpgradeNotice(
+        container,
+        "\u{1F333}",
+        "Outline is a Premium view",
+        "See your notes as a project tree \u2014 nest tasks under projects, roll up progress across a branch, and drag to reparent \u2014 unlock it with a Bases Power Pack license."
+      );
+      return;
+    }
+    const resolved = await resolveViewRows(this.app, this.plugin);
+    if (this.isStale(token)) return;
+    this.restoreSearchFocus = this.searchInputEl !== null && this.searchInputEl.ownerDocument.activeElement === this.searchInputEl;
+    container.empty();
+    container.addClass("bpp-view");
+    const parentProp = this.plugin.settings.hierarchyParentProp || "parent";
+    const orderProp = this.plugin.settings.hierarchyOrderProp.trim();
+    const doneProp = this.plugin.settings.kanbanGroupBy || "status";
+    this.renderToolbar(container, parentProp);
+    renderContextControls(container, this.plugin, resolved, () => void this.render());
+    renderRollupBar(container, this.plugin, resolved.rows);
+    const rows = filterRowsByText(resolved.rows, this.search);
+    const rowById = new Map(rows.map((row) => [row.id, row]));
+    const knownPaths = new Set(this.plugin.getNotesSnapshot().map((n) => n.path));
+    const orders = /* @__PURE__ */ new Map();
+    const inputs = rows.map((row) => {
+      const order = this.numberOrNull(orderProp ? row.scope.get(orderProp) : null);
+      orders.set(row.id, order);
+      return {
+        id: row.id,
+        name: row.name,
+        parentRef: resolveParentRef(row.scope.get(parentProp), knownPaths),
+        order,
+        done: this.isDone(row, doneProp)
+      };
+    });
+    const forest = buildForest(inputs, knownPaths);
+    const flat = flattenForest(forest, this.collapsed, (id) => {
+      var _a2;
+      return (_a2 = orders.get(id)) != null ? _a2 : null;
+    });
+    if (flat.length === 0) {
+      container.createDiv({
+        cls: "bpp-empty",
+        text: this.search ? "No notes match the current search." : `No notes to outline yet. Add "${parentProp}: Projects/My Project.md" to a note's frontmatter to nest it under another.`
+      });
+      return;
+    }
+    this.renderRootDropZone(container, parentProp);
+    const list = container.createDiv({ cls: "bpp-tree" });
+    for (const flatRow of flat) {
+      this.renderTreeRow(list, flatRow, (_a = rowById.get(flatRow.id)) != null ? _a : null, forest, parentProp);
+    }
+  }
+  renderToolbar(container, parentProp) {
+    const toolbar = container.createDiv({ cls: "bpp-toolbar" });
+    toolbar.createEl("h3", { text: "Outline" });
+    toolbar.createEl("span", { cls: "bpp-badge bpp-badge-premium", text: "Premium" });
+    toolbar.createSpan({ cls: "bpp-muted", text: `nested by "${parentProp}"` });
+    const group = toolbar.createDiv({ cls: "bpp-segmented" });
+    const expand = group.createEl("button", { text: "Expand all", cls: "bpp-seg-btn" });
+    expand.addEventListener("click", () => {
+      this.collapsed.clear();
+      void this.render();
+    });
+    const collapse = group.createEl("button", { text: "Collapse all", cls: "bpp-seg-btn" });
+    collapse.addEventListener("click", () => void this.collapseAll());
+    this.searchInputEl = renderSearchControl(toolbar, this.search, (value) => {
+      this.search = value;
+      void this.render();
+    });
+    if (this.restoreSearchFocus) {
+      this.restoreSearchFocus = false;
+      this.searchInputEl.focus();
+      const end = this.searchInputEl.value.length;
+      this.searchInputEl.setSelectionRange(end, end);
+    }
+  }
+  /** Collapse every node that has children, using the exact ids the tree flattens
+   * to (rebuild the same forest so collapsed-set membership always matches). */
+  async collapseAll() {
+    const parentProp = this.plugin.settings.hierarchyParentProp || "parent";
+    const resolved = await resolveViewRows(this.app, this.plugin);
+    const rows = filterRowsByText(resolved.rows, this.search);
+    const knownPaths = new Set(this.plugin.getNotesSnapshot().map((n) => n.path));
+    const inputs = rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      parentRef: resolveParentRef(row.scope.get(parentProp), knownPaths),
+      order: null,
+      done: false
+    }));
+    const forest = buildForest(inputs, knownPaths);
+    const collapsed = /* @__PURE__ */ new Set();
+    const walk = (nodes) => {
+      for (const node of nodes) {
+        if (node.children.length > 0) {
+          collapsed.add(node.id);
+          walk(node.children);
+        }
+      }
+    };
+    walk(forest.roots);
+    this.collapsed = collapsed;
+    await this.render();
+  }
+  renderRootDropZone(container, parentProp) {
+    const zone = container.createDiv({ cls: "bpp-tree-rootzone", text: "Drop here to make a top-level note" });
+    zone.addEventListener("dragover", (evt) => {
+      var _a, _b;
+      if (!((_b = (_a = evt.dataTransfer) == null ? void 0 : _a.types) != null ? _b : []).includes(DND_TREE)) return;
+      evt.preventDefault();
+      zone.addClass("is-drop-target");
+      if (evt.dataTransfer) evt.dataTransfer.dropEffect = "move";
+    });
+    zone.addEventListener("dragleave", () => zone.removeClass("is-drop-target"));
+    zone.addEventListener("drop", (evt) => {
+      var _a;
+      zone.removeClass("is-drop-target");
+      const id = (_a = evt.dataTransfer) == null ? void 0 : _a.getData(DND_TREE);
+      if (!id) return;
+      evt.preventDefault();
+      void this.reparent(id, null, parentProp);
+    });
+  }
+  renderTreeRow(list, flatRow, row, forest, parentProp) {
+    const rowEl = list.createDiv({ cls: "bpp-tree-row" });
+    rowEl.setCssProps({ "--bpp-depth": String(flatRow.depth) });
+    if (flatRow.ghost) rowEl.addClass("is-ghost");
+    const twist = rowEl.createSpan({ cls: "bpp-tree-twist" });
+    if (flatRow.hasChildren) {
+      twist.setText(flatRow.collapsed ? "\u25B8" : "\u25BE");
+      twist.addClass("is-clickable");
+      twist.addEventListener("click", (evt) => {
+        evt.stopPropagation();
+        this.toggleCollapse(flatRow.id);
+      });
+    }
+    const label = rowEl.createSpan({ cls: "bpp-tree-name", text: flatRow.name });
+    if (!flatRow.ghost && row) label.addEventListener("click", () => this.openRow(row));
+    if (flatRow.missingParent) {
+      rowEl.createSpan({ cls: "bpp-badge bpp-badge-warn", text: "missing parent" }).setAttr(
+        "title",
+        "This note's parent path doesn't resolve to a note."
+      );
+    }
+    if (flatRow.cycle) {
+      rowEl.createSpan({ cls: "bpp-badge bpp-badge-warn", text: "cycle" }).setAttr(
+        "title",
+        "This note is part of a parent cycle and was detached."
+      );
+    }
+    this.renderMetrics(rowEl, flatRow.metrics);
+    if (!flatRow.ghost && row) {
+      rowEl.draggable = true;
+      rowEl.addEventListener("dragstart", (evt) => {
+        var _a;
+        rowEl.addClass("is-dragging");
+        (_a = evt.dataTransfer) == null ? void 0 : _a.setData(DND_TREE, flatRow.id);
+        if (evt.dataTransfer) evt.dataTransfer.effectAllowed = "move";
+      });
+      rowEl.addEventListener("dragend", () => rowEl.removeClass("is-dragging"));
+      rowEl.addEventListener("contextmenu", (evt) => this.openTreeMenu(evt, row, flatRow.id, forest, parentProp));
+    }
+    rowEl.addEventListener("dragover", (evt) => {
+      var _a, _b;
+      const id = ((_b = (_a = evt.dataTransfer) == null ? void 0 : _a.types) != null ? _b : []).includes(DND_TREE);
+      if (!id) return;
+      evt.preventDefault();
+      rowEl.addClass("is-drop-target");
+      if (evt.dataTransfer) evt.dataTransfer.dropEffect = "move";
+    });
+    rowEl.addEventListener("dragleave", () => rowEl.removeClass("is-drop-target"));
+    rowEl.addEventListener("drop", (evt) => {
+      var _a;
+      rowEl.removeClass("is-drop-target");
+      const dragged = (_a = evt.dataTransfer) == null ? void 0 : _a.getData(DND_TREE);
+      if (!dragged) return;
+      evt.preventDefault();
+      void this.reparent(dragged, flatRow.id, parentProp);
+    });
+  }
+  renderMetrics(rowEl, metrics) {
+    if (metrics.descendantCount === 0 && metrics.leafTotal <= 1) return;
+    const chip = rowEl.createSpan({ cls: "bpp-tree-metrics" });
+    if (metrics.descendantCount > 0) {
+      chip.createSpan({ cls: "bpp-tree-count", text: `${metrics.descendantCount}` }).setAttr(
+        "title",
+        `${metrics.descendantCount} descendant${metrics.descendantCount === 1 ? "" : "s"}`
+      );
+    }
+    if (metrics.leafTotal > 0 && metrics.progress !== null) {
+      chip.createSpan({ cls: "bpp-muted", text: `${metrics.leafDone}/${metrics.leafTotal}` });
+      const bar = chip.createSpan({ cls: "bpp-tree-progress" });
+      bar.createSpan({ cls: "bpp-tree-progress-fill" }).setCssProps({ width: `${metrics.progress}%` });
+      bar.setAttr("title", `${metrics.progress}% of leaf tasks done`);
+    }
+  }
+  toggleCollapse(id) {
+    if (this.collapsed.has(id)) this.collapsed.delete(id);
+    else this.collapsed.add(id);
+    void this.render();
+  }
+  // ---- menu + mutations -----------------------------------------------------
+  openTreeMenu(evt, row, id, forest, parentProp) {
+    var _a;
+    evt.preventDefault();
+    const after = () => void this.render();
+    const menu = new import_obsidian8.Menu();
+    menu.addItem((i) => i.setTitle("Add child note").setIcon("plus").onClick(() => void this.addChildNote(id, parentProp)));
+    menu.addItem(
+      (i) => i.setTitle("Set parent\u2026").setIcon("indent").onClick(() => this.setParentViaPrompt(row, id, forest, parentProp))
+    );
+    if ((_a = forest.byId.get(id)) == null ? void 0 : _a.parentRef) {
+      menu.addItem(
+        (i) => i.setTitle("Make top-level").setIcon("outdent").onClick(() => void this.reparent(id, null, parentProp))
+      );
+    }
+    menu.addSeparator();
+    this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, after);
+    menu.showAtMouseEvent(evt);
+  }
+  /** Apply a validated reparent: write (or clear) the child's parent property. */
+  async reparent(childId, newParentId, parentProp) {
+    const snapshot = this.plugin.getNotesSnapshot();
+    const knownPaths = new Set(snapshot.map((n) => n.path));
+    const inputs = snapshot.map((n) => ({
+      id: n.path,
+      name: n.name,
+      parentRef: resolveParentRef(n.frontmatter[parentProp], knownPaths),
+      order: null,
+      done: false
+    }));
+    const { byId } = buildForest(inputs, knownPaths);
+    const check = canReparent(childId, newParentId, byId);
+    if (!check.ok) {
+      if (check.reason && check.reason !== "already there" && check.reason !== "already a root") {
+        new import_obsidian8.Notice(`Can't move: ${check.reason}.`);
+      }
+      return;
+    }
+    await writeRowProperty(this.plugin, childId, parentProp, newParentId != null ? newParentId : "", newParentId === null, {
+      label: newParentId === null ? "Make top-level" : "Reparent note"
+    });
+    await this.render();
+  }
+  setParentViaPrompt(row, id, forest, parentProp) {
+    var _a, _b;
+    const current = (_b = (_a = forest.byId.get(id)) == null ? void 0 : _a.parentRef) != null ? _b : "";
+    new PromptModal(this.app, {
+      title: `Set parent of "${row.name}"`,
+      value: current,
+      placeholder: "Projects/My Project.md (blank = top-level)",
+      cta: "Save",
+      onSubmit: (v) => {
+        const clean = v.trim();
+        if (!clean) {
+          void this.reparent(id, null, parentProp);
+          return;
+        }
+        const knownPaths = new Set(this.plugin.getNotesSnapshot().map((n) => n.path));
+        void this.reparent(id, resolveParentRef(clean, knownPaths), parentProp);
+      }
+    }).open();
+  }
+  async addChildNote(parentId, parentProp) {
+    try {
+      const file = await createSeededNote(
+        this.plugin,
+        this.plugin.settings.hierarchyQuickAddFolder,
+        parentProp,
+        parentId,
+        "New child"
+      );
+      new import_obsidian8.Notice(`Created ${file.basename}`);
+    } catch (error) {
+      new import_obsidian8.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
+    }
+    await this.render();
+  }
+  // ---- helpers --------------------------------------------------------------
+  numberOrNull(value) {
+    if (value === void 0 || value === null || value === "") return null;
+    const n = toNumber(value);
+    return Number.isFinite(n) ? n : null;
+  }
+  /** A row is "done" when its group value is "done" or it has a truthy `done`. */
+  isDone(row, doneProp) {
+    if (toStr(row.scope.get(doneProp)).trim().toLowerCase() === "done") return true;
+    return toBool(row.scope.get("done"));
+  }
+};
+
 // src/main.ts
-var PREMIUM_VIEW_TYPES = [VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT];
-var ALL_VIEW_TYPES = [VIEW_TYPE_KANBAN, VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT];
+var PREMIUM_VIEW_TYPES = [VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT, VIEW_TYPE_HIERARCHY];
+var ALL_VIEW_TYPES = [VIEW_TYPE_KANBAN, VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT, VIEW_TYPE_HIERARCHY];
 var VIEW_NAME_TO_TYPE = {
   kanban: VIEW_TYPE_KANBAN,
   calendar: VIEW_TYPE_CALENDAR,
-  gantt: VIEW_TYPE_GANTT
+  gantt: VIEW_TYPE_GANTT,
+  outline: VIEW_TYPE_HIERARCHY,
+  hierarchy: VIEW_TYPE_HIERARCHY
 };
-var BasesPowerPackPlugin = class extends import_obsidian8.Plugin {
+var BasesPowerPackPlugin = class extends import_obsidian9.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -5431,6 +5990,9 @@ var BasesPowerPackPlugin = class extends import_obsidian8.Plugin {
     this.api = null;
     /** Cached vault snapshot shared by every view, rebuilt only when notes change. */
     this.notesSnapshot = null;
+    /** Pending old→new path mappings from rename events, flushed together. */
+    this.renameRetargets = /* @__PURE__ */ new Map();
+    this.renameFlushTimer = null;
     // Serialize writes: overlapping saveData calls (e.g. per-keystroke license
     // verification) could otherwise finish out of order, letting a stale
     // serialization win on disk.
@@ -5446,6 +6008,10 @@ var BasesPowerPackPlugin = class extends import_obsidian8.Plugin {
     this.registerView(VIEW_TYPE_KANBAN, (leaf) => new KanbanView(leaf, this));
     this.registerView(VIEW_TYPE_CALENDAR, (leaf) => new CalendarView(leaf, this));
     this.registerView(VIEW_TYPE_GANTT, (leaf) => new GanttView(leaf, this));
+    this.registerView(VIEW_TYPE_HIERARCHY, (leaf) => new HierarchyView(leaf, this));
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) => this.queueHierarchyRetarget(file.path, oldPath))
+    );
     this.addRibbonIcon("layout-dashboard", "Bases Power Pack: Kanban", () => {
       void this.activateView(VIEW_TYPE_KANBAN);
     });
@@ -5465,6 +6031,11 @@ var BasesPowerPackPlugin = class extends import_obsidian8.Plugin {
       checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_GANTT)
     });
     this.addCommand({
+      id: "open-outline-view",
+      name: "Open Outline view (Premium)",
+      checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_HIERARCHY)
+    });
+    this.addCommand({
       id: "undo-last-change",
       name: "Undo last change",
       checkCallback: (checking) => {
@@ -5479,7 +6050,7 @@ var BasesPowerPackPlugin = class extends import_obsidian8.Plugin {
       callback: async () => {
         await this.refreshLicense();
         this.refreshViews();
-        new import_obsidian8.Notice(this.settings.isPro ? "Premium active." : "Lite tier (no valid license).");
+        new import_obsidian9.Notice(this.settings.isPro ? "Premium active." : "Lite tier (no valid license).");
       }
     });
     this.addSettingTab(new BasesPowerPackSettingTab(this.app, this));
@@ -5487,6 +6058,10 @@ var BasesPowerPackPlugin = class extends import_obsidian8.Plugin {
     window.basesPowerPack = this.api;
   }
   onunload() {
+    if (this.renameFlushTimer !== null) {
+      window.clearTimeout(this.renameFlushTimer);
+      this.renameFlushTimer = null;
+    }
     const globals = window;
     if (this.api && globals.basesPowerPack === this.api) delete globals.basesPowerPack;
     this.api = null;
@@ -5512,29 +6087,71 @@ var BasesPowerPackPlugin = class extends import_obsidian8.Plugin {
     for (const note of entry.notes) {
       if (await writeRowProperties(this, note.path, note.writes, { record: false })) ok++;
     }
-    new import_obsidian8.Notice(`Undid "${entry.label}" \u2014 restored ${ok} note${ok === 1 ? "" : "s"}.`);
+    new import_obsidian9.Notice(`Undid "${entry.label}" \u2014 restored ${ok} note${ok === 1 ? "" : "s"}.`);
     this.refreshViews();
+  }
+  queueHierarchyRetarget(newPath, oldPath) {
+    if (!this.settings.isPro || !oldPath || oldPath === newPath) return;
+    this.renameRetargets.set(oldPath, newPath);
+    if (this.renameFlushTimer !== null) return;
+    this.renameFlushTimer = window.setTimeout(() => {
+      this.renameFlushTimer = null;
+      void this.flushHierarchyRetargets();
+    }, 50);
+  }
+  /**
+   * Repoint every note whose hierarchy parent property pointed at a just-renamed
+   * note so the Outline tree survives the rename. Frontmatter path strings aren't
+   * links, so Obsidian won't update them for us. One pass over the vault handles a
+   * whole burst of renames (a folder move), applied as a single undo frame.
+   */
+  async flushHierarchyRetargets() {
+    var _a, _b;
+    const jobs = this.renameRetargets;
+    this.renameRetargets = /* @__PURE__ */ new Map();
+    if (jobs.size === 0 || !this.settings.isPro) return;
+    const parentProp = this.settings.hierarchyParentProp || "parent";
+    const files = this.app.vault.getMarkdownFiles();
+    const known = new Set(files.map((f) => f.path));
+    for (const oldPath of jobs.keys()) known.add(oldPath);
+    const targets = [];
+    for (const file of files) {
+      const ref = resolveParentRef((_b = (_a = this.app.metadataCache.getFileCache(file)) == null ? void 0 : _a.frontmatter) == null ? void 0 : _b[parentProp], known);
+      const newParent = ref !== null ? jobs.get(ref) : void 0;
+      if (newParent !== void 0) targets.push({ path: file.path, newParent });
+    }
+    if (targets.length === 0) return;
+    const batch = this.undo.beginBatch(`Retarget ${targets.length} child note${targets.length === 1 ? "" : "s"}`);
+    let ok = 0;
+    for (const target of targets) {
+      if (await writeRowProperties(this, target.path, [{ key: parentProp, value: target.newParent }], { batch })) ok++;
+    }
+    this.undo.commitBatch(batch);
+    if (ok > 0) {
+      new import_obsidian9.Notice(`Bases Power Pack: repointed ${ok} child note${ok === 1 ? "" : "s"} after rename.`);
+      this.refreshViews();
+    }
   }
   createApi() {
     return {
       openView: async (view, basePath) => {
         const viewType = VIEW_NAME_TO_TYPE[view];
         if (!viewType) {
-          new import_obsidian8.Notice(`Bases Power Pack: unknown view "${String(view)}".`);
+          new import_obsidian9.Notice(`Bases Power Pack: unknown view "${String(view)}".`);
           return false;
         }
         if (PREMIUM_VIEW_TYPES.includes(viewType) && !this.settings.isPro) {
-          new import_obsidian8.Notice("Bases Power Pack: this view requires a premium license.");
+          new import_obsidian9.Notice("Bases Power Pack: this view requires a premium license.");
           return false;
         }
         if (basePath) {
           if (!this.settings.isPro) {
-            new import_obsidian8.Notice("Bases Power Pack: opening a base as the data source requires premium.");
+            new import_obsidian9.Notice("Bases Power Pack: opening a base as the data source requires premium.");
             return false;
           }
-          const file = this.app.vault.getAbstractFileByPath((0, import_obsidian8.normalizePath)(basePath));
-          if (!(file instanceof import_obsidian8.TFile) || file.extension !== "base") {
-            new import_obsidian8.Notice("Bases Power Pack: base file not found.");
+          const file = this.app.vault.getAbstractFileByPath((0, import_obsidian9.normalizePath)(basePath));
+          if (!(file instanceof import_obsidian9.TFile) || file.extension !== "base") {
+            new import_obsidian9.Notice("Bases Power Pack: base file not found.");
             return false;
           }
           if (this.settings.activeBasePath !== file.path) {
@@ -5629,6 +6246,10 @@ var BasesPowerPackPlugin = class extends import_obsidian8.Plugin {
     if (typeof this.settings.calendarQuickAddFolder !== "string") this.settings.calendarQuickAddFolder = "";
     if (typeof this.settings.ganttProgressProp !== "string") this.settings.ganttProgressProp = DEFAULT_SETTINGS.ganttProgressProp;
     if (typeof this.settings.ganttMilestoneProp !== "string") this.settings.ganttMilestoneProp = DEFAULT_SETTINGS.ganttMilestoneProp;
+    if (typeof this.settings.hierarchyParentProp !== "string" || !this.settings.hierarchyParentProp.trim())
+      this.settings.hierarchyParentProp = DEFAULT_SETTINGS.hierarchyParentProp;
+    if (typeof this.settings.hierarchyOrderProp !== "string") this.settings.hierarchyOrderProp = DEFAULT_SETTINGS.hierarchyOrderProp;
+    if (typeof this.settings.hierarchyQuickAddFolder !== "string") this.settings.hierarchyQuickAddFolder = "";
   }
   async saveSettings() {
     this.savePromise = this.savePromise.then(() => this.saveData(this.settings));

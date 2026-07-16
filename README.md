@@ -33,6 +33,9 @@ Advanced database views and automation on top of Obsidian's native **Bases** fea
 | **Gantt timeline view** (bars from start/end dates) | — | ✅ |
 | **Gantt drag-to-move / resize** (reschedule + change duration) | — | ✅ |
 | **Gantt zoom, scroll-to-today, progress fill & milestones** | — | ✅ |
+| **Outline / hierarchy view** (nest notes by a parent property into a tree) | — | ✅ |
+| **Outline drag-to-reparent** + add-child, branch roll-ups (count · done/total · progress) | — | ✅ |
+| **Rename-safe hierarchy** (renaming a parent repoints its children) | — | ✅ |
 | **Roll-ups** (aggregate an expression across rows) | — | ✅ |
 | **Formulas** (computed columns / card values) | — | ✅ |
 | **Saved filters & view presets** | — | ✅ |
@@ -47,6 +50,7 @@ All three views run on a shared query engine. In the **Lite** tier they read sta
 - **Kanban** — groups rows by a configurable property (default `status`), supports quick search/sort/hide-done controls and a toolbar **group-by picker**, lets you create a note directly from any column, add brand-new status columns from the board (so you can drag a card to a status no note has yet), drag cards between columns to update frontmatter, and drag column headers to reorder the board. Click any card metadata field to **edit it in place** — the parsed value is written straight to frontmatter. Set a **WIP limit** on any column (right-click its header) to cap its cards. Columns and their cards are color-coded by a stable hue per value (toggle in settings). Premium cards can also show a formula value (e.g. `round(done / total * 100, 0) + "%"`). Click a card to open the note.
 - **Calendar** — Month, Week, or Agenda. Places rows onto days using a configurable date property (default `due`), highlights today, and can color events by any property. **Drag an event to another day to reschedule it** (the date property is rewritten, preserving any time-of-day), or hover a day and click **+** to create a note dated to that day. A toolbar **search** filters events; **right-click an event** to reschedule via a prompt, open, rename, or delete without dragging.
 - **Gantt** — horizontal timeline; each row becomes a bar from a start date property to an optional end date. **Drag a bar to move it, drag its right edge to resize** (both write frontmatter). Zoom the time scale, scroll to today, fill bars by a `progress` property (accepts a `0–1` fraction or a `0–100` percent), and show `milestone` notes as diamonds. A toolbar **search** filters bars; **right-click a bar** to set its start/end date via a prompt, open, rename, or delete.
+- **Outline** — an indented tree of your notes linked by a `parent` frontmatter property holding the parent note's path. Each branch rolls up a **descendant count** and a **done / total + progress** bar over its leaf tasks. **Drag a row onto another to reparent it**, drop it on the top strip to detach it, or right-click to add a child, set/clear the parent, and open/rename/delete. Cycles and dangling parents are flagged, not crashed; a parent that's filtered out still appears as a faint placeholder so its children stay nested. Renaming or moving a parent note automatically repoints its children.
 
 ### WIP limits (Free)
 
@@ -55,6 +59,15 @@ Right-click a Kanban column header and choose **Set WIP limit…** to cap how ma
 ### Undo (Free)
 
 Every frontmatter write Power Pack makes — a drag-to-move, a reschedule, a Gantt resize, an inline card edit, a bulk edit, or a whole column rename across many notes — is reversible. Run **Undo last change** from the command palette to restore the exact prior values; a multi-note operation (bulk edit, column rename) undoes as a single step.
+
+### Outline / hierarchy (Premium)
+
+Give your notes real structure: initiative → project → task → subtask. Each note names its parent by **path** in a frontmatter property (default `parent`, e.g. `parent: Projects/Website.md`), and the **Outline** view renders the whole forest as an indented, collapsible tree.
+
+- **Branch roll-ups.** Every parent shows how many notes are under it and a **done / total** progress bar over its leaf tasks (a note counts as done when its group value is `done` or it has a truthy `done`).
+- **Drag to reparent.** Drag a row onto another to nest it (writes the parent path), or drop it on the top strip to make it top-level — all undoable. The right-click menu adds *Add child note*, *Set parent…*, *Make top-level*, plus the shared open / rename / delete actions.
+- **Safe by construction.** Parent cycles and dangling parent paths are flagged and quarantined, never crashed. A parent filtered out of the current view shows as a faint placeholder so its visible children stay nested. Renaming or moving a parent note automatically repoints its children.
+- Set the parent property, an optional sibling-`order` property, and a quick-add folder in **Settings → Bases Power Pack**.
 
 ### `.base` integration (Premium)
 
@@ -108,6 +121,7 @@ Commands (open the command palette):
 - **Open Kanban view (Lite)**
 - **Open Calendar view (Premium)** — hidden until a valid license is active
 - **Open Gantt view (Premium)** — hidden until a valid license is active
+- **Open Outline view (Premium)** — hidden until a valid license is active
 - **Undo last change** — reverse the most recent frontmatter edit (available only when there is something to undo)
 - **Verify license key**
 

@@ -40,6 +40,11 @@
   color: var(--text-on-accent);
 }
 
+.bpp-badge-warn {
+  background: var(--color-red, #e03131);
+  color: var(--text-on-accent, #fff);
+}
+
 /* Kanban */
 .bpp-lite-controls {
   display: flex;
@@ -753,4 +758,109 @@
   .bpp-gantt-scroll {
     scroll-behavior: auto;
   }
+}
+
+/* Hierarchy / Outline (Premium) */
+.bpp-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 0;
+}
+
+.bpp-tree-rootzone {
+  margin: 4px 0 8px;
+  padding: 6px 10px;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: 0.82em;
+  text-align: center;
+}
+
+.bpp-tree-rootzone.is-drop-target {
+  border-color: var(--interactive-accent);
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.bpp-tree-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  padding-inline-start: calc(6px + var(--bpp-depth, 0) * 20px);
+  border-radius: 6px;
+  cursor: default;
+}
+
+.bpp-tree-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.bpp-tree-row.is-dragging {
+  opacity: 0.5;
+}
+
+.bpp-tree-row.is-drop-target {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: -2px;
+}
+
+.bpp-tree-row.is-ghost .bpp-tree-name {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.bpp-tree-twist {
+  width: 1em;
+  color: var(--text-muted);
+  text-align: center;
+  flex: 0 0 auto;
+}
+
+.bpp-tree-twist.is-clickable {
+  cursor: pointer;
+}
+
+.bpp-tree-name {
+  cursor: pointer;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bpp-tree-row.is-ghost .bpp-tree-name {
+  cursor: default;
+}
+
+.bpp-tree-metrics {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  font-size: 0.8em;
+}
+
+.bpp-tree-count {
+  background: var(--background-modifier-border);
+  border-radius: 10px;
+  padding: 0 7px;
+  font-variant-numeric: tabular-nums;
+}
+
+.bpp-tree-progress {
+  display: inline-block;
+  width: 54px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--background-modifier-border);
+  overflow: hidden;
+}
+
+.bpp-tree-progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--interactive-accent);
 }

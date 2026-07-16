@@ -17,18 +17,22 @@ import {
 import { KanbanView, VIEW_TYPE_KANBAN } from "./views/kanbanView";
 import { CalendarView, VIEW_TYPE_CALENDAR } from "./views/calendarView";
 import { GanttView, VIEW_TYPE_GANTT } from "./views/ganttView";
+import { HierarchyView, VIEW_TYPE_HIERARCHY } from "./views/hierarchyView";
 import { buildRawNotes, writeRowProperties } from "./views/viewData";
 import { UndoManager } from "./query/undo";
 import { sanitizeWipLimit } from "./query/wip";
+import { resolveParentRef } from "./query/hierarchy";
 import type { RawNote } from "./model/row";
 
-const PREMIUM_VIEW_TYPES = [VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT];
-const ALL_VIEW_TYPES = [VIEW_TYPE_KANBAN, VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT];
+const PREMIUM_VIEW_TYPES = [VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT, VIEW_TYPE_HIERARCHY];
+const ALL_VIEW_TYPES = [VIEW_TYPE_KANBAN, VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT, VIEW_TYPE_HIERARCHY];
 
 const VIEW_NAME_TO_TYPE: Record<string, string> = {
 	kanban: VIEW_TYPE_KANBAN,
 	calendar: VIEW_TYPE_CALENDAR,
 	gantt: VIEW_TYPE_GANTT,
+	outline: VIEW_TYPE_HIERARCHY,
+	hierarchy: VIEW_TYPE_HIERARCHY,
 };
 
 /**
@@ -41,7 +45,7 @@ export interface BasesPowerPackApi {
 	 * (with a user-facing notice) when the view or the base source requires a
 	 * premium license, or when the base path doesn't resolve.
 	 */
-	openView: (view: "kanban" | "calendar" | "gantt", basePath?: string) => Promise<boolean>;
+	openView: (view: "kanban" | "calendar" | "gantt" | "outline", basePath?: string) => Promise<boolean>;
 	isPremiumActive: () => boolean;
 }
 
@@ -69,6 +73,15 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.registerView(VIEW_TYPE_KANBAN, (leaf) => new KanbanView(leaf, this));
 		this.registerView(VIEW_TYPE_CALENDAR, (leaf) => new CalendarView(leaf, this));
 		this.registerView(VIEW_TYPE_GANTT, (leaf) => new GanttView(leaf, this));
+		this.registerView(VIEW_TYPE_HIERARCHY, (leaf) => new HierarchyView(leaf, this));
+
+		// Keep the hierarchy intact when a parent note is renamed/moved: repoint any
+		// child whose parent property pointed at the old path (premium; one undo
+		// frame). Events are coalesced so a folder move (one event per contained
+		// note) triggers a single scan, not one per file.
+		this.registerEvent(
+			this.app.vault.on("rename", (file, oldPath) => this.queueHierarchyRetarget(file.path, oldPath))
+		);
 
 		this.addRibbonIcon("layout-dashboard", "Bases Power Pack: Kanban", () => {
 			void this.activateView(VIEW_TYPE_KANBAN);
@@ -91,6 +104,12 @@ export default class BasesPowerPackPlugin extends Plugin {
 			id: "open-gantt-view",
 			name: "Open Gantt view (Premium)",
 			checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_GANTT),
+		});
+
+		this.addCommand({
+			id: "open-outline-view",
+			name: "Open Outline view (Premium)",
+			checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_HIERARCHY),
 		});
 
 		this.addCommand({
@@ -120,6 +139,10 @@ export default class BasesPowerPackPlugin extends Plugin {
 	}
 
 	onunload(): void {
+		if (this.renameFlushTimer !== null) {
+			window.clearTimeout(this.renameFlushTimer);
+			this.renameFlushTimer = null;
+		}
 		// Identity check: only remove the global if it's still OUR object — a
 		// second instance (e.g. a BRAT beta copy) may have claimed it since.
 		const globals = window as unknown as Record<string, unknown>;
@@ -152,6 +175,58 @@ export default class BasesPowerPackPlugin extends Plugin {
 		}
 		new Notice(`Undid "${entry.label}" — restored ${ok} note${ok === 1 ? "" : "s"}.`);
 		this.refreshViews();
+	}
+
+	/** Pending old→new path mappings from rename events, flushed together. */
+	private renameRetargets = new Map<string, string>();
+	private renameFlushTimer: number | null = null;
+
+	private queueHierarchyRetarget(newPath: string, oldPath: string): void {
+		if (!this.settings.isPro || !oldPath || oldPath === newPath) return;
+		this.renameRetargets.set(oldPath, newPath);
+		if (this.renameFlushTimer !== null) return;
+		this.renameFlushTimer = window.setTimeout(() => {
+			this.renameFlushTimer = null;
+			void this.flushHierarchyRetargets();
+		}, 50);
+	}
+
+	/**
+	 * Repoint every note whose hierarchy parent property pointed at a just-renamed
+	 * note so the Outline tree survives the rename. Frontmatter path strings aren't
+	 * links, so Obsidian won't update them for us. One pass over the vault handles a
+	 * whole burst of renames (a folder move), applied as a single undo frame.
+	 */
+	private async flushHierarchyRetargets(): Promise<void> {
+		const jobs = this.renameRetargets;
+		this.renameRetargets = new Map();
+		if (jobs.size === 0 || !this.settings.isPro) return;
+		const parentProp = this.settings.hierarchyParentProp || "parent";
+		const files = this.app.vault.getMarkdownFiles();
+		// Resolve child refs against a known-set that still includes the OLD paths,
+		// so an extension-less ref (e.g. "Projects/Old") completes to the old path
+		// and is matched rather than silently dropped.
+		const known = new Set(files.map((f) => f.path));
+		for (const oldPath of jobs.keys()) known.add(oldPath);
+
+		const targets: Array<{ path: string; newParent: string }> = [];
+		for (const file of files) {
+			const ref = resolveParentRef(this.app.metadataCache.getFileCache(file)?.frontmatter?.[parentProp], known);
+			const newParent = ref !== null ? jobs.get(ref) : undefined;
+			if (newParent !== undefined) targets.push({ path: file.path, newParent });
+		}
+		if (targets.length === 0) return;
+
+		const batch = this.undo.beginBatch(`Retarget ${targets.length} child note${targets.length === 1 ? "" : "s"}`);
+		let ok = 0;
+		for (const target of targets) {
+			if (await writeRowProperties(this, target.path, [{ key: parentProp, value: target.newParent }], { batch })) ok++;
+		}
+		this.undo.commitBatch(batch);
+		if (ok > 0) {
+			new Notice(`Bases Power Pack: repointed ${ok} child note${ok === 1 ? "" : "s"} after rename.`);
+			this.refreshViews();
+		}
 	}
 
 	private createApi(): BasesPowerPackApi {
@@ -274,6 +349,10 @@ export default class BasesPowerPackPlugin extends Plugin {
 		if (typeof this.settings.calendarQuickAddFolder !== "string") this.settings.calendarQuickAddFolder = "";
 		if (typeof this.settings.ganttProgressProp !== "string") this.settings.ganttProgressProp = DEFAULT_SETTINGS.ganttProgressProp;
 		if (typeof this.settings.ganttMilestoneProp !== "string") this.settings.ganttMilestoneProp = DEFAULT_SETTINGS.ganttMilestoneProp;
+		if (typeof this.settings.hierarchyParentProp !== "string" || !this.settings.hierarchyParentProp.trim())
+			this.settings.hierarchyParentProp = DEFAULT_SETTINGS.hierarchyParentProp;
+		if (typeof this.settings.hierarchyOrderProp !== "string") this.settings.hierarchyOrderProp = DEFAULT_SETTINGS.hierarchyOrderProp;
+		if (typeof this.settings.hierarchyQuickAddFolder !== "string") this.settings.hierarchyQuickAddFolder = "";
 	}
 
 	// Serialize writes: overlapping saveData calls (e.g. per-keystroke license
