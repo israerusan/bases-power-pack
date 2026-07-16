@@ -281,17 +281,24 @@
 }
 
 /* Gantt */
+.bpp-gantt-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 6px;
+}
+
 .bpp-gantt {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  min-width: 480px;
+  width: max-content;
+  min-width: 100%;
 }
 
 .bpp-gantt-axis,
 .bpp-gantt-row {
   display: grid;
-  grid-template-columns: 160px 1fr;
+  grid-template-columns: 160px var(--bpp-track-width, 480px);
   align-items: center;
   gap: 8px;
 }
@@ -313,6 +320,11 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--background-primary);
+  padding-right: 4px;
 }
 
 .bpp-gantt-name:hover {
@@ -321,27 +333,80 @@
 
 .bpp-gantt-track {
   position: relative;
-  height: 22px;
+  height: 24px;
   background: var(--background-secondary);
   border-radius: 4px;
+  overflow: hidden;
 }
 
-.bpp-gantt-axis-end {
-  float: right;
+.bpp-gantt-axis-track {
+  height: 18px;
+  background: transparent;
+  overflow: visible;
+}
+
+.bpp-gantt-tick {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--background-modifier-border);
+  padding-left: 3px;
+  font-size: 0.7em;
+  white-space: nowrap;
 }
 
 .bpp-gantt-bar {
   position: absolute;
   top: 3px;
-  height: 16px;
+  height: 18px;
   background: var(--interactive-accent);
   border-radius: 4px;
-  cursor: pointer;
+  cursor: grab;
   min-width: 3px;
+  touch-action: none;
+  overflow: hidden;
 }
 
 .bpp-gantt-bar:hover {
-  filter: brightness(1.15);
+  filter: brightness(1.12);
+}
+
+.bpp-gantt-bar.is-dragging {
+  cursor: grabbing;
+  opacity: 0.8;
+  z-index: 3;
+}
+
+.bpp-gantt-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  background: var(--text-on-accent);
+  opacity: 0.28;
+  pointer-events: none;
+}
+
+.bpp-gantt-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+  touch-action: none;
+  background: linear-gradient(to right, transparent, rgba(0, 0, 0, 0.25));
+}
+
+.bpp-gantt-milestone {
+  position: absolute;
+  top: 4px;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  background: var(--color-orange, var(--interactive-accent));
+  transform: rotate(45deg);
+  cursor: pointer;
 }
 
 .bpp-gantt-today {
@@ -351,6 +416,16 @@
   width: 2px;
   background: var(--text-error);
   opacity: 0.7;
+}
+
+.bpp-gantt-todayline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--text-error);
+  opacity: 0.35;
+  pointer-events: none;
 }
 
 .bpp-gantt-skipped {
@@ -403,6 +478,49 @@
   margin-bottom: 4px;
 }
 
+.bpp-cal-cell {
+  position: relative;
+}
+
+.bpp-cal-cell.is-today {
+  border-color: var(--interactive-accent);
+  box-shadow: inset 0 0 0 1px var(--interactive-accent);
+}
+
+.bpp-cal-cell.is-drop-target {
+  background: var(--background-modifier-hover);
+  border-color: var(--interactive-accent);
+}
+
+.bpp-cal-add {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 18px;
+  height: 18px;
+  line-height: 1;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+}
+
+.bpp-cal-cell:hover .bpp-cal-add {
+  opacity: 1;
+}
+
+.bpp-cal-add:hover {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.bpp-cal-week .bpp-cal-cell {
+  min-height: 220px;
+}
+
 .bpp-cal-event {
   font-size: 0.75em;
   background: var(--interactive-accent);
@@ -410,10 +528,104 @@
   border-radius: 4px;
   padding: 1px 4px;
   margin-bottom: 2px;
-  cursor: pointer;
+  cursor: grab;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.bpp-cal-event.is-dragging {
+  opacity: 0.5;
+}
+
+.bpp-cal-event.is-colored {
+  background: hsl(var(--bpp-col-hue, 210), 60%, 45%);
+  color: #fff;
+}
+
+/* Agenda */
+.bpp-agenda {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.bpp-agenda-day {
+  border-left: 2px solid var(--background-modifier-border);
+  padding-left: 10px;
+}
+
+.bpp-agenda-date {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.bpp-agenda-item {
+  font-size: 0.85em;
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.bpp-agenda-item:hover {
+  background: var(--background-modifier-hover);
+  color: var(--interactive-accent);
+}
+
+/* Segmented control (calendar mode / gantt zoom) */
+.bpp-segmented {
+  display: inline-flex;
+  gap: 2px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.bpp-seg-btn {
+  font-size: 0.78em;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.bpp-seg-btn:hover {
+  color: var(--text-normal);
+}
+
+.bpp-seg-btn.is-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+/* Inline card edit (free) */
+.bpp-card-meta-editable {
+  cursor: text;
+  border-radius: 3px;
+}
+
+.bpp-card-meta-editable:hover {
+  background: var(--background-modifier-hover);
+}
+
+.bpp-card-meta-key {
+  color: var(--text-faint);
+  margin-right: 4px;
+}
+
+.bpp-inline-edit {
+  font-size: 0.78em;
+  width: 100%;
+  padding: 1px 4px;
+  border: 1px solid var(--interactive-accent);
+  border-radius: 3px;
+  background: var(--background-primary);
+  color: var(--text-normal);
 }
 
 /* Empty + upgrade states */

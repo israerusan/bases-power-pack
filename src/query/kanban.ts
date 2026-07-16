@@ -85,7 +85,7 @@ export function columnHue(name: string): number {
 export function getCardMeta(row: Row, fields: string[]): string[] {
 	const lines: string[] = [];
 	for (const field of fields) {
-		const formatted = formatField(row, field);
+		const formatted = formatCardField(row, field);
 		if (formatted) lines.push(`${field}: ${formatted}`);
 	}
 	return lines;
@@ -160,7 +160,8 @@ function numberOrNull(value: unknown): number | null {
 	return Number.isFinite(n) ? n : null;
 }
 
-function formatField(row: Row, field: string): string | null {
+/** Display string for one card field, or null when the value is empty. */
+export function formatCardField(row: Row, field: string): string | null {
 	const value = row.scope.get(field);
 	if (value === undefined || value === null || value === "") return null;
 	if (Array.isArray(value)) {

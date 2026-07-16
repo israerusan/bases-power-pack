@@ -3,6 +3,41 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] - 2026-07-15
+
+Premium stops being read-only. Every premium view can now write back to your
+notes, and two quality-of-life upgrades land in the free tier.
+
+### Added — Premium (interactive)
+- **Calendar drag-to-reschedule.** Drag an event onto another day and the note's
+  date property is rewritten (a time-of-day suffix on the original value is
+  preserved). Same "drag = truth" model as the free Kanban board.
+- **Create-on-day.** Hover a calendar day and hit **+** to create a note already
+  dated to that day, in an optional configured folder.
+- **Month / Week / Agenda modes.** Switch layouts from the toolbar; the choice is
+  remembered. Week is a tall 7-day strip; Agenda is a chronological list grouped
+  by day with a Today marker.
+- **Color-by property + today highlight.** Tint events by any property's value
+  (stable hue), and the current day is outlined.
+- **Gantt drag-to-move and resize.** Drag a bar to shift its dates (start and end
+  move together); drag its right edge to change the duration. Both write
+  frontmatter. A tiny drag still counts as a click that opens the note.
+- **Gantt zoom, scroll-to-today, progress & milestones.** Zoom the time scale
+  (Quarter → Day), jump to today, fill bars by a `progress` property (0–100), and
+  render notes flagged by a `milestone` property as diamonds. Month ticks label
+  the axis.
+
+### Added — Free (Lite)
+- **Inline card edit.** Click a card's metadata field (due, priority, owner, …)
+  to edit it in place; the parsed value is written to frontmatter (numbers stay
+  numbers, `tags`-style fields become lists, an emptied field is removed).
+- **Group-by picker in the board toolbar.** Re-group the board by any frontmatter
+  property on the fly, without opening settings.
+
+### Settings
+- New premium settings: **Gantt progress property**, **Gantt milestone
+  property**, **Calendar color property**, **Calendar quick-add folder**.
+
 ## [1.5.0] - 2026-07-14
 
 ### Added

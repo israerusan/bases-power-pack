@@ -1,4 +1,4 @@
-import { App, TFile, getAllTags, parseYaml } from "obsidian";
+import { App, TFile, normalizePath, getAllTags, parseYaml } from "obsidian";
 import type BasesPowerPackPlugin from "../main";
 import type { RawNote, Row } from "../model/row";
 import { resolveRows } from "../bases/resolveRows";
@@ -52,6 +52,65 @@ export async function loadBaseDefinition(app: App, path: string): Promise<BaseDe
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * Set (or remove) a single frontmatter key on the note at `path`. Shared by the
+ * calendar drag-to-reschedule, Gantt drag/resize, and the free inline card
+ * editor — every mutating view writes through this one path so behavior (and
+ * the metadataCache-driven re-render) stays identical.
+ */
+export async function writeRowProperty(
+	app: App,
+	path: string,
+	key: string,
+	value: unknown,
+	remove = false
+): Promise<void> {
+	const file = app.vault.getAbstractFileByPath(path);
+	if (!(file instanceof TFile)) return;
+	await app.fileManager.processFrontMatter(file, (frontmatter) => {
+		const target = frontmatter as Record<string, unknown>;
+		if (remove) delete target[key];
+		else target[key] = value;
+	});
+}
+
+/** Ensure every folder in `path`'s parent chain exists. */
+async function ensureParentFolders(app: App, path: string): Promise<void> {
+	const parts = path.split("/");
+	parts.pop();
+	let current = "";
+	for (const part of parts) {
+		current = current ? `${current}/${part}` : part;
+		const normalized = normalizePath(current);
+		if (!normalized || app.vault.getAbstractFileByPath(normalized)) continue;
+		await app.vault.createFolder(normalized);
+	}
+}
+
+/**
+ * Create a new note seeded with a single frontmatter property (e.g. a calendar
+ * day's date), in `folder`, and open it in a new tab. Returns the created file.
+ */
+export async function createSeededNote(
+	app: App,
+	folder: string,
+	key: string,
+	value: string,
+	titleHint: string
+): Promise<TFile> {
+	const cleanFolder = folder.trim().replace(/^[/\\]+|[/\\]+$/g, "");
+	const stem = `${cleanFolder ? `${cleanFolder}/` : ""}${titleHint}`;
+	let path = normalizePath(`${stem}.md`);
+	for (let i = 2; app.vault.getAbstractFileByPath(path) && i < 1000; i++) {
+		path = normalizePath(`${stem} ${i}.md`);
+	}
+	await ensureParentFolders(app, path);
+	const content = `---\n${key}: ${JSON.stringify(value)}\n---\n\n# ${titleHint}\n`;
+	const file = await app.vault.create(path, content);
+	await app.workspace.getLeaf("tab").openFile(file);
+	return file;
 }
 
 export interface ResolvedView {

@@ -2,6 +2,7 @@ import { Notice, Plugin, TFile, WorkspaceLeaf, normalizePath } from "obsidian";
 import {
 	BasesPowerPackSettings,
 	BasesPowerPackSettingTab,
+	CALENDAR_VIEW_MODES,
 	DEFAULT_SETTINGS,
 	type SavedFilter,
 } from "./settings";
@@ -205,6 +206,11 @@ export default class BasesPowerPackPlugin extends Plugin {
 		if (typeof this.settings.activeBasePath !== "string") this.settings.activeBasePath = "";
 		if (typeof this.settings.activeFilterId !== "string") this.settings.activeFilterId = "";
 		if (typeof this.settings.cardFormula !== "string") this.settings.cardFormula = "";
+		if (!CALENDAR_VIEW_MODES.includes(this.settings.calendarViewMode)) this.settings.calendarViewMode = "month";
+		if (typeof this.settings.calendarColorProp !== "string") this.settings.calendarColorProp = "";
+		if (typeof this.settings.calendarQuickAddFolder !== "string") this.settings.calendarQuickAddFolder = "";
+		if (typeof this.settings.ganttProgressProp !== "string") this.settings.ganttProgressProp = DEFAULT_SETTINGS.ganttProgressProp;
+		if (typeof this.settings.ganttMilestoneProp !== "string") this.settings.ganttMilestoneProp = DEFAULT_SETTINGS.ganttMilestoneProp;
 	}
 
 	// Serialize writes: overlapping saveData calls (e.g. per-keystroke license

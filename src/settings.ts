@@ -3,6 +3,9 @@ import type BasesPowerPackPlugin from "./main";
 import { AGGREGATIONS, type Aggregation, type Rollup } from "./query/rollup";
 import { listBaseFiles } from "./views/viewData";
 
+export type CalendarViewMode = "month" | "week" | "agenda";
+export const CALENDAR_VIEW_MODES: CalendarViewMode[] = ["month", "week", "agenda"];
+
 export interface SavedFilter {
 	id: string;
 	name: string;
@@ -28,10 +31,15 @@ export interface BasesPowerPackSettings {
 
 	/** Calendar (premium) */
 	calendarDateProp: string;
+	calendarViewMode: CalendarViewMode;
+	calendarColorProp: string;
+	calendarQuickAddFolder: string;
 
 	/** Gantt (premium) */
 	ganttStartProp: string;
 	ganttEndProp: string;
+	ganttProgressProp: string;
+	ganttMilestoneProp: string;
 
 	/** Bases integration (premium) */
 	activeBasePath: string;
@@ -57,8 +65,13 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	kanbanColumnOrder: {},
 	kanbanColorColumns: true,
 	calendarDateProp: "due",
+	calendarViewMode: "month",
+	calendarColorProp: "",
+	calendarQuickAddFolder: "",
 	ganttStartProp: "start",
 	ganttEndProp: "end",
+	ganttProgressProp: "progress",
+	ganttMilestoneProp: "milestone",
 	activeBasePath: "",
 	savedFilters: [],
 	activeFilterId: "",
@@ -245,6 +258,69 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 				})
 			);
 		});
+
+		premium(
+			"Gantt progress property",
+			"Frontmatter number (0–100) that fills each Gantt bar to show completion.",
+			(setting) => {
+				setting.addText((text) =>
+					text
+						.setPlaceholder("progress")
+						.setValue(this.plugin.settings.ganttProgressProp)
+						.onChange((value) => {
+							this.plugin.settings.ganttProgressProp = value.trim();
+							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+						})
+				);
+			}
+		);
+
+		premium(
+			"Gantt milestone property",
+			"Notes where this frontmatter value is truthy render as a diamond milestone instead of a bar.",
+			(setting) => {
+				setting.addText((text) =>
+					text
+						.setPlaceholder("milestone")
+						.setValue(this.plugin.settings.ganttMilestoneProp)
+						.onChange((value) => {
+							this.plugin.settings.ganttMilestoneProp = value.trim();
+							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+						})
+				);
+			}
+		);
+
+		premium(
+			"Calendar color property",
+			"Frontmatter property whose value tints each calendar event with a stable color. Leave blank for no coloring.",
+			(setting) => {
+				setting.addText((text) =>
+					text
+						.setPlaceholder("status")
+						.setValue(this.plugin.settings.calendarColorProp)
+						.onChange((value) => {
+							this.plugin.settings.calendarColorProp = value.trim();
+							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+						})
+				);
+			}
+		);
+
+		premium(
+			"Calendar quick-add folder",
+			"Optional folder for notes created by clicking a day (leave blank for the vault root).",
+			(setting) => {
+				setting.addText((text) =>
+					text
+						.setValue(this.plugin.settings.calendarQuickAddFolder)
+						.onChange((value) => {
+							this.plugin.settings.calendarQuickAddFolder = value.trim();
+							void this.plugin.saveSettings();
+						})
+				);
+			}
+		);
 
 		premium(
 			"Kanban card formula",

@@ -42,12 +42,55 @@ export function toDayNumber(value: string | null | undefined): number | null {
 	return Math.floor(ms / 86400000);
 }
 
-function dayNumberToIso(day: number): string {
+export function dayNumberToIso(day: number): string {
 	const d = new Date(day * 86400000);
 	const y = d.getUTCFullYear();
 	const m = String(d.getUTCMonth() + 1).padStart(2, "0");
 	const dd = String(d.getUTCDate()).padStart(2, "0");
 	return `${y}-${m}-${dd}`;
+}
+
+/** Add (or subtract) whole days to an ISO/date value, returning a YYYY-MM-DD
+ * string. A value that doesn't parse is returned unchanged. */
+export function shiftIso(value: string | null | undefined, deltaDays: number): string {
+	const dn = toDayNumber(value);
+	if (dn === null) return value ?? "";
+	return dayNumberToIso(dn + deltaDays);
+}
+
+/**
+ * New start/end for a Gantt bar dragged by `deltaDays`. Both endpoints move
+ * together (the span is preserved); a missing end stays missing.
+ */
+export function moveBarDates(
+	start: string,
+	end: string | null,
+	deltaDays: number
+): { start: string; end: string | null } {
+	return {
+		start: shiftIso(start, deltaDays),
+		end: end && toDayNumber(end) !== null ? shiftIso(end, deltaDays) : null,
+	};
+}
+
+/**
+ * New end date for a Gantt bar whose right edge was dragged by `deltaDays`.
+ * The end is clamped so it can never fall before the start (a zero-length bar
+ * is the minimum). When the bar had no end, resizing grows from the start.
+ */
+export function resizeBarEnd(start: string, end: string | null, deltaDays: number): string {
+	const startDay = toDayNumber(start);
+	const base = end && toDayNumber(end) !== null ? end : start;
+	const baseDay = toDayNumber(base);
+	if (startDay === null || baseDay === null) return end ?? start;
+	const next = Math.max(startDay, baseDay + deltaDays);
+	return dayNumberToIso(next);
+}
+
+/** Convert a horizontal pixel delta into whole days at the given day width. */
+export function pxToDays(px: number, dayWidthPx: number): number {
+	if (!Number.isFinite(dayWidthPx) || dayWidthPx <= 0) return 0;
+	return Math.round(px / dayWidthPx);
 }
 
 /**

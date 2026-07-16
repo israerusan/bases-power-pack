@@ -14,6 +14,8 @@ await build({
 			export * as filter from "./src/query/filter.ts";
 			export * as rollup from "./src/query/rollup.ts";
 			export * as gantt from "./src/query/gantt.ts";
+			export * as dates from "./src/query/dates.ts";
+			export * as inlineEdit from "./src/query/inlineEdit.ts";
 			export * as kanban from "./src/query/kanban.ts";
 			export * as kanbanActions from "./src/query/kanbanActions.ts";
 			export * as base from "./src/bases/baseDefinition.ts";
@@ -31,7 +33,7 @@ await build({
 });
 
 const m = await import(`file://${outfile.replace(/\\/g, "/")}`);
-const { expr, filter, rollup, gantt, kanban, kanbanActions, base, resolve, rowmod } = m;
+const { expr, filter, rollup, gantt, dates, inlineEdit, kanban, kanbanActions, base, resolve, rowmod } = m;
 
 // ---- expression engine -----------------------------------------------------
 const scope = {
@@ -156,6 +158,62 @@ assert.equal(barA.startIndex, 0, "A starts at column 0");
 assert.equal(barA.span, 3, "A spans 3 days");
 assert.equal(barB.startIndex, 1, "B starts at column 1");
 assert.equal(barB.span, 1, "B has default 1-day span");
+
+// ---- gantt interaction (move / resize / px) --------------------------------
+assert.deepEqual(
+	gantt.moveBarDates("2026-01-10", "2026-01-12", 3),
+	{ start: "2026-01-13", end: "2026-01-15" },
+	"moveBarDates shifts both endpoints, preserving the span"
+);
+assert.deepEqual(
+	gantt.moveBarDates("2026-01-10", null, -2),
+	{ start: "2026-01-08", end: null },
+	"moveBarDates keeps a missing end missing"
+);
+assert.equal(gantt.resizeBarEnd("2026-01-10", "2026-01-12", 2), "2026-01-14", "resizeBarEnd extends the end");
+assert.equal(gantt.resizeBarEnd("2026-01-10", "2026-01-12", -5), "2026-01-10", "resizeBarEnd clamps end to the start");
+assert.equal(gantt.resizeBarEnd("2026-01-10", null, 3), "2026-01-13", "resizeBarEnd grows from start when no end");
+assert.equal(gantt.shiftIso("2026-02-27", 2), "2026-03-01", "shiftIso rolls over a month boundary");
+assert.equal(gantt.shiftIso("not a date", 5), "not a date", "shiftIso leaves an unparseable value unchanged");
+assert.equal(gantt.pxToDays(100, 20), 5, "pxToDays converts a pixel delta to whole days");
+assert.equal(gantt.pxToDays(9, 20), 0, "pxToDays rounds a sub-day delta to zero");
+assert.equal(gantt.pxToDays(100, 0), 0, "pxToDays guards a zero day-width");
+
+// ---- calendar date helpers -------------------------------------------------
+assert.equal(dates.toIsoDateKey("2026-01-15"), "2026-01-15", "toIsoDateKey passes an ISO date through");
+assert.equal(dates.toIsoDateKey("2026-01-15T09:30"), "2026-01-15", "toIsoDateKey drops a time suffix");
+assert.equal(dates.toIsoDateKey(""), null, "toIsoDateKey rejects empty");
+assert.equal(dates.toIsoDateKey("nope"), null, "toIsoDateKey rejects a non-date");
+assert.equal(dates.rescheduleDateValue("2026-01-01", "2026-01-05"), "2026-01-05", "reschedule writes a bare date");
+assert.equal(
+	dates.rescheduleDateValue("2026-01-01T09:00", "2026-01-05"),
+	"2026-01-05T09:00",
+	"reschedule preserves the original time suffix"
+);
+assert.equal(dates.rescheduleDateValue("", "2026-01-05"), "2026-01-05", "reschedule handles an empty original");
+assert.equal(dates.startOfWeekIso("2026-01-15"), "2026-01-11", "startOfWeekIso snaps Thu 2026-01-15 back to Sun 01-11");
+assert.equal(dates.startOfWeekIso("2026-01-11"), "2026-01-11", "startOfWeekIso is a no-op on a Sunday");
+assert.deepEqual(
+	dates.weekKeys("2026-01-15"),
+	["2026-01-11", "2026-01-12", "2026-01-13", "2026-01-14", "2026-01-15", "2026-01-16", "2026-01-17"],
+	"weekKeys yields the seven days of the containing week"
+);
+assert.equal(dates.dayLabel("2026-01-15"), "Thu 15", "dayLabel names the weekday and day-of-month");
+
+// ---- inline edit coercion --------------------------------------------------
+assert.deepEqual(inlineEdit.coerceFieldInput("owner", "Ada", "Max"), { value: "Ada", remove: false }, "string field stays a string");
+assert.deepEqual(inlineEdit.coerceFieldInput("owner", "   ", "Max"), { value: null, remove: true }, "cleared field is removed");
+assert.deepEqual(inlineEdit.coerceFieldInput("priority", "3", 1), { value: 3, remove: false }, "numeric field coerces to number");
+assert.deepEqual(inlineEdit.coerceFieldInput("count", "5", 2), { value: 5, remove: false }, "prev-number field coerces to number");
+assert.deepEqual(inlineEdit.coerceFieldInput("due", "2026-01-05", "2026-01-01"), { value: "2026-01-05", remove: false }, "date field stays a string");
+assert.deepEqual(
+	inlineEdit.coerceFieldInput("tags", "a, b, a, ", ["x"]),
+	{ value: ["a", "b"], remove: false },
+	"list field splits, trims, and de-dupes"
+);
+assert.deepEqual(inlineEdit.coerceFieldInput("done", "true", false), { value: true, remove: false }, "boolean field coerces when prev was boolean");
+assert.equal(inlineEdit.formatFieldForEdit(["a", "b"]), "a, b", "formatFieldForEdit joins arrays");
+assert.equal(inlineEdit.formatFieldForEdit(null), "", "formatFieldForEdit renders null as empty");
 
 // ---- kanban helpers ---------------------------------------------------------
 const kanbanRows = [

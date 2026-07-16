@@ -2946,6 +2946,44 @@ async function loadBaseDefinition(app, path) {
     return null;
   }
 }
+async function writeRowProperty(app, path, key, value, remove = false) {
+  const file = app.vault.getAbstractFileByPath(path);
+  if (!(file instanceof import_obsidian.TFile)) return;
+  await app.fileManager.processFrontMatter(file, (frontmatter) => {
+    const target = frontmatter;
+    if (remove) delete target[key];
+    else target[key] = value;
+  });
+}
+async function ensureParentFolders(app, path) {
+  const parts = path.split("/");
+  parts.pop();
+  let current = "";
+  for (const part of parts) {
+    current = current ? `${current}/${part}` : part;
+    const normalized = (0, import_obsidian.normalizePath)(current);
+    if (!normalized || app.vault.getAbstractFileByPath(normalized)) continue;
+    await app.vault.createFolder(normalized);
+  }
+}
+async function createSeededNote(app, folder, key, value, titleHint) {
+  const cleanFolder = folder.trim().replace(/^[/\\]+|[/\\]+$/g, "");
+  const stem = `${cleanFolder ? `${cleanFolder}/` : ""}${titleHint}`;
+  let path = (0, import_obsidian.normalizePath)(`${stem}.md`);
+  for (let i = 2; app.vault.getAbstractFileByPath(path) && i < 1e3; i++) {
+    path = (0, import_obsidian.normalizePath)(`${stem} ${i}.md`);
+  }
+  await ensureParentFolders(app, path);
+  const content = `---
+${key}: ${JSON.stringify(value)}
+---
+
+# ${titleHint}
+`;
+  const file = await app.vault.create(path, content);
+  await app.workspace.getLeaf("tab").openFile(file);
+  return file;
+}
 async function resolveViewRows(app, plugin) {
   var _a;
   const s = plugin.settings;
@@ -2969,6 +3007,7 @@ async function resolveViewRows(app, plugin) {
 }
 
 // src/settings.ts
+var CALENDAR_VIEW_MODES = ["month", "week", "agenda"];
 var DEFAULT_SETTINGS = {
   licenseKey: "",
   isPro: false,
@@ -2981,8 +3020,13 @@ var DEFAULT_SETTINGS = {
   kanbanColumnOrder: {},
   kanbanColorColumns: true,
   calendarDateProp: "due",
+  calendarViewMode: "month",
+  calendarColorProp: "",
+  calendarQuickAddFolder: "",
   ganttStartProp: "start",
   ganttEndProp: "end",
+  ganttProgressProp: "progress",
+  ganttMilestoneProp: "milestone",
   activeBasePath: "",
   savedFilters: [],
   activeFilterId: "",
@@ -3113,6 +3157,54 @@ var BasesPowerPackSettingTab = class extends import_obsidian2.PluginSettingTab {
         })
       );
     });
+    premium(
+      "Gantt progress property",
+      "Frontmatter number (0\u2013100) that fills each Gantt bar to show completion.",
+      (setting) => {
+        setting.addText(
+          (text) => text.setPlaceholder("progress").setValue(this.plugin.settings.ganttProgressProp).onChange((value) => {
+            this.plugin.settings.ganttProgressProp = value.trim();
+            void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+          })
+        );
+      }
+    );
+    premium(
+      "Gantt milestone property",
+      "Notes where this frontmatter value is truthy render as a diamond milestone instead of a bar.",
+      (setting) => {
+        setting.addText(
+          (text) => text.setPlaceholder("milestone").setValue(this.plugin.settings.ganttMilestoneProp).onChange((value) => {
+            this.plugin.settings.ganttMilestoneProp = value.trim();
+            void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+          })
+        );
+      }
+    );
+    premium(
+      "Calendar color property",
+      "Frontmatter property whose value tints each calendar event with a stable color. Leave blank for no coloring.",
+      (setting) => {
+        setting.addText(
+          (text) => text.setPlaceholder("status").setValue(this.plugin.settings.calendarColorProp).onChange((value) => {
+            this.plugin.settings.calendarColorProp = value.trim();
+            void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+          })
+        );
+      }
+    );
+    premium(
+      "Calendar quick-add folder",
+      "Optional folder for notes created by clicking a day (leave blank for the vault root).",
+      (setting) => {
+        setting.addText(
+          (text) => text.setValue(this.plugin.settings.calendarQuickAddFolder).onChange((value) => {
+            this.plugin.settings.calendarQuickAddFolder = value.trim();
+            void this.plugin.saveSettings();
+          })
+        );
+      }
+    );
     premium(
       "Kanban card formula",
       'An expression shown under each kanban card, e.g. round(done / total * 100, 0) + "%".',
@@ -3326,14 +3418,6 @@ function columnHue(name) {
   }
   return hash % 360;
 }
-function getCardMeta(row, fields) {
-  const lines = [];
-  for (const field of fields) {
-    const formatted = formatField(row, field);
-    if (formatted) lines.push(`${field}: ${formatted}`);
-  }
-  return lines;
-}
 function matchesSearch(row, search, columnName) {
   const haystacks = [
     row.name,
@@ -3395,7 +3479,7 @@ function numberOrNull(value) {
   const n = toNumber(value);
   return Number.isFinite(n) ? n : null;
 }
-function formatField(row, field) {
+function formatCardField(row, field) {
   const value = row.scope.get(field);
   if (value === void 0 || value === null || value === "") return null;
   if (Array.isArray(value)) {
@@ -3440,6 +3524,31 @@ function buildQuickAddTitle(columnName, now = /* @__PURE__ */ new Date()) {
 }
 function trimSlashes(value) {
   return value.replace(/^[/\\]+|[/\\]+$/g, "");
+}
+
+// src/query/inlineEdit.ts
+var NUMERIC_FIELDS = /* @__PURE__ */ new Set(["priority", "order", "weight", "estimate", "progress"]);
+var LIST_FIELDS = /* @__PURE__ */ new Set(["tags", "aliases", "owners"]);
+function coerceFieldInput(field, raw, previous) {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return { value: null, remove: true };
+  const key = field.trim().toLowerCase();
+  if (LIST_FIELDS.has(key) || Array.isArray(previous)) {
+    const parts = trimmed.split(",").map((p) => p.trim()).filter(Boolean);
+    const deduped = [...new Set(parts)];
+    return { value: deduped, remove: deduped.length === 0 };
+  }
+  const numericField = NUMERIC_FIELDS.has(key) || typeof previous === "number";
+  if (numericField && /^-?\d+(\.\d+)?$/.test(trimmed)) {
+    return { value: Number(trimmed), remove: false };
+  }
+  if (trimmed === "true" || trimmed === "false") {
+    if (typeof previous === "boolean") return { value: trimmed === "true", remove: false };
+  }
+  return { value: trimmed, remove: false };
+}
+function formatFieldForEdit(value) {
+  return toStr(value);
 }
 
 // src/views/viewChrome.ts
@@ -3529,7 +3638,7 @@ var KanbanView = class extends import_obsidian3.ItemView {
     header.createEl("span", { cls: "bpp-badge bpp-badge-lite", text: "Lite" });
     header.createEl("span", { cls: "bpp-muted", text: `grouped by "${groupBy}"` });
     renderContextControls(container, this.plugin, resolved, () => void this.render());
-    this.renderLiteControls(container);
+    this.renderLiteControls(container, resolved.rows);
     renderRollupBar(container, this.plugin, resolved.rows);
     const extraColumns = (_a = this.plugin.settings.kanbanExtraColumns[groupBy]) != null ? _a : [];
     const columns = buildKanbanColumns(resolved.rows, {
@@ -3583,8 +3692,10 @@ var KanbanView = class extends import_obsidian3.ItemView {
         const card = col.createDiv({ cls: "bpp-card" });
         card.draggable = true;
         card.createDiv({ cls: "bpp-card-title", text: row.name });
-        for (const line of getCardMeta(row, metaFields)) {
-          card.createDiv({ cls: "bpp-card-meta", text: line });
+        for (const field of metaFields) {
+          const display = formatCardField(row, field);
+          if (display === null) continue;
+          this.renderEditableField(card, row, field, display);
         }
         if (cardFormula) {
           const val = evaluateSafe(cardFormula, row.scope);
@@ -3647,8 +3758,70 @@ var KanbanView = class extends import_obsidian3.ItemView {
     await this.plugin.saveSettings();
     await this.render();
   }
-  renderLiteControls(container) {
+  /** A card metadata line the user can click to edit the underlying frontmatter. */
+  renderEditableField(card, row, field, display) {
+    const line = card.createDiv({ cls: "bpp-card-meta bpp-card-meta-editable" });
+    line.createSpan({ cls: "bpp-card-meta-key", text: `${field}:` });
+    line.createSpan({ cls: "bpp-card-meta-val", text: display });
+    line.setAttr("title", "Click to edit");
+    line.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this.beginInlineEdit(card, line, row, field);
+    });
+  }
+  /** Swap a metadata line for an input, committing the parsed value on Enter/blur. */
+  beginInlineEdit(card, line, row, field) {
+    const previous = row.note.frontmatter[field];
+    card.draggable = false;
+    line.empty();
+    line.removeClass("bpp-card-meta-editable");
+    const input = line.createEl("input", { cls: "bpp-inline-edit", type: "text" });
+    input.value = formatFieldForEdit(previous);
+    input.focus();
+    input.select();
+    let settled = false;
+    const commit = async () => {
+      if (settled) return;
+      settled = true;
+      const { value, remove } = coerceFieldInput(field, input.value, previous);
+      await writeRowProperty(this.app, row.id, field, value, remove);
+      await this.render();
+    };
+    input.addEventListener("click", (event) => event.stopPropagation());
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void commit();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        settled = true;
+        void this.render();
+      }
+    });
+    input.addEventListener("blur", () => void commit());
+  }
+  collectGroupByOptions(rows, current) {
+    const set = /* @__PURE__ */ new Set();
+    for (const row of rows) {
+      for (const key of Object.keys(row.note.frontmatter)) set.add(key);
+    }
+    if (current) set.add(current);
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }
+  renderLiteControls(container, rows) {
     const controls = container.createDiv({ cls: "bpp-lite-controls" });
+    const groupBy = this.plugin.settings.kanbanGroupBy || "status";
+    const groupWrap = controls.createDiv({ cls: "bpp-lite-control" });
+    groupWrap.createSpan({ cls: "bpp-muted", text: "Group by" });
+    const groupSelect = groupWrap.createEl("select", { cls: "bpp-lite-select" });
+    for (const option of this.collectGroupByOptions(rows, groupBy)) {
+      const el = groupSelect.createEl("option", { text: option, value: option });
+      if (option === groupBy) el.selected = true;
+    }
+    groupSelect.addEventListener("change", () => {
+      this.plugin.settings.kanbanGroupBy = groupSelect.value || "status";
+      void this.plugin.saveSettings().then(() => this.render());
+    });
     const searchWrap = controls.createDiv({ cls: "bpp-lite-control" });
     searchWrap.createSpan({ cls: "bpp-muted", text: "Search" });
     const searchInput = searchWrap.createEl("input", {
@@ -3786,149 +3959,6 @@ var KanbanView = class extends import_obsidian3.ItemView {
 
 // src/views/calendarView.ts
 var import_obsidian4 = require("obsidian");
-var VIEW_TYPE_CALENDAR = "bpp-calendar-view";
-var CalendarView = class extends import_obsidian4.ItemView {
-  constructor(leaf, plugin) {
-    super(leaf);
-    this.renderToken = 0;
-    this.plugin = plugin;
-    const now = /* @__PURE__ */ new Date();
-    this.cursor = { year: now.getFullYear(), month: now.getMonth() };
-  }
-  getViewType() {
-    return VIEW_TYPE_CALENDAR;
-  }
-  getDisplayText() {
-    return "Power Pack: Calendar";
-  }
-  getIcon() {
-    return "calendar";
-  }
-  async onOpen() {
-    await this.render();
-    this.registerEvent(this.app.metadataCache.on("changed", () => void this.render()));
-  }
-  async onClose() {
-    this.contentEl.empty();
-  }
-  async render() {
-    const token = ++this.renderToken;
-    const container = this.contentEl;
-    if (!this.plugin.settings.isPro) {
-      container.empty();
-      container.addClass("bpp-view");
-      this.renderUpgradeNotice(container);
-      return;
-    }
-    const resolved = await resolveViewRows(this.app, this.plugin);
-    if (token !== this.renderToken) return;
-    container.empty();
-    container.addClass("bpp-view");
-    const dateProp = this.plugin.settings.calendarDateProp || "due";
-    const toolbar = container.createDiv({ cls: "bpp-toolbar" });
-    toolbar.createEl("h3", { text: "Calendar" });
-    toolbar.createEl("span", { cls: "bpp-badge bpp-badge-premium", text: "Premium" });
-    const nav = toolbar.createDiv({ cls: "bpp-cal-nav" });
-    const prev = nav.createEl("button", { text: "\u2039" });
-    const label = nav.createSpan({ cls: "bpp-cal-label" });
-    const next = nav.createEl("button", { text: "\u203A" });
-    prev.onclick = () => this.shiftMonth(-1);
-    next.onclick = () => this.shiftMonth(1);
-    const monthName = new Date(this.cursor.year, this.cursor.month, 1).toLocaleString(void 0, {
-      month: "long",
-      year: "numeric"
-    });
-    label.setText(monthName);
-    toolbar.createSpan({ cls: "bpp-muted", text: `dates from "${dateProp}"` });
-    renderContextControls(container, this.plugin, resolved, () => void this.render());
-    renderRollupBar(container, this.plugin, resolved.rows);
-    const byDay = this.collectByDay(resolved.rows, dateProp);
-    this.renderGrid(container, byDay);
-  }
-  renderUpgradeNotice(container) {
-    const box = container.createDiv({ cls: "bpp-upgrade" });
-    box.createEl("h3", { text: "\u{1F4C5} Calendar is a Premium view" });
-    box.createEl("p", {
-      text: "Unlock the calendar, Gantt timeline, roll-ups & formulas, and saved filters with a Bases Power Pack license."
-    });
-    const btn = box.createEl("button", { text: "Enter license key in settings", cls: "mod-cta" });
-    btn.onclick = () => {
-      var _a, _b;
-      const setting = this.app.setting;
-      (_a = setting == null ? void 0 : setting.open) == null ? void 0 : _a.call(setting);
-      (_b = setting == null ? void 0 : setting.openTabById) == null ? void 0 : _b.call(setting, this.plugin.manifest.id);
-    };
-  }
-  shiftMonth(delta) {
-    let m = this.cursor.month + delta;
-    let y = this.cursor.year;
-    if (m < 0) {
-      m = 11;
-      y -= 1;
-    } else if (m > 11) {
-      m = 0;
-      y += 1;
-    }
-    this.cursor = { year: y, month: m };
-    void this.render();
-  }
-  /** Map "YYYY-MM-DD" -> rows whose date property falls on that day. */
-  collectByDay(rows, dateProp) {
-    const map = /* @__PURE__ */ new Map();
-    for (const row of rows) {
-      const value = row.scope.get(dateProp);
-      if (value === void 0 || value === null || value === "") continue;
-      const key = this.normalizeDateKey(toStr(value));
-      if (!key) continue;
-      if (!map.has(key)) map.set(key, []);
-      map.get(key).push(row);
-    }
-    return map;
-  }
-  normalizeDateKey(raw) {
-    const iso = raw.slice(0, 10);
-    const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (m) return iso;
-    const d = new Date(raw);
-    if (isNaN(d.getTime())) return null;
-    const y = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${mm}-${day}`;
-  }
-  renderGrid(container, byDay) {
-    const grid = container.createDiv({ cls: "bpp-cal-grid" });
-    const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    for (const w of weekdays) {
-      grid.createDiv({ cls: "bpp-cal-weekday", text: w });
-    }
-    const first = new Date(this.cursor.year, this.cursor.month, 1);
-    const startOffset = first.getDay();
-    const daysInMonth = new Date(this.cursor.year, this.cursor.month + 1, 0).getDate();
-    for (let i = 0; i < startOffset; i++) {
-      grid.createDiv({ cls: "bpp-cal-cell bpp-cal-empty" });
-    }
-    for (let day = 1; day <= daysInMonth; day++) {
-      const cell = grid.createDiv({ cls: "bpp-cal-cell" });
-      cell.createDiv({ cls: "bpp-cal-daynum", text: String(day) });
-      const m = String(this.cursor.month + 1).padStart(2, "0");
-      const d = String(day).padStart(2, "0");
-      const key = `${this.cursor.year}-${m}-${d}`;
-      const rows = byDay.get(key) || [];
-      for (const row of rows) {
-        const ev = cell.createDiv({ cls: "bpp-cal-event", text: row.name });
-        ev.addEventListener("click", () => this.openRow(row));
-      }
-    }
-  }
-  openRow(row) {
-    const file = this.app.vault.getAbstractFileByPath(row.id);
-    if (file instanceof import_obsidian4.TFile) void this.app.workspace.getLeaf(false).openFile(file);
-  }
-};
-
-// src/views/ganttView.ts
-var import_obsidian5 = require("obsidian");
 
 // src/query/gantt.ts
 function toDayNumber(value) {
@@ -3951,6 +3981,29 @@ function dayNumberToIso(day) {
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
   const dd = String(d.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${dd}`;
+}
+function shiftIso(value, deltaDays) {
+  const dn = toDayNumber(value);
+  if (dn === null) return value != null ? value : "";
+  return dayNumberToIso(dn + deltaDays);
+}
+function moveBarDates(start, end, deltaDays) {
+  return {
+    start: shiftIso(start, deltaDays),
+    end: end && toDayNumber(end) !== null ? shiftIso(end, deltaDays) : null
+  };
+}
+function resizeBarEnd(start, end, deltaDays) {
+  const startDay = toDayNumber(start);
+  const base = end && toDayNumber(end) !== null ? end : start;
+  const baseDay = toDayNumber(base);
+  if (startDay === null || baseDay === null) return end != null ? end : start;
+  const next = Math.max(startDay, baseDay + deltaDays);
+  return dayNumberToIso(next);
+}
+function pxToDays(px, dayWidthPx) {
+  if (!Number.isFinite(dayWidthPx) || dayWidthPx <= 0) return 0;
+  return Math.round(px / dayWidthPx);
 }
 function buildGantt(input, defaultSpanDays = 1, maxDays = 120) {
   const bars = [];
@@ -3995,12 +4048,340 @@ function buildGantt(input, defaultSpanDays = 1, maxDays = 120) {
   return { days, bars: finalBars, skipped };
 }
 
+// src/query/dates.ts
+function toIsoDateKey(value) {
+  if (value === void 0 || value === null || value === "") return null;
+  const raw = toStr(value);
+  const head = raw.slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(head)) return head;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+function rescheduleDateValue(original, newIso) {
+  const raw = original === void 0 || original === null ? "" : toStr(original);
+  const m = raw.match(/^\d{4}-\d{2}-\d{2}(.*)$/);
+  return newIso + (m ? m[1] : "");
+}
+function weekdayOf(dayNumber) {
+  return (dayNumber % 7 + 7 + 4) % 7;
+}
+function startOfWeekIso(iso, weekStartsOn = 0) {
+  const dn = toDayNumber(iso);
+  if (dn === null) return iso;
+  const offset = (weekdayOf(dn) - weekStartsOn + 7) % 7;
+  return dayNumberToIso(dn - offset);
+}
+function weekKeys(iso, weekStartsOn = 0) {
+  const start = startOfWeekIso(iso, weekStartsOn);
+  const keys = [];
+  for (let i = 0; i < 7; i++) keys.push(shiftIso(start, i));
+  return keys;
+}
+function todayIso(now = /* @__PURE__ */ new Date()) {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+function dayLabel(iso) {
+  const dn = toDayNumber(iso);
+  if (dn === null) return iso;
+  const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const day = Number(iso.slice(8, 10));
+  return `${names[weekdayOf(dn)]} ${day}`;
+}
+
+// src/views/calendarView.ts
+var VIEW_TYPE_CALENDAR = "bpp-calendar-view";
+var DND_ROW = "application/x-bpp-row";
+var CalendarView = class extends import_obsidian4.ItemView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.renderToken = 0;
+    this.plugin = plugin;
+    this.anchor = todayIso();
+  }
+  getViewType() {
+    return VIEW_TYPE_CALENDAR;
+  }
+  getDisplayText() {
+    return "Power Pack: Calendar";
+  }
+  getIcon() {
+    return "calendar";
+  }
+  async onOpen() {
+    await this.render();
+    this.registerEvent(this.app.metadataCache.on("changed", () => void this.render()));
+  }
+  async onClose() {
+    this.contentEl.empty();
+  }
+  get mode() {
+    return this.plugin.settings.calendarViewMode;
+  }
+  async render() {
+    const token = ++this.renderToken;
+    const container = this.contentEl;
+    if (!this.plugin.settings.isPro) {
+      container.empty();
+      container.addClass("bpp-view");
+      this.renderUpgradeNotice(container);
+      return;
+    }
+    const resolved = await resolveViewRows(this.app, this.plugin);
+    if (token !== this.renderToken) return;
+    container.empty();
+    container.addClass("bpp-view");
+    const dateProp = this.plugin.settings.calendarDateProp || "due";
+    this.renderToolbar(container, dateProp);
+    renderContextControls(container, this.plugin, resolved, () => void this.render());
+    renderRollupBar(container, this.plugin, resolved.rows);
+    const byDay = this.collectByDay(resolved.rows, dateProp);
+    if (this.mode === "agenda") this.renderAgenda(container, byDay, dateProp);
+    else if (this.mode === "week") this.renderWeek(container, byDay, dateProp);
+    else this.renderMonth(container, byDay, dateProp);
+  }
+  // ---- toolbar --------------------------------------------------------------
+  renderToolbar(container, dateProp) {
+    const toolbar = container.createDiv({ cls: "bpp-toolbar" });
+    toolbar.createEl("h3", { text: "Calendar" });
+    toolbar.createEl("span", { cls: "bpp-badge bpp-badge-premium", text: "Premium" });
+    const modes = toolbar.createDiv({ cls: "bpp-segmented" });
+    const addMode = (mode, label) => {
+      const btn = modes.createEl("button", { text: label, cls: "bpp-seg-btn" });
+      if (this.mode === mode) btn.addClass("is-active");
+      btn.addEventListener("click", () => void this.setMode(mode));
+    };
+    addMode("month", "Month");
+    addMode("week", "Week");
+    addMode("agenda", "Agenda");
+    const nav = toolbar.createDiv({ cls: "bpp-cal-nav" });
+    const prev = nav.createEl("button", { text: "\u2039", attr: { "aria-label": "Previous" } });
+    const today = nav.createEl("button", { text: "Today", cls: "bpp-seg-btn" });
+    const next = nav.createEl("button", { text: "\u203A", attr: { "aria-label": "Next" } });
+    prev.addEventListener("click", () => this.shift(-1));
+    next.addEventListener("click", () => this.shift(1));
+    today.addEventListener("click", () => {
+      this.anchor = todayIso();
+      void this.render();
+    });
+    nav.createSpan({ cls: "bpp-cal-label", text: this.periodLabel() });
+    toolbar.createSpan({ cls: "bpp-muted", text: `dates from "${dateProp}"` });
+  }
+  async setMode(mode) {
+    if (this.plugin.settings.calendarViewMode === mode) return;
+    this.plugin.settings.calendarViewMode = mode;
+    await this.plugin.saveSettings();
+    await this.render();
+  }
+  periodLabel() {
+    if (this.mode === "week") {
+      const keys = weekKeys(this.anchor);
+      return `${keys[0]} \u2013 ${keys[6]}`;
+    }
+    if (this.mode === "agenda") return "Upcoming";
+    const d = /* @__PURE__ */ new Date(`${this.anchor}T00:00:00`);
+    return d.toLocaleString(void 0, { month: "long", year: "numeric" });
+  }
+  /** Move the visible period by one unit (month/week); agenda ignores it. */
+  shift(delta) {
+    if (this.mode === "week") {
+      this.anchor = shiftIso(startOfWeekIso(this.anchor), delta * 7);
+    } else if (this.mode === "month") {
+      const d = /* @__PURE__ */ new Date(`${this.anchor}T00:00:00`);
+      d.setMonth(d.getMonth() + delta, 1);
+      this.anchor = todayIso(d);
+    }
+    void this.render();
+  }
+  // ---- data -----------------------------------------------------------------
+  /** Map "YYYY-MM-DD" -> rows whose date property falls on that day. */
+  collectByDay(rows, dateProp) {
+    const map = /* @__PURE__ */ new Map();
+    for (const row of rows) {
+      const key = toIsoDateKey(row.scope.get(dateProp));
+      if (!key) continue;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(row);
+    }
+    return map;
+  }
+  // ---- month ----------------------------------------------------------------
+  renderMonth(container, byDay, dateProp) {
+    const grid = container.createDiv({ cls: "bpp-cal-grid" });
+    for (const w of ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]) {
+      grid.createDiv({ cls: "bpp-cal-weekday", text: w });
+    }
+    const anchor = /* @__PURE__ */ new Date(`${this.anchor}T00:00:00`);
+    const year = anchor.getFullYear();
+    const month = anchor.getMonth();
+    const first = new Date(year, month, 1);
+    const startOffset = first.getDay();
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    for (let i = 0; i < startOffset; i++) grid.createDiv({ cls: "bpp-cal-cell bpp-cal-empty" });
+    const today = todayIso();
+    for (let day = 1; day <= daysInMonth; day++) {
+      const key = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+      const cell = this.renderDayCell(grid, key, dateProp, byDay.get(key) || [], today);
+      cell.createDiv({ cls: "bpp-cal-daynum", text: String(day) });
+      this.renderCellEvents(cell, byDay.get(key) || []);
+    }
+  }
+  // ---- week -----------------------------------------------------------------
+  renderWeek(container, byDay, dateProp) {
+    const grid = container.createDiv({ cls: "bpp-cal-grid bpp-cal-week" });
+    const today = todayIso();
+    for (const key of weekKeys(this.anchor)) {
+      grid.createDiv({ cls: "bpp-cal-weekday", text: dayLabel(key) });
+    }
+    for (const key of weekKeys(this.anchor)) {
+      const cell = this.renderDayCell(grid, key, dateProp, byDay.get(key) || [], today);
+      this.renderCellEvents(cell, byDay.get(key) || []);
+    }
+  }
+  /** A day cell that is a drop target for reschedule and offers a create button. */
+  renderDayCell(grid, key, dateProp, _rows, today) {
+    const cell = grid.createDiv({ cls: "bpp-cal-cell" });
+    if (key === today) cell.addClass("is-today");
+    const add = cell.createEl("button", {
+      cls: "bpp-cal-add",
+      text: "+",
+      attr: { "aria-label": `Create a note on ${key}` }
+    });
+    add.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      void this.createOnDay(key, dateProp);
+    });
+    cell.addEventListener("dragover", (evt) => {
+      var _a, _b;
+      if (!((_b = (_a = evt.dataTransfer) == null ? void 0 : _a.types) != null ? _b : []).includes(DND_ROW)) return;
+      evt.preventDefault();
+      cell.addClass("is-drop-target");
+      if (evt.dataTransfer) evt.dataTransfer.dropEffect = "move";
+    });
+    cell.addEventListener("dragleave", () => cell.removeClass("is-drop-target"));
+    cell.addEventListener("drop", (evt) => {
+      var _a, _b;
+      cell.removeClass("is-drop-target");
+      const rowId = ((_a = evt.dataTransfer) == null ? void 0 : _a.getData(DND_ROW)) || ((_b = evt.dataTransfer) == null ? void 0 : _b.getData("text/plain"));
+      if (!rowId) return;
+      evt.preventDefault();
+      void this.reschedule(rowId, dateProp, key);
+    });
+    return cell;
+  }
+  renderCellEvents(cell, rows) {
+    const colorProp = this.plugin.settings.calendarColorProp.trim();
+    for (const row of rows) {
+      const ev = cell.createDiv({ cls: "bpp-cal-event", text: row.name });
+      if (colorProp) {
+        const value = toStr(row.scope.get(colorProp));
+        if (value) {
+          ev.addClass("is-colored");
+          ev.setCssProps({ "--bpp-col-hue": String(columnHue(value)) });
+        }
+      }
+      ev.draggable = true;
+      ev.addEventListener("dragstart", (evt) => {
+        var _a, _b;
+        ev.addClass("is-dragging");
+        (_a = evt.dataTransfer) == null ? void 0 : _a.setData(DND_ROW, row.id);
+        (_b = evt.dataTransfer) == null ? void 0 : _b.setData("text/plain", row.id);
+        if (evt.dataTransfer) evt.dataTransfer.effectAllowed = "move";
+      });
+      ev.addEventListener("dragend", () => ev.removeClass("is-dragging"));
+      ev.addEventListener("click", () => this.openRow(row));
+    }
+  }
+  // ---- agenda ---------------------------------------------------------------
+  renderAgenda(container, byDay, _dateProp) {
+    const days = [...byDay.keys()].sort();
+    const list = container.createDiv({ cls: "bpp-agenda" });
+    if (days.length === 0) {
+      list.createDiv({ cls: "bpp-empty", text: "No dated notes to show." });
+      return;
+    }
+    const today = todayIso();
+    for (const key of days) {
+      const group = list.createDiv({ cls: "bpp-agenda-day" });
+      const head = group.createDiv({ cls: "bpp-agenda-date" });
+      head.createSpan({ text: dayLabel(key) });
+      head.createSpan({ cls: "bpp-muted", text: key });
+      if (key === today) head.createSpan({ cls: "bpp-badge bpp-badge-lite", text: "Today" });
+      for (const row of byDay.get(key) || []) {
+        const item = group.createDiv({ cls: "bpp-agenda-item", text: row.name });
+        item.addEventListener("click", () => this.openRow(row));
+      }
+    }
+  }
+  // ---- mutations ------------------------------------------------------------
+  async reschedule(rowId, dateProp, targetKey) {
+    var _a;
+    const file = this.app.vault.getAbstractFileByPath(rowId);
+    if (!(file instanceof import_obsidian4.TFile)) return;
+    const cache = this.app.metadataCache.getFileCache(file);
+    const original = (_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a[dateProp];
+    await writeRowProperty(this.app, rowId, dateProp, rescheduleDateValue(original, targetKey));
+    await this.render();
+  }
+  async createOnDay(key, dateProp) {
+    try {
+      const file = await createSeededNote(
+        this.app,
+        this.plugin.settings.calendarQuickAddFolder,
+        dateProp,
+        key,
+        `Note ${key}`
+      );
+      new import_obsidian4.Notice(`Created ${file.basename}`);
+    } catch (error) {
+      new import_obsidian4.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
+    }
+    await this.render();
+  }
+  renderUpgradeNotice(container) {
+    const box = container.createDiv({ cls: "bpp-upgrade" });
+    box.createEl("h3", { text: "\u{1F4C5} Calendar is a Premium view" });
+    box.createEl("p", {
+      text: "Drag notes to reschedule, click a day to create one, and switch between month, week, and agenda \u2014 unlock it with a Bases Power Pack license."
+    });
+    const btn = box.createEl("button", { text: "Enter license key in settings", cls: "mod-cta" });
+    btn.addEventListener("click", () => {
+      var _a, _b;
+      const setting = this.app.setting;
+      (_a = setting == null ? void 0 : setting.open) == null ? void 0 : _a.call(setting);
+      (_b = setting == null ? void 0 : setting.openTabById) == null ? void 0 : _b.call(setting, this.plugin.manifest.id);
+    });
+  }
+  openRow(row) {
+    const file = this.app.vault.getAbstractFileByPath(row.id);
+    if (file instanceof import_obsidian4.TFile) void this.app.workspace.getLeaf(false).openFile(file);
+  }
+};
+
 // src/views/ganttView.ts
+var import_obsidian5 = require("obsidian");
 var VIEW_TYPE_GANTT = "bpp-gantt-view";
+var ZOOM_PRESETS = [
+  { label: "Quarter", px: 4 },
+  { label: "Month", px: 9 },
+  { label: "Week", px: 22 },
+  { label: "Day", px: 44 }
+];
+var DEFAULT_ZOOM = 9;
+var MAX_AXIS_DAYS = 730;
+var CLICK_SLOP = 4;
 var GanttView = class extends import_obsidian5.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.renderToken = 0;
+    this.zoomPx = DEFAULT_ZOOM;
+    this.scrollEl = null;
     this.plugin = plugin;
   }
   getViewType() {
@@ -4017,6 +4398,7 @@ var GanttView = class extends import_obsidian5.ItemView {
     this.registerEvent(this.app.metadataCache.on("changed", () => void this.render()));
   }
   async onClose() {
+    this.scrollEl = null;
     this.contentEl.empty();
   }
   async render() {
@@ -4038,6 +4420,17 @@ var GanttView = class extends import_obsidian5.ItemView {
     toolbar.createEl("h3", { text: "Gantt" });
     toolbar.createEl("span", { cls: "bpp-badge bpp-badge-premium", text: "Premium" });
     toolbar.createSpan({ cls: "bpp-muted", text: `${startProp} \u2192 ${endProp}` });
+    const zoom = toolbar.createDiv({ cls: "bpp-segmented" });
+    for (const preset of ZOOM_PRESETS) {
+      const btn = zoom.createEl("button", { text: preset.label, cls: "bpp-seg-btn" });
+      if (preset.px === this.zoomPx) btn.addClass("is-active");
+      btn.addEventListener("click", () => {
+        this.zoomPx = preset.px;
+        void this.render();
+      });
+    }
+    const todayBtn = toolbar.createEl("button", { text: "Today", cls: "bpp-seg-btn" });
+    todayBtn.addEventListener("click", () => this.scrollToToday());
     renderContextControls(container, this.plugin, resolved, () => void this.render());
     renderRollupBar(container, this.plugin, resolved.rows);
     const rowByPath = /* @__PURE__ */ new Map();
@@ -4050,7 +4443,7 @@ var GanttView = class extends import_obsidian5.ItemView {
         end: valueToDateString(row.scope.get(endProp))
       };
     });
-    const model = buildGantt(input, 1, 180);
+    const model = buildGantt(input, 1, MAX_AXIS_DAYS);
     if (model.bars.length === 0) {
       container.createDiv({
         cls: "bpp-empty",
@@ -4058,28 +4451,7 @@ var GanttView = class extends import_obsidian5.ItemView {
       });
       return;
     }
-    const chart = container.createDiv({ cls: "bpp-gantt" });
-    const axis = chart.createDiv({ cls: "bpp-gantt-axis" });
-    axis.createDiv({ cls: "bpp-gantt-name bpp-gantt-axis-label", text: "Task" });
-    const axisTrack = axis.createDiv({ cls: "bpp-gantt-track" });
-    axisTrack.createSpan({ cls: "bpp-muted", text: model.days[0] });
-    axisTrack.createSpan({
-      cls: "bpp-muted bpp-gantt-axis-end",
-      text: model.days[model.days.length - 1]
-    });
-    const total = model.days.length;
-    const todayDay = toDayNumber((/* @__PURE__ */ new Date()).toISOString().slice(0, 10));
-    const firstDay = toDayNumber(model.days[0]);
-    if (todayDay !== null && firstDay !== null) {
-      const offset = todayDay - firstDay;
-      if (offset >= 0 && offset < total) {
-        const marker = axisTrack.createDiv({ cls: "bpp-gantt-today" });
-        marker.setCssProps({ left: `${offset / total * 100}%` });
-      }
-    }
-    for (const bar of model.bars) {
-      this.renderBar(chart, bar, total, rowByPath.get(bar.id));
-    }
+    this.renderChart(container, model, rowByPath, startProp, endProp);
     if (model.skipped > 0) {
       container.createDiv({
         cls: "bpp-muted bpp-gantt-skipped",
@@ -4087,32 +4459,183 @@ var GanttView = class extends import_obsidian5.ItemView {
       });
     }
   }
-  renderBar(chart, bar, total, row) {
+  renderChart(container, model, rowByPath, startProp, endProp) {
+    const total = model.days.length;
+    const px = this.zoomPx;
+    const scroll = container.createDiv({ cls: "bpp-gantt-scroll" });
+    this.scrollEl = scroll;
+    const chart = scroll.createDiv({ cls: "bpp-gantt" });
+    chart.setCssProps({ "--bpp-track-width": `${total * px}px` });
+    const axis = chart.createDiv({ cls: "bpp-gantt-axis" });
+    axis.createDiv({ cls: "bpp-gantt-name bpp-gantt-axis-label", text: "Task" });
+    const axisTrack = axis.createDiv({ cls: "bpp-gantt-track bpp-gantt-axis-track" });
+    this.renderMonthTicks(axisTrack, model.days, px);
+    const todayOffset = this.todayOffset(model.days);
+    if (todayOffset !== null) {
+      const marker = axisTrack.createDiv({ cls: "bpp-gantt-today" });
+      marker.setCssProps({ left: `${todayOffset * px}px` });
+    }
+    for (const bar of model.bars) {
+      this.renderBar(chart, bar, px, todayOffset, rowByPath.get(bar.id), startProp, endProp);
+    }
+  }
+  /** Faint month boundary ticks + labels along the axis. */
+  renderMonthTicks(axisTrack, days, px) {
+    for (let i = 0; i < days.length; i++) {
+      if (i > 0 && !days[i].endsWith("-01")) continue;
+      const tick = axisTrack.createDiv({ cls: "bpp-gantt-tick" });
+      tick.setCssProps({ left: `${i * px}px` });
+      tick.createSpan({ cls: "bpp-muted", text: days[i].slice(0, 7) });
+    }
+  }
+  renderBar(chart, bar, px, todayOffset, row, startProp, endProp) {
     const rowEl = chart.createDiv({ cls: "bpp-gantt-row" });
     const name = rowEl.createDiv({ cls: "bpp-gantt-name", text: bar.name });
     if (row) name.addEventListener("click", () => this.openRow(row));
     const track = rowEl.createDiv({ cls: "bpp-gantt-track" });
+    if (todayOffset !== null) {
+      const line = track.createDiv({ cls: "bpp-gantt-todayline" });
+      line.setCssProps({ left: `${todayOffset * px}px` });
+    }
+    const isMilestone = row ? this.isMilestone(row) : false;
+    if (isMilestone) {
+      const diamond = track.createDiv({ cls: "bpp-gantt-milestone" });
+      diamond.setCssProps({ left: `${bar.startIndex * px}px` });
+      diamond.setAttr("title", `${bar.name}: ${bar.startDate}`);
+      if (row) diamond.addEventListener("click", () => this.openRow(row));
+      return;
+    }
     const barEl = track.createDiv({ cls: "bpp-gantt-bar" });
-    barEl.setCssProps({
-      left: `${bar.startIndex / total * 100}%`,
-      width: `${Math.max(1 / total, bar.span / total) * 100}%`
-    });
+    barEl.setCssProps({ left: `${bar.startIndex * px}px`, width: `${Math.max(1, bar.span) * px}px` });
     barEl.setAttr("title", `${bar.name}: ${bar.startDate} \u2192 ${bar.endDate}`);
-    if (row) barEl.addEventListener("click", () => this.openRow(row));
+    if (row) {
+      const progress = this.progressPct(row);
+      if (progress !== null) {
+        const fill = barEl.createDiv({ cls: "bpp-gantt-progress" });
+        fill.setCssProps({ width: `${progress}%` });
+      }
+      const handle = barEl.createDiv({ cls: "bpp-gantt-handle" });
+      this.enableDrag(barEl, handle, row, startProp, endProp);
+    }
+  }
+  // ---- interaction ----------------------------------------------------------
+  /**
+   * Pointer-drag a bar (move both dates) or its right handle (resize the end).
+   * Uses pointer capture so move/up stay on the element — no document listeners,
+   * popout-safe. A tiny drag counts as a click that opens the note.
+   */
+  enableDrag(barEl, handle, row, startProp, endProp) {
+    let startX = 0;
+    let kind = null;
+    let baseWidth = 0;
+    const begin = (evt, k) => {
+      if (evt.button !== 0) return;
+      evt.preventDefault();
+      evt.stopPropagation();
+      kind = k;
+      startX = evt.clientX;
+      baseWidth = barEl.offsetWidth;
+      barEl.addClass("is-dragging");
+      barEl.setPointerCapture(evt.pointerId);
+    };
+    barEl.addEventListener("pointerdown", (evt) => begin(evt, "move"));
+    handle.addEventListener("pointerdown", (evt) => begin(evt, "resize"));
+    barEl.addEventListener("pointermove", (evt) => {
+      if (!kind) return;
+      const dx = evt.clientX - startX;
+      if (kind === "move") barEl.setCssProps({ transform: `translateX(${dx}px)` });
+      else barEl.setCssProps({ width: `${Math.max(this.zoomPx, baseWidth + dx)}px` });
+    });
+    const finish = (evt) => {
+      if (!kind) return;
+      const dx = evt.clientX - startX;
+      const currentKind = kind;
+      kind = null;
+      barEl.removeClass("is-dragging");
+      if (barEl.hasPointerCapture(evt.pointerId)) barEl.releasePointerCapture(evt.pointerId);
+      if (Math.abs(dx) < CLICK_SLOP) {
+        barEl.setCssProps({ transform: "" });
+        if (currentKind === "move") this.openRow(row);
+        else void this.render();
+        return;
+      }
+      const deltaDays = pxToDays(dx, this.zoomPx);
+      if (deltaDays === 0) {
+        void this.render();
+        return;
+      }
+      if (currentKind === "move") void this.applyMove(row, startProp, endProp, deltaDays);
+      else void this.applyResize(row, startProp, endProp, deltaDays);
+    };
+    barEl.addEventListener("pointerup", finish);
+    barEl.addEventListener("pointercancel", finish);
+  }
+  async applyMove(row, startProp, endProp, deltaDays) {
+    const startRaw = row.scope.get(startProp);
+    const endRaw = row.scope.get(endProp);
+    const startIso = valueToDateString(startRaw);
+    if (!startIso) return void this.render();
+    const endIso = valueToDateString(endRaw);
+    const moved = moveBarDates(startIso, endIso, deltaDays);
+    await writeRowProperty(this.app, row.id, startProp, rescheduleDateValue(startRaw, moved.start));
+    if (moved.end !== null) {
+      await writeRowProperty(this.app, row.id, endProp, rescheduleDateValue(endRaw, moved.end));
+    }
+    await this.render();
+  }
+  async applyResize(row, startProp, endProp, deltaDays) {
+    const startRaw = row.scope.get(startProp);
+    const endRaw = row.scope.get(endProp);
+    const startIso = valueToDateString(startRaw);
+    if (!startIso) return void this.render();
+    const endIso = valueToDateString(endRaw);
+    const nextEnd = resizeBarEnd(startIso, endIso, deltaDays);
+    await writeRowProperty(this.app, row.id, endProp, rescheduleDateValue(endRaw, nextEnd));
+    await this.render();
+  }
+  scrollToToday() {
+    if (!this.scrollEl) return;
+    const marker = this.scrollEl.querySelector(".bpp-gantt-axis-track .bpp-gantt-today");
+    if (!marker) return;
+    const left = marker.offsetLeft;
+    this.scrollEl.scrollTo({ left: Math.max(0, left - this.scrollEl.clientWidth / 2), behavior: "smooth" });
+  }
+  // ---- helpers --------------------------------------------------------------
+  todayOffset(days) {
+    if (days.length === 0) return null;
+    const todayDay = toDayNumber(todayIso());
+    const firstDay = toDayNumber(days[0]);
+    if (todayDay === null || firstDay === null) return null;
+    const offset = todayDay - firstDay;
+    return offset >= 0 && offset < days.length ? offset : null;
+  }
+  isMilestone(row) {
+    const prop = this.plugin.settings.ganttMilestoneProp.trim();
+    if (!prop) return false;
+    return toBool(row.scope.get(prop));
+  }
+  progressPct(row) {
+    const prop = this.plugin.settings.ganttProgressProp.trim();
+    if (!prop) return null;
+    const raw = row.scope.get(prop);
+    if (raw === void 0 || raw === null || raw === "") return null;
+    const n = toNumber(raw);
+    if (Number.isNaN(n)) return null;
+    return Math.max(0, Math.min(100, n));
   }
   renderUpgradeNotice(container) {
     const box = container.createDiv({ cls: "bpp-upgrade" });
     box.createEl("h3", { text: "\u{1F4CA} Gantt is a Premium view" });
     box.createEl("p", {
-      text: "Unlock the Gantt timeline, calendar, roll-ups & formulas, and saved filters with a Bases Power Pack license."
+      text: "Drag bars to reschedule, resize to change duration, zoom the timeline, and track progress \u2014 unlock it with a Bases Power Pack license."
     });
     const btn = box.createEl("button", { text: "Enter license key in settings", cls: "mod-cta" });
-    btn.onclick = () => {
+    btn.addEventListener("click", () => {
       var _a, _b;
       const setting = this.app.setting;
       (_a = setting == null ? void 0 : setting.open) == null ? void 0 : _a.call(setting);
       (_b = setting == null ? void 0 : setting.openTabById) == null ? void 0 : _b.call(setting, this.plugin.manifest.id);
-    };
+    });
   }
   openRow(row) {
     const file = this.app.vault.getAbstractFileByPath(row.id);
@@ -4289,6 +4812,11 @@ var BasesPowerPackPlugin = class extends import_obsidian6.Plugin {
     if (typeof this.settings.activeBasePath !== "string") this.settings.activeBasePath = "";
     if (typeof this.settings.activeFilterId !== "string") this.settings.activeFilterId = "";
     if (typeof this.settings.cardFormula !== "string") this.settings.cardFormula = "";
+    if (!CALENDAR_VIEW_MODES.includes(this.settings.calendarViewMode)) this.settings.calendarViewMode = "month";
+    if (typeof this.settings.calendarColorProp !== "string") this.settings.calendarColorProp = "";
+    if (typeof this.settings.calendarQuickAddFolder !== "string") this.settings.calendarQuickAddFolder = "";
+    if (typeof this.settings.ganttProgressProp !== "string") this.settings.ganttProgressProp = DEFAULT_SETTINGS.ganttProgressProp;
+    if (typeof this.settings.ganttMilestoneProp !== "string") this.settings.ganttMilestoneProp = DEFAULT_SETTINGS.ganttMilestoneProp;
   }
   async saveSettings() {
     this.savePromise = this.savePromise.then(() => this.saveData(this.settings));

@@ -4,7 +4,7 @@ import type { Row } from "../model/row";
 import {
 	buildKanbanColumns,
 	columnHue,
-	getCardMeta,
+	formatCardField,
 	reorderColumns,
 	type KanbanSort,
 } from "../query/kanban";
@@ -14,8 +14,9 @@ import {
 	buildQuickAddTitle,
 	setKanbanGroupValue,
 } from "../query/kanbanActions";
+import { coerceFieldInput, formatFieldForEdit } from "../query/inlineEdit";
 import { evaluateSafe, toStr } from "../engine/expression";
-import { resolveViewRows } from "./viewData";
+import { resolveViewRows, writeRowProperty } from "./viewData";
 import { renderContextControls, renderRollupBar } from "./viewChrome";
 
 export const VIEW_TYPE_KANBAN = "bpp-kanban-view";
@@ -90,7 +91,7 @@ export class KanbanView extends ItemView {
 		header.createEl("span", { cls: "bpp-muted", text: `grouped by "${groupBy}"` });
 
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
-		this.renderLiteControls(container);
+		this.renderLiteControls(container, resolved.rows);
 		renderRollupBar(container, this.plugin, resolved.rows);
 
 		const extraColumns = this.plugin.settings.kanbanExtraColumns[groupBy] ?? [];
@@ -156,8 +157,10 @@ export class KanbanView extends ItemView {
 				const card = col.createDiv({ cls: "bpp-card" });
 				card.draggable = true;
 				card.createDiv({ cls: "bpp-card-title", text: row.name });
-				for (const line of getCardMeta(row, metaFields)) {
-					card.createDiv({ cls: "bpp-card-meta", text: line });
+				for (const field of metaFields) {
+					const display = formatCardField(row, field);
+					if (display === null) continue;
+					this.renderEditableField(card, row, field, display);
 				}
 				if (cardFormula) {
 					const val = evaluateSafe(cardFormula, row.scope);
@@ -222,8 +225,75 @@ export class KanbanView extends ItemView {
 		await this.render();
 	}
 
-	private renderLiteControls(container: HTMLElement): void {
+	/** A card metadata line the user can click to edit the underlying frontmatter. */
+	private renderEditableField(card: HTMLElement, row: Row, field: string, display: string): void {
+		const line = card.createDiv({ cls: "bpp-card-meta bpp-card-meta-editable" });
+		line.createSpan({ cls: "bpp-card-meta-key", text: `${field}:` });
+		line.createSpan({ cls: "bpp-card-meta-val", text: display });
+		line.setAttr("title", "Click to edit");
+		line.addEventListener("click", (event) => {
+			event.stopPropagation();
+			this.beginInlineEdit(card, line, row, field);
+		});
+	}
+
+	/** Swap a metadata line for an input, committing the parsed value on Enter/blur. */
+	private beginInlineEdit(card: HTMLElement, line: HTMLElement, row: Row, field: string): void {
+		const previous = row.note.frontmatter[field];
+		card.draggable = false;
+		line.empty();
+		line.removeClass("bpp-card-meta-editable");
+		const input = line.createEl("input", { cls: "bpp-inline-edit", type: "text" });
+		input.value = formatFieldForEdit(previous);
+		input.focus();
+		input.select();
+
+		let settled = false;
+		const commit = async (): Promise<void> => {
+			if (settled) return;
+			settled = true;
+			const { value, remove } = coerceFieldInput(field, input.value, previous);
+			await writeRowProperty(this.app, row.id, field, value, remove);
+			await this.render();
+		};
+		input.addEventListener("click", (event) => event.stopPropagation());
+		input.addEventListener("keydown", (event) => {
+			if (event.key === "Enter") {
+				event.preventDefault();
+				void commit();
+			} else if (event.key === "Escape") {
+				event.preventDefault();
+				settled = true;
+				void this.render();
+			}
+		});
+		input.addEventListener("blur", () => void commit());
+	}
+
+	private collectGroupByOptions(rows: Row[], current: string): string[] {
+		const set = new Set<string>();
+		for (const row of rows) {
+			for (const key of Object.keys(row.note.frontmatter)) set.add(key);
+		}
+		if (current) set.add(current);
+		return [...set].sort((a, b) => a.localeCompare(b));
+	}
+
+	private renderLiteControls(container: HTMLElement, rows: Row[]): void {
 		const controls = container.createDiv({ cls: "bpp-lite-controls" });
+
+		const groupBy = this.plugin.settings.kanbanGroupBy || "status";
+		const groupWrap = controls.createDiv({ cls: "bpp-lite-control" });
+		groupWrap.createSpan({ cls: "bpp-muted", text: "Group by" });
+		const groupSelect = groupWrap.createEl("select", { cls: "bpp-lite-select" });
+		for (const option of this.collectGroupByOptions(rows, groupBy)) {
+			const el = groupSelect.createEl("option", { text: option, value: option });
+			if (option === groupBy) el.selected = true;
+		}
+		groupSelect.addEventListener("change", () => {
+			this.plugin.settings.kanbanGroupBy = groupSelect.value || "status";
+			void this.plugin.saveSettings().then(() => this.render());
+		});
 
 		const searchWrap = controls.createDiv({ cls: "bpp-lite-control" });
 		searchWrap.createSpan({ cls: "bpp-muted", text: "Search" });
