@@ -243,8 +243,17 @@
   border-color: var(--interactive-accent);
 }
 
+.bpp-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 4px;
+}
+
 .bpp-card-title {
   font-size: 0.9em;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .bpp-card-meta {
@@ -339,10 +348,9 @@
 
 .bpp-gantt-name {
   font-size: 0.85em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 2px;
   position: sticky;
   left: 0;
   z-index: 2;
@@ -350,7 +358,16 @@
   padding-right: 4px;
 }
 
-.bpp-gantt-name:hover {
+.bpp-gantt-name-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.bpp-gantt-name-label:hover {
   color: var(--interactive-accent);
 }
 
@@ -418,7 +435,17 @@
   width: 8px;
   cursor: ew-resize;
   touch-action: none;
-  background: linear-gradient(to right, transparent, rgba(0, 0, 0, 0.25));
+  /* A grip derived from the on-accent token so it stays visible in dark themes
+     (the old rgba-black wedge vanished against a dark bar). */
+  border-right: 2px solid var(--text-on-accent);
+  opacity: 0.55;
+}
+
+/* Coarse pointers need a grabbable handle. */
+@media (hover: none) {
+  .bpp-gantt-handle {
+    width: 20px;
+  }
 }
 
 .bpp-gantt-milestone {
@@ -531,13 +558,25 @@
   opacity: 0;
 }
 
-.bpp-cal-cell:hover .bpp-cal-add {
+.bpp-cal-cell:hover .bpp-cal-add,
+.bpp-cal-cell:focus-within .bpp-cal-add,
+.bpp-cal-add:focus-visible {
   opacity: 1;
 }
 
 .bpp-cal-add:hover {
   background: var(--interactive-accent);
   color: var(--text-on-accent);
+}
+
+/* Touch has no hover: the create-on-day button must be permanently visible and
+   a real finger target, not a hover-reveal. */
+@media (hover: none) {
+  .bpp-cal-add {
+    opacity: 1;
+    width: 30px;
+    height: 30px;
+  }
 }
 
 .bpp-cal-week .bpp-cal-cell {
@@ -552,9 +591,21 @@
   padding: 1px 4px;
   margin-bottom: 2px;
   cursor: grab;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.bpp-cal-event-label {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.bpp-cal-event .bpp-overflow {
+  color: var(--text-on-accent);
 }
 
 .bpp-cal-event.is-dragging {
@@ -562,8 +613,10 @@
 }
 
 .bpp-cal-event.is-colored {
-  background: hsl(var(--bpp-col-hue, 210), 60%, 45%);
-  color: #fff;
+  /* Match the Kanban column-hue fill (same S/L) and use the theme's on-accent
+     text token instead of a hardcoded #fff so the hue reads identically across views. */
+  background: hsl(var(--bpp-col-hue, 210) 55% 55%);
+  color: var(--text-on-accent);
 }
 
 /* Agenda */
@@ -591,6 +644,17 @@
   padding: 3px 6px;
   border-radius: 4px;
   cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.bpp-agenda-item-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bpp-agenda-item:hover {
@@ -863,4 +927,123 @@
   display: block;
   height: 100%;
   background: var(--interactive-accent);
+}
+
+/* ---- Focus rings (keyboard visibility) ---------------------------------- */
+.bpp-card:focus-visible,
+.bpp-cal-event:focus-visible,
+.bpp-agenda-item:focus-visible,
+.bpp-gantt-bar:focus-visible,
+.bpp-tree-row:focus-visible,
+.bpp-seg-btn:focus-visible,
+.bpp-lite-btn:focus-visible,
+.bpp-column-add:focus-visible,
+.bpp-column-remove:focus-visible,
+.bpp-add-column-btn:focus-visible,
+.bpp-cal-add:focus-visible,
+.bpp-overflow:focus-visible,
+.bpp-tree-twist:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ---- Per-item overflow (⋯) action button -------------------------------- */
+/* A keyboard- and touch-reachable path to each item's context menu. Subtle on
+   fine pointers (revealed on hover/focus), always visible on touch. */
+.bpp-overflow {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 0 4px;
+  line-height: 1;
+  font-size: 1.1em;
+  opacity: 0;
+}
+
+.bpp-card:hover .bpp-overflow,
+.bpp-cal-event:hover .bpp-overflow,
+.bpp-gantt-row:hover .bpp-overflow,
+.bpp-tree-row:hover .bpp-overflow,
+.bpp-card:focus-within .bpp-overflow,
+.bpp-tree-row:focus-within .bpp-overflow,
+.bpp-overflow:focus-visible {
+  opacity: 1;
+}
+
+.bpp-overflow:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+@media (hover: none) {
+  .bpp-overflow {
+    opacity: 1;
+    min-width: 32px;
+    min-height: 32px;
+  }
+}
+
+/* ---- Coarse pointer / narrow screens: bigger targets, denser board ------- */
+@media (hover: none), (max-width: 600px) {
+  .bpp-tree-twist {
+    min-width: 28px;
+    min-height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .bpp-column-add,
+  .bpp-column-remove {
+    min-width: 30px;
+    min-height: 30px;
+  }
+
+  .bpp-kanban-column {
+    min-width: 78vw;
+    max-width: 82vw;
+  }
+}
+
+/* ---- High-contrast / forced-colors --------------------------------------- */
+/* State conveyed only by background/border/opacity is flattened by Windows High
+   Contrast; re-express it with system colors and non-color cues. */
+@media (forced-colors: active) {
+  .bpp-kanban-column.is-drop-target,
+  .bpp-cal-cell.is-drop-target,
+  .bpp-tree-row.is-drop-target,
+  .bpp-tree-rootzone.is-drop-target {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+
+  .bpp-card.is-dragging,
+  .bpp-cal-event.is-dragging,
+  .bpp-tree-row.is-dragging,
+  .bpp-gantt-bar.is-dragging {
+    outline: 2px dashed Highlight;
+  }
+
+  .bpp-kanban-column.is-over-wip {
+    outline: 2px solid CanvasText;
+  }
+
+  .bpp-gantt-progress,
+  .bpp-tree-progress-fill {
+    forced-color-adjust: none;
+    background: Highlight;
+    opacity: 1;
+  }
+
+  .bpp-gantt-today,
+  .bpp-gantt-todayline,
+  .bpp-cal-cell.is-today {
+    forced-color-adjust: none;
+    background: Highlight;
+    border-color: Highlight;
+  }
 }

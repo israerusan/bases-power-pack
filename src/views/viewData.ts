@@ -126,7 +126,7 @@ export async function writeRowProperties(
 }
 
 /** Ensure every folder in `path`'s parent chain exists. */
-async function ensureParentFolders(app: App, path: string): Promise<void> {
+export async function ensureParentFolders(app: App, path: string): Promise<void> {
 	const parts = path.split("/");
 	parts.pop();
 	let current = "";
@@ -136,6 +136,15 @@ async function ensureParentFolders(app: App, path: string): Promise<void> {
 		if (!normalized || app.vault.getAbstractFileByPath(normalized)) continue;
 		await app.vault.createFolder(normalized);
 	}
+}
+
+/** A free `<stem>.md` path, suffixing ` 2`, ` 3`, … until one is unused. */
+export function uniqueNotePath(app: App, stem: string): string {
+	let path = normalizePath(`${stem}.md`);
+	for (let i = 2; app.vault.getAbstractFileByPath(path) && i < 1000; i++) {
+		path = normalizePath(`${stem} ${i}.md`);
+	}
+	return path;
 }
 
 /**
@@ -152,10 +161,7 @@ export async function createSeededNote(
 	const app = plugin.app;
 	const cleanFolder = folder.trim().replace(/^[/\\]+|[/\\]+$/g, "");
 	const stem = `${cleanFolder ? `${cleanFolder}/` : ""}${titleHint}`;
-	let path = normalizePath(`${stem}.md`);
-	for (let i = 2; app.vault.getAbstractFileByPath(path) && i < 1000; i++) {
-		path = normalizePath(`${stem} ${i}.md`);
-	}
+	const path = uniqueNotePath(app, stem);
 	await ensureParentFolders(app, path);
 	const content = `---\n${key}: ${JSON.stringify(value)}\n---\n\n# ${titleHint}\n`;
 	const file = await app.vault.create(path, content);

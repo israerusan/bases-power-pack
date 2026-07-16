@@ -50,6 +50,10 @@ const scope = {
 			hours: 2.5,
 			tags: ["a", "b"],
 			"file.name": "Note A",
+				jan: "2026-01-01",
+				jun: "2026-06-01",
+				ver: "1.9.0",
+				pct: "50%",
 		};
 		return name in data ? data[name] : undefined;
 	},
@@ -77,6 +81,28 @@ assert.equal(ev("!false"), true, "unary not");
 assert.equal(ev("-hours"), -2.5, "unary minus");
 // Unknown function throws, but evaluateSafe swallows it.
 assert.equal(expr.evaluateSafe("bogusfn(1)", scope), null, "evaluateSafe swallows errors");
+
+// ISO dates / versions are numeric-LEADING strings: they must NOT collapse to the
+// leading number (parseFloat("2026-06-01")===parseFloat("2026-01-01")). Compare lexically.
+assert.equal(ev("jan == jun"), false, "two different ISO dates are not equal");
+assert.equal(ev("jan < jun"), true, "ISO date ordering is chronological (Jan < Jun)");
+assert.equal(ev("jun > jan"), true, "ISO date ordering is chronological (Jun > Jan)");
+assert.equal(ev('jun >= "2026-06-01"'), true, "date >= its own value");
+assert.equal(ev('jan >= "2026-06-01"'), false, "an earlier date is NOT >= a later one");
+assert.equal(ev('ver == "1.9.0"'), true, "version string compares as a whole, not as 1.9");
+assert.equal(ev('ver == "1.90"'), false, "version 1.9.0 is not equal to 1.90");
+assert.equal(ev("done == 3"), true, "genuine numbers still compare numerically");
+assert.equal(ev('total > "3"'), true, "a wholly-numeric string still coerces for compare");
+// Numeric-with-unit strings (the plugin's own `…+"%"` card formula) must still
+// ORDER numerically, even though they aren't wholly numeric.
+assert.equal(ev("pct > 9"), true, '"50%" orders numerically: 50 > 9');
+assert.equal(ev("pct < 60"), true, '"50%" orders numerically: 50 < 60');
+assert.equal(ev('pct == "50%"'), true, '"50%" still equals itself by exact string');
+assert.equal(ev('pct == 50'), false, '"50%" is not equal to the number 50 (strict equality)');
+assert.ok(Number.isNaN(expr.strictNumber("2026-01-01")), "strictNumber rejects a numeric-leading date string");
+assert.equal(expr.strictNumber("42"), 42, "strictNumber accepts a wholly-numeric string");
+assert.equal(expr.strictNumber("  7.5 "), 7.5, "strictNumber trims and parses");
+assert.ok(Number.isNaN(expr.strictNumber("3px")), "strictNumber rejects a trailing-unit string");
 
 // ---- row + formulas --------------------------------------------------------
 const note = {
@@ -163,6 +189,25 @@ assert.equal(barA.startIndex, 0, "A starts at column 0");
 assert.equal(barA.span, 3, "A spans 3 days");
 assert.equal(barB.startIndex, 1, "B starts at column 1");
 assert.equal(barB.span, 1, "B has default 1-day span");
+
+// A bar starting past the clamped axis must be SKIPPED, not placed thousands of px
+// off the track. With maxDays=3, only Jan 1..3 fit; the far-future bar is dropped.
+const clamped = gantt.buildGantt(
+	[
+		{ id: "near", name: "Near", start: "2026-01-01", end: "2026-01-02" },
+		{ id: "far", name: "Far", start: "2030-01-01", end: "2030-01-02" },
+	],
+	1,
+	3
+);
+assert.equal(clamped.bars.length, 1, "only the in-axis bar is placed");
+assert.equal(clamped.bars[0].id, "near", "the far-future bar is not rendered");
+assert.equal(clamped.offAxis, 1, "the far-future bar is counted as off-axis (valid date, out of range)");
+assert.equal(clamped.skipped, 0, "off-axis bars are NOT counted as no-date skips");
+assert.ok(
+	clamped.bars.every((b) => b.startIndex >= 0 && b.startIndex < clamped.days.length),
+	"every placed bar starts within the axis"
+);
 
 // ---- gantt interaction (move / resize / px) --------------------------------
 assert.deepEqual(

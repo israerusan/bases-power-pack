@@ -18,7 +18,7 @@ import { KanbanView, VIEW_TYPE_KANBAN } from "./views/kanbanView";
 import { CalendarView, VIEW_TYPE_CALENDAR } from "./views/calendarView";
 import { GanttView, VIEW_TYPE_GANTT } from "./views/ganttView";
 import { HierarchyView, VIEW_TYPE_HIERARCHY } from "./views/hierarchyView";
-import { buildRawNotes, writeRowProperties } from "./views/viewData";
+import { buildRawNotes, resolveViewRows, writeRowProperties, type ResolvedView } from "./views/viewData";
 import { UndoManager } from "./query/undo";
 import { sanitizeWipLimit } from "./query/wip";
 import { resolveParentRef } from "./query/hierarchy";
@@ -56,6 +56,11 @@ export default class BasesPowerPackPlugin extends Plugin {
 	private api: BasesPowerPackApi | null = null;
 	/** Cached vault snapshot shared by every view, rebuilt only when notes change. */
 	private notesSnapshot: RawNote[] | null = null;
+	/** Bumped whenever the resolved data could change (vault edit / base file edit). */
+	private dataVersion = 0;
+	/** Memoized resolved view (rows + parsed base) so a re-render doesn't re-read the
+	 * .base file and rebuild every Row when nothing changed. */
+	private resolvedCache: { key: string; view: ResolvedView } | null = null;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
@@ -68,6 +73,13 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.registerEvent(this.app.vault.on("create", () => this.invalidateSnapshot()));
 		this.registerEvent(this.app.vault.on("delete", () => this.invalidateSnapshot()));
 		this.registerEvent(this.app.vault.on("rename", () => this.invalidateSnapshot()));
+		// A .base file edit changes the resolved rows but fires no metadataCache
+		// event (it isn't markdown), so invalidate the resolve cache on its modify.
+		this.registerEvent(
+			this.app.vault.on("modify", (file) => {
+				if (file instanceof TFile && file.extension === "base") this.invalidateResolved();
+			})
+		);
 
 		// ---- Views -----------------------------------------------------------
 		this.registerView(VIEW_TYPE_KANBAN, (leaf) => new KanbanView(leaf, this));
@@ -159,6 +171,29 @@ export default class BasesPowerPackPlugin extends Plugin {
 	/** Drop the cached snapshot so the next read (and re-render) sees current notes. */
 	invalidateSnapshot(): void {
 		this.notesSnapshot = null;
+		this.invalidateResolved();
+	}
+
+	/** Drop the resolved-view cache (rows + parsed base) without rebuilding the note
+	 * snapshot — used when only the .base file changed. */
+	invalidateResolved(): void {
+		this.dataVersion++;
+		this.resolvedCache = null;
+	}
+
+	/**
+	 * The resolved rows + parsed base for the current settings, memoized. A view
+	 * re-render (mode switch, search debounce, expand/collapse) reuses this instead
+	 * of re-reading the .base from disk and rebuilding a Row/scope per note. The key
+	 * changes whenever the vault, base path, saved filter, or license state changes.
+	 */
+	async getResolvedView(): Promise<ResolvedView> {
+		const s = this.settings;
+		const key = `${this.dataVersion}|${s.isPro ? 1 : 0}|${s.activeBasePath}|${s.activeFilterId}`;
+		if (this.resolvedCache && this.resolvedCache.key === key) return this.resolvedCache.view;
+		const view = await resolveViewRows(this.app, this);
+		this.resolvedCache = { key, view };
+		return view;
 	}
 
 	/**
@@ -173,7 +208,11 @@ export default class BasesPowerPackPlugin extends Plugin {
 		for (const note of entry.notes) {
 			if (await writeRowProperties(this, note.path, note.writes, { record: false })) ok++;
 		}
-		new Notice(`Undid "${entry.label}" — restored ${ok} note${ok === 1 ? "" : "s"}.`);
+		const missed = entry.notes.length - ok;
+		// A note may have been renamed/moved/deleted since the edit, so its inverse
+		// can't land — say so rather than reporting a clean, complete undo.
+		const detail = missed > 0 ? ` (${missed} no longer at ${missed === 1 ? "its" : "their"} original path)` : "";
+		new Notice(`Undid "${entry.label}" — restored ${ok} note${ok === 1 ? "" : "s"}${detail}.`);
 		this.refreshViews();
 	}
 
@@ -340,6 +379,14 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.settings.kanbanExtraColumns = sanitizeStringMap(this.settings.kanbanExtraColumns);
 		this.settings.kanbanColumnOrder = sanitizeStringMap(this.settings.kanbanColumnOrder);
 		if (typeof this.settings.kanbanColorColumns !== "boolean") this.settings.kanbanColorColumns = DEFAULT_SETTINGS.kanbanColorColumns;
+		// Required non-empty property names that drive a view — a corrupted/hand-edited
+		// data.json with a non-string here would throw on .trim() during a Kanban move
+		// or break a group-by <select>. Fall back to the default like their neighbors.
+		this.settings.kanbanGroupBy = coerceProp(this.settings.kanbanGroupBy, DEFAULT_SETTINGS.kanbanGroupBy);
+		this.settings.kanbanDoneValue = coerceProp(this.settings.kanbanDoneValue, DEFAULT_SETTINGS.kanbanDoneValue);
+		this.settings.calendarDateProp = coerceProp(this.settings.calendarDateProp, DEFAULT_SETTINGS.calendarDateProp);
+		this.settings.ganttStartProp = coerceProp(this.settings.ganttStartProp, DEFAULT_SETTINGS.ganttStartProp);
+		this.settings.ganttEndProp = coerceProp(this.settings.ganttEndProp, DEFAULT_SETTINGS.ganttEndProp);
 		if (typeof this.settings.kanbanQuickAddFolder !== "string") this.settings.kanbanQuickAddFolder = "";
 		if (typeof this.settings.activeBasePath !== "string") this.settings.activeBasePath = "";
 		if (typeof this.settings.activeFilterId !== "string") this.settings.activeFilterId = "";
@@ -361,6 +408,11 @@ export default class BasesPowerPackPlugin extends Plugin {
 	private savePromise: Promise<void> = Promise.resolve();
 
 	async saveSettings(): Promise<void> {
+		// Any settings change can alter the resolved rows (active base, saved-filter
+		// expression, license), and those inputs aren't all in the resolve-cache key,
+		// so drop the cache here. Cheap — it keeps the note snapshot and just forces
+		// one re-resolve on the next render.
+		this.invalidateResolved();
 		this.savePromise = this.savePromise.then(() => this.saveData(this.settings));
 		return this.savePromise;
 	}
@@ -417,6 +469,11 @@ function sanitizeAutomations(value: unknown): AutomationRule[] {
 		});
 	}
 	return out;
+}
+
+/** A required non-empty property-name setting: keep a trimmed string, else the default. */
+function coerceProp(value: unknown, fallback: string): string {
+	return typeof value === "string" && value.trim() ? value : fallback;
 }
 
 function sanitizeWipLimits(value: unknown): Record<string, number> {

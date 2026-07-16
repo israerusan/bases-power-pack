@@ -1,5 +1,5 @@
 import { Menu, Notice, normalizePath } from "obsidian";
-import type { Row } from "../model/row";
+import type { RawNote, Row } from "../model/row";
 import { PowerPackView } from "./abstractView";
 import {
 	buildKanbanColumns,
@@ -17,9 +17,10 @@ import { coerceFieldInput, formatFieldForEdit } from "../query/inlineEdit";
 import { coerceLiteral, computeRuleWrites, rulesForTransition } from "../query/automation";
 import { dropWouldExceed, formatWipCount, isOverWip, limitFor, sanitizeWipLimit } from "../query/wip";
 import { evaluateSafe, toBool, toStr } from "../engine/expression";
-import { resolveViewRows, writeRowProperties, writeRowProperty, type PropertyWrite } from "./viewData";
+import { ensureParentFolders, uniqueNotePath, writeRowProperties, writeRowProperty, type PropertyWrite } from "./viewData";
 import { renderContextControls, renderRollupBar } from "./viewChrome";
-import { BulkEditModal, PromptModal, type BulkOp } from "./modals";
+import { BulkEditModal, ConfirmModal, PromptModal, type BulkOp } from "./modals";
+import { DND_COLUMN, DND_ROW } from "./dnd";
 
 export const VIEW_TYPE_KANBAN = "bpp-kanban-view";
 
@@ -39,13 +40,8 @@ const SORT_OPTIONS: Array<{ value: KanbanSort; label: string }> = [
  * formula line — all driven by the shared query engine.
  */
 export class KanbanView extends PowerPackView {
-	private search = "";
 	private hideDoneColumn = false;
 	private sortBy: KanbanSort = "manual";
-	/** The live search input, so a re-render can tell whether it had focus before
-	 * container.empty() destroys it, and hand focus back to its replacement. */
-	private searchInputEl: HTMLInputElement | null = null;
-	private restoreSearchFocus = false;
 	/** The currently visible (filtered) rows, captured for the bulk-edit action. */
 	private lastVisibleRows: Row[] = [];
 
@@ -59,23 +55,14 @@ export class KanbanView extends PowerPackView {
 		return "layout-dashboard";
 	}
 
-	async onClose(): Promise<void> {
-		this.searchInputEl = null;
-		await super.onClose();
-	}
-
 	async render(): Promise<void> {
 		const token = ++this.renderToken;
-		const resolved = await resolveViewRows(this.app, this.plugin);
+		const resolved = await this.plugin.getResolvedView();
 		if (this.isStale(token)) return;
 
 		const groupBy = this.plugin.settings.kanbanGroupBy || "status";
 		const container = this.contentEl;
-		// Capture focus intent before empty() blows the input away, so any re-render
-		// that fires while the user is typing (a keystroke, or a vault change) restores it.
-		this.restoreSearchFocus =
-			this.searchInputEl !== null &&
-			this.searchInputEl.ownerDocument.activeElement === this.searchInputEl;
+		this.captureSearchState();
 		container.empty();
 		container.addClass("bpp-view");
 
@@ -83,6 +70,7 @@ export class KanbanView extends PowerPackView {
 		header.createEl("h3", { text: "Kanban" });
 		header.createEl("span", { cls: "bpp-badge bpp-badge-lite", text: "Lite" });
 		header.createEl("span", { cls: "bpp-muted", text: `grouped by "${groupBy}"` });
+		this.renderUndoButton(header);
 
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
 		this.renderLiteControls(container, resolved.rows);
@@ -91,8 +79,8 @@ export class KanbanView extends PowerPackView {
 		const extraColumns = this.plugin.settings.kanbanExtraColumns[groupBy] ?? [];
 		const columns = buildKanbanColumns(resolved.rows, {
 			groupBy,
-			search: this.search,
-			hideColumn: this.hideDoneColumn ? "done" : "",
+			search: this.searchQuery,
+			hideColumn: this.hideDoneColumn ? this.plugin.settings.kanbanDoneValue : "",
 			sortBy: this.sortBy,
 			extraColumns,
 			columnOrder: this.plugin.settings.kanbanColumnOrder[groupBy] ?? [],
@@ -108,11 +96,11 @@ export class KanbanView extends PowerPackView {
 		if (columns.length === 0) {
 			board.createDiv({
 				cls: "bpp-empty",
-				text: this.search || this.hideDoneColumn
+				text: this.searchQuery || this.hideDoneColumn
 					? "No cards match the current lite filters."
 					: `No notes with a "${groupBy}" property found. Add "${groupBy}: To Do" to a note's frontmatter, or add a column below.`,
 			});
-			if (!this.search) this.renderAddColumnTile(board, groupBy);
+			if (!this.searchQuery) this.renderAddColumnTile(board, groupBy);
 			return;
 		}
 
@@ -121,6 +109,8 @@ export class KanbanView extends PowerPackView {
 
 		for (const column of columns) {
 			const col = board.createDiv({ cls: "bpp-kanban-column" });
+			col.setAttr("role", "group");
+			col.setAttr("aria-label", `Column ${column.name}, ${column.rows.length} card${column.rows.length === 1 ? "" : "s"}`);
 			if (colored) col.setCssProps({ "--bpp-col-hue": this.columnHueFor(column.name) });
 			this.wireColumnDrop(col, column.name, groupBy, rowById, orderedNames);
 
@@ -128,7 +118,7 @@ export class KanbanView extends PowerPackView {
 			this.makeColumnDraggable(col, colHead, column.name);
 			const removable = column.rows.length === 0 && extraColumns.includes(column.name);
 			colHead.addEventListener("contextmenu", (evt) =>
-				this.openColumnMenu(evt, column.name, groupBy, removable)
+				this.openColumnMenu(evt, column.name, groupBy, removable, orderedNames)
 			);
 			const wipLimit = limitFor(this.plugin.settings.kanbanWipLimits, column.name);
 			if (isOverWip(column.rows.length, wipLimit)) col.addClass("is-over-wip");
@@ -150,6 +140,9 @@ export class KanbanView extends PowerPackView {
 				attr: { "aria-label": `Add note to ${column.name}` },
 			});
 			addButton.addEventListener("click", () => void this.quickAddNote(column.name, groupBy));
+			this.addOverflowButton(actions, `column ${column.name}`, (a) =>
+				this.openColumnMenu(a, column.name, groupBy, removable, orderedNames)
+			);
 
 			// An empty user-added column can be removed — no notes are affected.
 			if (column.rows.length === 0 && extraColumns.includes(column.name)) {
@@ -164,7 +157,10 @@ export class KanbanView extends PowerPackView {
 			for (const row of column.rows) {
 				const card = col.createDiv({ cls: "bpp-card" });
 				card.draggable = true;
-				card.createDiv({ cls: "bpp-card-title", text: row.name });
+				const openMenu = (a: MouseEvent | HTMLElement): void => this.openCardMenu(a, row, groupBy, orderedNames);
+				const head = card.createDiv({ cls: "bpp-card-head" });
+				head.createDiv({ cls: "bpp-card-title", text: row.name });
+				this.addOverflowButton(head, row.name, openMenu);
 				for (const field of metaFields) {
 					const display = formatCardField(row, field);
 					if (display === null) continue;
@@ -179,16 +175,18 @@ export class KanbanView extends PowerPackView {
 				card.addEventListener("dragstart", (event) => {
 					card.addClass("is-dragging");
 					event.dataTransfer?.setData("text/plain", row.id);
-					event.dataTransfer?.setData("application/x-bpp-row", row.id);
+					event.dataTransfer?.setData(DND_ROW, row.id);
 					if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
 				});
 				card.addEventListener("dragend", () => card.removeClass("is-dragging"));
 				card.addEventListener("click", () => this.openRow(row));
-				card.addEventListener("contextmenu", (evt) => this.openCardMenu(evt, row, groupBy, orderedNames));
+				// Focusable + Enter-to-open + Shift+F10/ContextMenu-to-menu (keyboard path).
+				this.makeItemAccessible(card, row.name, () => this.openRow(row), openMenu);
+				card.addEventListener("contextmenu", (evt) => openMenu(evt));
 			}
 		}
 
-		if (!this.search) this.renderAddColumnTile(board, groupBy);
+		if (!this.searchQuery) this.renderAddColumnTile(board, groupBy);
 	}
 
 	private renderAddColumnTile(board: HTMLElement, groupBy: string): void {
@@ -256,11 +254,15 @@ export class KanbanView extends PowerPackView {
 		input.value = formatFieldForEdit(previous);
 		input.focus();
 		input.select();
+		// Hold background re-renders so a vault change elsewhere can't destroy this
+		// input mid-edit (its blur handler would then commit a half-typed value).
+		this.beginInteraction();
 
 		let settled = false;
 		const commit = async (): Promise<void> => {
 			if (settled) return;
 			settled = true;
+			this.endInteraction();
 			const { value, remove } = coerceFieldInput(field, input.value, previous);
 			await writeRowProperty(this.plugin, row.id, field, value, remove, { label: `Edit "${field}"` });
 			await this.render();
@@ -273,6 +275,7 @@ export class KanbanView extends PowerPackView {
 			} else if (event.key === "Escape") {
 				event.preventDefault();
 				settled = true;
+				this.endInteraction();
 				void this.render();
 			}
 		});
@@ -285,12 +288,13 @@ export class KanbanView extends PowerPackView {
 
 	// ---- context menus --------------------------------------------------------
 
-	private openCardMenu(evt: MouseEvent, row: Row, groupBy: string, columns: string[]): void {
-		evt.preventDefault();
+	private openCardMenu(anchor: MouseEvent | HTMLElement, row: Row, groupBy: string, columns: string[]): void {
+		if (anchor instanceof MouseEvent) anchor.preventDefault();
 		const menu = new Menu();
 		const after = (): void => void this.render();
 
-		// Kanban-only: move the card to any other column (fires Move Rules).
+		// Kanban-only: move the card to any other column (fires Move Rules). This is
+		// also the keyboard/touch move path, since HTML5 drag is dead on touch.
 		const current = toStr(row.scope.get(groupBy));
 		const others = columns.filter((c) => c !== current);
 		if (others.length > 0) {
@@ -303,17 +307,36 @@ export class KanbanView extends PowerPackView {
 		}
 
 		this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, after);
-		menu.showAtMouseEvent(evt);
+		this.showMenuAtAnchor(menu, anchor);
 	}
 
-	private openColumnMenu(evt: MouseEvent, columnName: string, groupBy: string, removable: boolean): void {
-		evt.preventDefault();
+	private openColumnMenu(
+		anchor: MouseEvent | HTMLElement,
+		columnName: string,
+		groupBy: string,
+		removable: boolean,
+		orderedNames: string[]
+	): void {
+		if (anchor instanceof MouseEvent) anchor.preventDefault();
 		const menu = new Menu();
 		menu.addItem((i) => i.setTitle("Add note").setIcon("plus").onClick(() => void this.quickAddNote(columnName, groupBy)));
 		menu.addItem((i) => i.setTitle("Rename column…").setIcon("pencil").onClick(() => this.renameColumnValue(groupBy, columnName)));
 		menu.addItem((i) =>
 			i.setTitle("Set WIP limit…").setIcon("gauge").onClick(() => this.setWipLimit(columnName))
 		);
+
+		// Keyboard/touch column reorder (drag is otherwise the only path).
+		const idx = orderedNames.indexOf(columnName);
+		if (idx > 0) {
+			menu.addItem((i) =>
+				i.setTitle("Move column left").setIcon("arrow-left").onClick(() => void this.moveColumnBy(groupBy, orderedNames, columnName, -1))
+			);
+		}
+		if (idx !== -1 && idx < orderedNames.length - 1) {
+			menu.addItem((i) =>
+				i.setTitle("Move column right").setIcon("arrow-right").onClick(() => void this.moveColumnBy(groupBy, orderedNames, columnName, 1))
+			);
+		}
 
 		menu.addSeparator();
 		const swatches: Array<[string, number]> = [
@@ -337,7 +360,19 @@ export class KanbanView extends PowerPackView {
 				i.setTitle("Remove empty column").setIcon("trash").onClick(() => void this.removeExtraColumn(groupBy, columnName))
 			);
 		}
-		menu.showAtMouseEvent(evt);
+		this.showMenuAtAnchor(menu, anchor);
+	}
+
+	/** Swap a column with its neighbor `delta` slots away and persist the full order. */
+	private async moveColumnBy(groupBy: string, orderedNames: string[], columnName: string, delta: number): Promise<void> {
+		const idx = orderedNames.indexOf(columnName);
+		const to = idx + delta;
+		if (idx === -1 || to < 0 || to >= orderedNames.length) return;
+		const next = [...orderedNames];
+		[next[idx], next[to]] = [next[to], next[idx]];
+		this.plugin.settings.kanbanColumnOrder[groupBy] = next;
+		await this.plugin.saveSettings();
+		await this.render();
 	}
 
 	// ---- menu actions ---------------------------------------------------------
@@ -380,11 +415,34 @@ export class KanbanView extends PowerPackView {
 		}).open();
 	}
 
-	/** Rewrite the group property from `from` to `to` on every note in that column. */
-	private async applyColumnRename(groupBy: string, from: string, to: string): Promise<void> {
+	/** Rewrite the group property from `from` to `to` on every note in that column,
+	 * confirming first when the rename would touch more than a few notes. */
+	private applyColumnRename(groupBy: string, from: string, to: string): void {
 		if (!to || to === from) return;
 		const key = groupBy || "status";
 		const targets = this.plugin.getNotesSnapshot().filter((n) => toStr(n.frontmatter[key]) === from);
+		const run = (): void => void this.doColumnRename(groupBy, key, from, to, targets);
+		// A bulk frontmatter rewrite deserves a heads-up above a small threshold,
+		// consistent with the delete-note confirmation.
+		if (targets.length > 5) {
+			new ConfirmModal(this.app, {
+				title: "Rename column?",
+				body: `This rewrites "${key}: ${from}" → "${to}" on ${targets.length} notes.`,
+				cta: "Rename",
+				onConfirm: run,
+			}).open();
+		} else {
+			run();
+		}
+	}
+
+	private async doColumnRename(
+		groupBy: string,
+		key: string,
+		from: string,
+		to: string,
+		targets: RawNote[]
+	): Promise<void> {
 		let ok = 0;
 		const batch = this.plugin.undo.beginBatch(`Rename column "${from}" → "${to}"`);
 		for (const note of targets) {
@@ -464,25 +522,7 @@ export class KanbanView extends PowerPackView {
 			void this.plugin.saveSettings().then(() => this.render());
 		});
 
-		const searchWrap = controls.createDiv({ cls: "bpp-lite-control" });
-		searchWrap.createSpan({ cls: "bpp-muted", text: "Search" });
-		const searchInput = searchWrap.createEl("input", {
-			type: "search",
-			cls: "bpp-lite-input",
-			placeholder: "Filter cards…",
-		});
-		searchInput.value = this.search;
-		this.searchInputEl = searchInput;
-		searchInput.addEventListener("input", () => {
-			this.search = searchInput.value;
-			void this.render();
-		});
-		if (this.restoreSearchFocus) {
-			this.restoreSearchFocus = false;
-			searchInput.focus();
-			const end = searchInput.value.length;
-			searchInput.setSelectionRange(end, end);
-		}
+		this.renderManagedSearch(controls);
 
 		const sortWrap = controls.createDiv({ cls: "bpp-lite-control" });
 		sortWrap.createSpan({ cls: "bpp-muted", text: "Sort" });
@@ -522,7 +562,7 @@ export class KanbanView extends PowerPackView {
 		orderedNames: string[]
 	): void {
 		columnEl.addEventListener("dragover", (event) => {
-			const isColumn = (event.dataTransfer?.types ?? []).includes("application/x-bpp-column");
+			const isColumn = (event.dataTransfer?.types ?? []).includes(DND_COLUMN);
 			event.preventDefault();
 			columnEl.addClass(isColumn ? "is-col-drop-target" : "is-drop-target");
 			if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
@@ -536,13 +576,13 @@ export class KanbanView extends PowerPackView {
 			columnEl.removeClass("is-drop-target");
 			columnEl.removeClass("is-col-drop-target");
 
-			const draggedColumn = event.dataTransfer?.getData("application/x-bpp-column");
+			const draggedColumn = event.dataTransfer?.getData(DND_COLUMN);
 			if (draggedColumn) {
 				void this.reorderColumn(groupBy, orderedNames, draggedColumn, columnName);
 				return;
 			}
 
-			const rowId = event.dataTransfer?.getData("application/x-bpp-row") || event.dataTransfer?.getData("text/plain");
+			const rowId = event.dataTransfer?.getData(DND_ROW) || event.dataTransfer?.getData("text/plain");
 			if (!rowId) return;
 			const row = rowById.get(rowId);
 			if (!row) return;
@@ -554,7 +594,7 @@ export class KanbanView extends PowerPackView {
 		colHead.draggable = true;
 		colHead.addEventListener("dragstart", (event) => {
 			columnEl.addClass("is-col-dragging");
-			event.dataTransfer?.setData("application/x-bpp-column", columnName);
+			event.dataTransfer?.setData(DND_COLUMN, columnName);
 			if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
 		});
 		colHead.addEventListener("dragend", () => columnEl.removeClass("is-col-dragging"));
@@ -616,38 +656,15 @@ export class KanbanView extends PowerPackView {
 
 	private async quickAddNote(columnName: string, groupBy: string): Promise<void> {
 		const title = buildQuickAddTitle(columnName);
-		const basePath = normalizePath(buildQuickAddPath(this.plugin.settings.kanbanQuickAddFolder, title));
-		const path = await this.makeUniquePath(basePath);
-		await this.ensureFolder(path);
+		const stem = normalizePath(buildQuickAddPath(this.plugin.settings.kanbanQuickAddFolder, title)).replace(/\.md$/, "");
+		const path = uniqueNotePath(this.app, stem);
+		await ensureParentFolders(this.app, path);
 		const file = await this.app.vault.create(path, buildQuickAddContent(groupBy, columnName, title));
+		this.plugin.invalidateSnapshot();
 		new Notice(`Created ${file.basename}`);
 		// Open in a new tab, not getLeaf(false): the board lives in the active leaf, and
 		// reusing it would replace this view and strand the render() below on a dead contentEl.
 		await this.app.workspace.getLeaf("tab").openFile(file);
 		await this.render();
-	}
-
-	private async ensureFolder(path: string): Promise<void> {
-		const parts = path.split("/");
-		parts.pop();
-		let current = "";
-		for (const part of parts) {
-			current = current ? `${current}/${part}` : part;
-			const normalized = normalizePath(current);
-			if (!normalized) continue;
-			if (this.app.vault.getAbstractFileByPath(normalized)) continue;
-			await this.app.vault.createFolder(normalized);
-		}
-	}
-
-	private async makeUniquePath(basePath: string): Promise<string> {
-		if (!this.app.vault.getAbstractFileByPath(basePath)) return basePath;
-		const suffix = ".md";
-		const stem = basePath.endsWith(suffix) ? basePath.slice(0, -suffix.length) : basePath;
-		for (let i = 2; i < 1000; i++) {
-			const candidate = `${stem} ${i}${suffix}`;
-			if (!this.app.vault.getAbstractFileByPath(candidate)) return candidate;
-		}
-		throw new Error(`Could not find free path for ${basePath}`);
 	}
 }

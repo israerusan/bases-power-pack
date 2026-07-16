@@ -58,7 +58,11 @@ Right-click a Kanban column header and choose **Set WIP limit…** to cap how ma
 
 ### Undo (Free)
 
-Every frontmatter write Power Pack makes — a drag-to-move, a reschedule, a Gantt resize, an inline card edit, a bulk edit, or a whole column rename across many notes — is reversible. Run **Undo last change** from the command palette to restore the exact prior values; a multi-note operation (bulk edit, column rename) undoes as a single step.
+Every frontmatter write Power Pack makes — a drag-to-move, a reschedule, a Gantt resize, an inline card edit, a bulk edit, or a whole column rename across many notes — is reversible. Run **Undo last change** from the command palette, or click the **Undo** button in any view's toolbar (its tooltip names the exact action) — the prior values are restored, and a multi-note operation undoes as a single step.
+
+### Accessibility & mobile (Free)
+
+Every view works without a mouse and on touch. Each card, calendar event, Gantt bar, and Outline row is keyboard-focusable — **Enter** opens it, **Shift+F10** (or the Menu key) opens its actions — and carries a **⋯ button** that opens the same action menu by tap, so moving a card, rescheduling an event, resizing a bar, or reparenting a note never requires a drag. The Outline is a proper ARIA tree (arrow keys navigate and expand/collapse); Gantt bars move and resize with the arrow keys; the board honors high-contrast / forced-colors themes.
 
 ### Outline / hierarchy (Premium)
 

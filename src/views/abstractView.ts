@@ -13,6 +13,7 @@ import type { Row } from "../model/row";
 import { PromptModal, ConfirmModal } from "./modals";
 import { coerceFieldInput, formatFieldForEdit } from "../query/inlineEdit";
 import { writeRowProperty } from "./viewData";
+import { renderSearchControl } from "./viewChrome";
 
 /**
  * Shared base for the three Power Pack views. Hoists the lifecycle plumbing that
@@ -27,11 +28,30 @@ export abstract class PowerPackView extends ItemView {
 	protected plugin: BasesPowerPackPlugin;
 	protected renderToken = 0;
 	private readonly scheduleRender: Debouncer<[], void>;
+	private readonly searchDebounce: Debouncer<[], void>;
+
+	/** The live quick-search query, managed by renderManagedSearch(). */
+	protected searchQuery = "";
+	private searchInputEl: HTMLInputElement | null = null;
+	private searchState: { focused: boolean; caret: number } | null = null;
+
+	/** While true, a background metadata re-render is deferred — set during an
+	 * inline edit or a pointer drag so an auto-render can't destroy the focused
+	 * input or the drag target (which would drop or corrupt the write). */
+	private suppressAutoRender = false;
+	private autoRenderPending = false;
 
 	constructor(leaf: WorkspaceLeaf, plugin: BasesPowerPackPlugin) {
 		super(leaf);
 		this.plugin = plugin;
-		this.scheduleRender = debounce(() => void this.render(), 120, false);
+		this.scheduleRender = debounce(() => {
+			if (this.suppressAutoRender) {
+				this.autoRenderPending = true;
+				return;
+			}
+			void this.render();
+		}, 120, false);
+		this.searchDebounce = debounce(() => void this.render(), 130, false);
 	}
 
 	/** Render the whole view. Subclasses guard async work with `isStale(token)`. */
@@ -45,7 +65,63 @@ export abstract class PowerPackView extends ItemView {
 	async onClose(): Promise<void> {
 		// Drop any queued re-render so a late metadata event can't repaint a closed view.
 		this.scheduleRender.cancel();
+		this.searchDebounce.cancel();
+		this.searchInputEl = null;
+		this.suppressAutoRender = false;
+		this.autoRenderPending = false;
 		this.contentEl.empty();
+	}
+
+	/** Enter a direct-manipulation interaction (inline edit / drag): background
+	 * auto-renders are held until endInteraction() so they can't yank the target. */
+	protected beginInteraction(): void {
+		this.suppressAutoRender = true;
+	}
+
+	protected endInteraction(): void {
+		this.suppressAutoRender = false;
+		if (this.autoRenderPending) {
+			this.autoRenderPending = false;
+			this.scheduleRender();
+		}
+	}
+
+	/**
+	 * Capture the search caret BEFORE a render's container.empty() destroys the
+	 * input, so renderManagedSearch() can hand focus back at the same offset (not
+	 * slammed to the end). Call at the top of render(), before empty().
+	 */
+	protected captureSearchState(): void {
+		// A real render destroys any inline-edit input / drag target, so it ENDS any
+		// in-progress interaction. Clear the suppression here (render() always runs
+		// this before container.empty()) so a focus-steal that orphans an edit's
+		// terminal blur can never leave auto-render frozen.
+		this.suppressAutoRender = false;
+		this.autoRenderPending = false;
+		const el = this.searchInputEl;
+		const focused = el !== null && el.ownerDocument.activeElement === el;
+		this.searchState = { focused, caret: el ? el.selectionStart ?? el.value.length : 0 };
+		this.searchInputEl = null;
+	}
+
+	/**
+	 * Render the managed quick-search box: writes to `searchQuery`, re-renders on a
+	 * short debounce (so a fast typist / IME isn't interrupted mid-keystroke), and
+	 * restores focus + caret from the pre-render capture.
+	 */
+	protected renderManagedSearch(container: HTMLElement): HTMLInputElement {
+		const input = renderSearchControl(container, this.searchQuery, (value) => {
+			this.searchQuery = value;
+			this.searchDebounce();
+		});
+		this.searchInputEl = input;
+		if (this.searchState?.focused) {
+			input.focus();
+			const pos = Math.min(this.searchState.caret, input.value.length);
+			input.setSelectionRange(pos, pos);
+		}
+		this.searchState = null;
+		return input;
 	}
 
 	/** True when a newer render has started since `token` was taken. */
@@ -151,9 +227,92 @@ export abstract class PowerPackView extends ItemView {
 	}
 
 	protected openSettings(): void {
-		const setting = (this.app as unknown as { setting?: { open?: () => void; openTabById?: (id: string) => void } }).setting;
-		setting?.open?.();
-		setting?.openTabById?.(this.plugin.manifest.id);
+		this.app.setting?.open();
+		this.app.setting?.openTabById(this.plugin.manifest.id);
+	}
+
+	/**
+	 * Show a context menu anchored either to the originating mouse event (right-click)
+	 * or, for a keyboard / overflow-button trigger, below an anchor element — so every
+	 * menu is reachable without a right-click (mobile long-press is unreliable).
+	 */
+	protected showMenuAtAnchor(menu: Menu, anchor: MouseEvent | HTMLElement): void {
+		if (anchor instanceof MouseEvent) {
+			menu.showAtMouseEvent(anchor);
+		} else {
+			const r = anchor.getBoundingClientRect();
+			menu.showAtPosition({ x: r.right, y: r.bottom });
+		}
+	}
+
+	/**
+	 * Make an item element (card / event / agenda item) keyboard-operable:
+	 * focusable with a label, Enter opens it, and ContextMenu / Shift+F10 opens its
+	 * action menu. The element is a `group`, not a `button`, because it owns its own
+	 * focusable controls (the ⋯ button, inline-edit inputs) — an atomic `button`
+	 * role would hide those from screen readers. The keydown only acts when the
+	 * container itself is focused, so Enter/menu keys pressed on a nested control
+	 * (committing an inline edit, activating the ⋯ button) don't also fire here.
+	 */
+	protected makeItemAccessible(
+		el: HTMLElement,
+		label: string,
+		onOpen: () => void,
+		onMenu: (anchor: HTMLElement) => void
+	): void {
+		el.tabIndex = 0;
+		el.setAttribute("role", "group");
+		el.setAttribute("aria-label", label);
+		el.addEventListener("keydown", (evt) => {
+			if (evt.target !== el) return;
+			if (evt.key === "Enter") {
+				evt.preventDefault();
+				onOpen();
+			} else if (evt.key === "ContextMenu" || (evt.key === "F10" && evt.shiftKey)) {
+				evt.preventDefault();
+				onMenu(el);
+			}
+		});
+	}
+
+	/**
+	 * Add a persistent "⋯" overflow button that opens an item's action menu — the
+	 * touch- and keyboard-reachable path to actions that otherwise live only behind
+	 * a right-click (dead on touch) or an HTML5 drag (dead on touch).
+	 */
+	protected addOverflowButton(
+		parent: HTMLElement,
+		label: string,
+		openMenu: (anchor: MouseEvent | HTMLElement) => void
+	): HTMLButtonElement {
+		const btn = parent.createEl("button", {
+			cls: "bpp-overflow",
+			text: "⋯",
+			attr: { "aria-label": `Actions: ${label}`, "aria-haspopup": "menu" },
+		});
+		btn.addEventListener("click", (evt) => {
+			evt.stopPropagation();
+			evt.preventDefault();
+			openMenu(evt);
+		});
+		return btn;
+	}
+
+	/**
+	 * Render a toolbar Undo button when there's something to undo — the discoverable
+	 * affordance for the otherwise command-palette-only undo. Its tooltip names the
+	 * exact action that would be reversed.
+	 */
+	protected renderUndoButton(container: HTMLElement): void {
+		if (!this.plugin.undo.canUndo()) return;
+		const label = this.plugin.undo.peekLabel();
+		const btn = container.createEl("button", {
+			cls: "bpp-seg-btn bpp-undo-btn",
+			text: "↶ Undo",
+			attr: { "aria-label": label ? `Undo: ${label}` : "Undo last change" },
+		});
+		if (label) btn.setAttr("title", `Undo: ${label}`);
+		btn.addEventListener("click", () => void this.plugin.performUndo());
 	}
 
 	protected renderUpgradeNotice(container: HTMLElement, emoji: string, title: string, body: string): void {

@@ -11,13 +11,13 @@ import {
 	type Forest,
 	type HierInput,
 } from "../query/hierarchy";
-import { createSeededNote, resolveViewRows, writeRowProperty } from "./viewData";
+import { createSeededNote, writeRowProperty } from "./viewData";
 import { PromptModal } from "./modals";
-import { renderContextControls, renderRollupBar, renderSearchControl } from "./viewChrome";
+import { renderContextControls, renderRollupBar } from "./viewChrome";
 
 export const VIEW_TYPE_HIERARCHY = "bpp-hierarchy-view";
 
-const DND_TREE = "application/x-bpp-tree";
+import { DND_TREE } from "./dnd";
 
 /**
  * Hierarchy / Outline view (PREMIUM). Renders the notes as an indented tree
@@ -29,11 +29,10 @@ const DND_TREE = "application/x-bpp-tree";
  * are quarantined; a parent filtered out of the current rows shows as a ghost.
  */
 export class HierarchyView extends PowerPackView {
-	private search = "";
-	private searchInputEl: HTMLInputElement | null = null;
-	private restoreSearchFocus = false;
 	/** Collapsed node ids — session-only UI state, never written to frontmatter. */
 	private collapsed = new Set<string>();
+	/** Node id to hand keyboard focus back to after a re-render, or null. */
+	private focusRowId: string | null = null;
 
 	getViewType(): string {
 		return VIEW_TYPE_HIERARCHY;
@@ -43,11 +42,6 @@ export class HierarchyView extends PowerPackView {
 	}
 	getIcon(): string {
 		return "list-tree";
-	}
-
-	async onClose(): Promise<void> {
-		this.searchInputEl = null;
-		await super.onClose();
 	}
 
 	async render(): Promise<void> {
@@ -66,12 +60,10 @@ export class HierarchyView extends PowerPackView {
 			return;
 		}
 
-		const resolved = await resolveViewRows(this.app, this.plugin);
+		const resolved = await this.plugin.getResolvedView();
 		if (this.isStale(token)) return;
 
-		this.restoreSearchFocus =
-			this.searchInputEl !== null &&
-			this.searchInputEl.ownerDocument.activeElement === this.searchInputEl;
+		this.captureSearchState();
 		container.empty();
 		container.addClass("bpp-view");
 
@@ -83,7 +75,7 @@ export class HierarchyView extends PowerPackView {
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
 		renderRollupBar(container, this.plugin, resolved.rows);
 
-		const rows = filterRowsByText(resolved.rows, this.search);
+		const rows = filterRowsByText(resolved.rows, this.searchQuery);
 		const rowById = new Map(rows.map((row) => [row.id, row]));
 		const knownPaths = new Set(this.plugin.getNotesSnapshot().map((n) => n.path));
 		const orders = new Map<string, number | null>();
@@ -106,7 +98,7 @@ export class HierarchyView extends PowerPackView {
 		if (flat.length === 0) {
 			container.createDiv({
 				cls: "bpp-empty",
-				text: this.search
+				text: this.searchQuery
 					? "No notes match the current search."
 					: `No notes to outline yet. Add "${parentProp}: Projects/My Project.md" to a note's frontmatter to nest it under another.`,
 			});
@@ -116,8 +108,17 @@ export class HierarchyView extends PowerPackView {
 		this.renderRootDropZone(container, parentProp);
 
 		const list = container.createDiv({ cls: "bpp-tree" });
+		list.setAttr("role", "tree");
+		list.setAttr("aria-label", "Note outline");
 		for (const flatRow of flat) {
 			this.renderTreeRow(list, flatRow, rowById.get(flatRow.id) ?? null, forest, parentProp);
+		}
+		// A re-render (expand/collapse) rebuilds the rows and drops keyboard focus;
+		// restore it to the same note so arrow-key navigation is continuous.
+		if (this.focusRowId) {
+			const target = list.querySelector<HTMLElement>(`[data-bpp-id="${CSS.escape(this.focusRowId)}"]`);
+			this.focusRowId = null;
+			target?.focus();
 		}
 	}
 
@@ -136,24 +137,16 @@ export class HierarchyView extends PowerPackView {
 		const collapse = group.createEl("button", { text: "Collapse all", cls: "bpp-seg-btn" });
 		collapse.addEventListener("click", () => void this.collapseAll());
 
-		this.searchInputEl = renderSearchControl(toolbar, this.search, (value) => {
-			this.search = value;
-			void this.render();
-		});
-		if (this.restoreSearchFocus) {
-			this.restoreSearchFocus = false;
-			this.searchInputEl.focus();
-			const end = this.searchInputEl.value.length;
-			this.searchInputEl.setSelectionRange(end, end);
-		}
+		this.renderUndoButton(toolbar);
+		this.renderManagedSearch(toolbar);
 	}
 
 	/** Collapse every node that has children, using the exact ids the tree flattens
 	 * to (rebuild the same forest so collapsed-set membership always matches). */
 	private async collapseAll(): Promise<void> {
 		const parentProp = this.plugin.settings.hierarchyParentProp || "parent";
-		const resolved = await resolveViewRows(this.app, this.plugin);
-		const rows = filterRowsByText(resolved.rows, this.search);
+		const resolved = await this.plugin.getResolvedView();
+		const rows = filterRowsByText(resolved.rows, this.searchQuery);
 		const knownPaths = new Set(this.plugin.getNotesSnapshot().map((n) => n.path));
 		const inputs: HierInput[] = rows.map((row) => ({
 			id: row.id,
@@ -204,15 +197,24 @@ export class HierarchyView extends PowerPackView {
 	): void {
 		const rowEl = list.createDiv({ cls: "bpp-tree-row" });
 		rowEl.setCssProps({ "--bpp-depth": String(flatRow.depth) });
+		rowEl.setAttr("data-bpp-id", flatRow.id);
+		// ARIA tree semantics so a screen reader announces level, position, and
+		// expand state instead of an undifferentiated list.
+		rowEl.setAttr("role", "treeitem");
+		rowEl.setAttr("aria-level", String(flatRow.depth + 1));
+		rowEl.setAttr("aria-label", flatRow.name);
+		rowEl.tabIndex = 0;
+		if (flatRow.hasChildren) rowEl.setAttr("aria-expanded", String(!flatRow.collapsed));
 		if (flatRow.ghost) rowEl.addClass("is-ghost");
 
 		const twist = rowEl.createSpan({ cls: "bpp-tree-twist" });
+		twist.setAttr("aria-hidden", "true");
 		if (flatRow.hasChildren) {
 			twist.setText(flatRow.collapsed ? "▸" : "▾");
 			twist.addClass("is-clickable");
 			twist.addEventListener("click", (evt) => {
 				evt.stopPropagation();
-				this.toggleCollapse(flatRow.id);
+				this.setCollapsed(flatRow.id, !flatRow.collapsed);
 			});
 		}
 
@@ -234,7 +236,12 @@ export class HierarchyView extends PowerPackView {
 
 		this.renderMetrics(rowEl, flatRow.metrics);
 
-		if (!flatRow.ghost && row) {
+		const openMenu =
+			!flatRow.ghost && row
+				? (a: MouseEvent | HTMLElement): void => this.openTreeMenu(a, row, flatRow.id, forest, parentProp)
+				: null;
+
+		if (!flatRow.ghost && row && openMenu) {
 			rowEl.draggable = true;
 			rowEl.addEventListener("dragstart", (evt) => {
 				rowEl.addClass("is-dragging");
@@ -242,8 +249,13 @@ export class HierarchyView extends PowerPackView {
 				if (evt.dataTransfer) evt.dataTransfer.effectAllowed = "move";
 			});
 			rowEl.addEventListener("dragend", () => rowEl.removeClass("is-dragging"));
-			rowEl.addEventListener("contextmenu", (evt) => this.openTreeMenu(evt, row, flatRow.id, forest, parentProp));
+			rowEl.addEventListener("contextmenu", (evt) => openMenu(evt));
+			this.addOverflowButton(rowEl, flatRow.name, openMenu);
 		}
+
+		// Keyboard: Enter opens; ArrowRight/Left expand-collapse or step in/out;
+		// ArrowUp/Down move focus between rows; ContextMenu/Shift+F10 opens actions.
+		rowEl.addEventListener("keydown", (evt) => this.onRowKeydown(evt, rowEl, flatRow, row, openMenu));
 
 		// Every row (including a ghost) is a drop target: dropping a note here makes
 		// it a child of this row.
@@ -281,16 +293,77 @@ export class HierarchyView extends PowerPackView {
 		}
 	}
 
-	private toggleCollapse(id: string): void {
-		if (this.collapsed.has(id)) this.collapsed.delete(id);
-		else this.collapsed.add(id);
+	/** Set a node's collapsed state and re-render, keeping keyboard focus on it. */
+	private setCollapsed(id: string, collapsed: boolean): void {
+		if (collapsed) this.collapsed.add(id);
+		else this.collapsed.delete(id);
+		this.focusRowId = id;
 		void this.render();
+	}
+
+	/** Keyboard navigation for a tree row (roving focus over the flat row list). */
+	private onRowKeydown(
+		evt: KeyboardEvent,
+		rowEl: HTMLElement,
+		flatRow: ReturnType<typeof flattenForest>[number],
+		row: Row | null,
+		openMenu: ((anchor: MouseEvent | HTMLElement) => void) | null
+	): void {
+		// Only navigate when the row itself is focused — Enter/arrows pressed on the
+		// nested ⋯ button must activate the button, not also open the note or move focus.
+		if (evt.target !== rowEl) return;
+		switch (evt.key) {
+			case "Enter":
+				if (!flatRow.ghost && row) {
+					evt.preventDefault();
+					this.openRow(row);
+				}
+				break;
+			case "ArrowRight":
+				if (flatRow.hasChildren && flatRow.collapsed) {
+					evt.preventDefault();
+					this.setCollapsed(flatRow.id, false);
+				} else if (flatRow.hasChildren) {
+					evt.preventDefault();
+					(rowEl.nextElementSibling as HTMLElement | null)?.focus();
+				}
+				break;
+			case "ArrowLeft":
+				if (flatRow.hasChildren && !flatRow.collapsed) {
+					evt.preventDefault();
+					this.setCollapsed(flatRow.id, true);
+				} else {
+					evt.preventDefault();
+					(rowEl.previousElementSibling as HTMLElement | null)?.focus();
+				}
+				break;
+			case "ArrowDown":
+				evt.preventDefault();
+				(rowEl.nextElementSibling as HTMLElement | null)?.focus();
+				break;
+			case "ArrowUp":
+				evt.preventDefault();
+				(rowEl.previousElementSibling as HTMLElement | null)?.focus();
+				break;
+			case "ContextMenu":
+				if (openMenu) {
+					evt.preventDefault();
+					openMenu(rowEl);
+				}
+				break;
+			case "F10":
+				if (evt.shiftKey && openMenu) {
+					evt.preventDefault();
+					openMenu(rowEl);
+				}
+				break;
+		}
 	}
 
 	// ---- menu + mutations -----------------------------------------------------
 
-	private openTreeMenu(evt: MouseEvent, row: Row, id: string, forest: Forest, parentProp: string): void {
-		evt.preventDefault();
+	private openTreeMenu(anchor: MouseEvent | HTMLElement, row: Row, id: string, forest: Forest, parentProp: string): void {
+		if (anchor instanceof MouseEvent) anchor.preventDefault();
 		const after = (): void => void this.render();
 		const menu = new Menu();
 		menu.addItem((i) => i.setTitle("Add child note").setIcon("plus").onClick(() => void this.addChildNote(id, parentProp)));
@@ -304,7 +377,7 @@ export class HierarchyView extends PowerPackView {
 		}
 		menu.addSeparator();
 		this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, after);
-		menu.showAtMouseEvent(evt);
+		this.showMenuAtAnchor(menu, anchor);
 	}
 
 	/** Apply a validated reparent: write (or clear) the child's parent property. */
@@ -380,9 +453,11 @@ export class HierarchyView extends PowerPackView {
 		return Number.isFinite(n) ? n : null;
 	}
 
-	/** A row is "done" when its group value is "done" or it has a truthy `done`. */
+	/** A row is "done" when its group value equals the configured done value (e.g.
+	 * "done"/"Complete") or it has a truthy `done` property. */
 	private isDone(row: Row, doneProp: string): boolean {
-		if (toStr(row.scope.get(doneProp)).trim().toLowerCase() === "done") return true;
+		const doneValue = this.plugin.settings.kanbanDoneValue.trim().toLowerCase();
+		if (doneValue && toStr(row.scope.get(doneProp)).trim().toLowerCase() === doneValue) return true;
 		return toBool(row.scope.get("done"));
 	}
 }

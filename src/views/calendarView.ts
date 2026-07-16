@@ -14,13 +14,13 @@ import {
 	weekKeys,
 } from "../query/dates";
 import { shiftIso } from "../query/gantt";
-import { createSeededNote, resolveViewRows, writeRowProperty } from "./viewData";
+import { createSeededNote, writeRowProperty } from "./viewData";
 import { PromptModal } from "./modals";
-import { renderContextControls, renderRollupBar, renderSearchControl } from "./viewChrome";
+import { renderContextControls, renderRollupBar } from "./viewChrome";
 
 export const VIEW_TYPE_CALENDAR = "bpp-calendar-view";
 
-const DND_ROW = "application/x-bpp-row";
+import { DND_ROW } from "./dnd";
 
 /**
  * Calendar view (PREMIUM). Interactive: drag an event to another day to
@@ -31,9 +31,6 @@ const DND_ROW = "application/x-bpp-row";
 export class CalendarView extends PowerPackView {
 	/** Anchor day the visible period is derived from (month/week/agenda all use it). */
 	private anchor: string = todayIso();
-	private search = "";
-	private searchInputEl: HTMLInputElement | null = null;
-	private restoreSearchFocus = false;
 
 	getViewType(): string {
 		return VIEW_TYPE_CALENDAR;
@@ -43,11 +40,6 @@ export class CalendarView extends PowerPackView {
 	}
 	getIcon(): string {
 		return "calendar";
-	}
-
-	async onClose(): Promise<void> {
-		this.searchInputEl = null;
-		await super.onClose();
 	}
 
 	private get mode(): CalendarViewMode {
@@ -70,14 +62,10 @@ export class CalendarView extends PowerPackView {
 			return;
 		}
 
-		const resolved = await resolveViewRows(this.app, this.plugin);
+		const resolved = await this.plugin.getResolvedView();
 		if (this.isStale(token)) return;
 
-		// Capture focus intent before empty() destroys the search input, so a keystroke
-		// re-render (or a vault change mid-type) hands focus back to its replacement.
-		this.restoreSearchFocus =
-			this.searchInputEl !== null &&
-			this.searchInputEl.ownerDocument.activeElement === this.searchInputEl;
+		this.captureSearchState();
 		container.empty();
 		container.addClass("bpp-view");
 
@@ -87,16 +75,22 @@ export class CalendarView extends PowerPackView {
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
 		renderRollupBar(container, this.plugin, resolved.rows);
 
-		const rows = filterRowsByText(resolved.rows, this.search);
+		const rows = filterRowsByText(resolved.rows, this.searchQuery);
 		const byDay = this.collectByDay(rows, dateProp);
 		if (this.mode === "agenda") this.renderAgenda(container, byDay, dateProp);
 		else if (this.mode === "week") this.renderWeek(container, byDay, dateProp);
 		else this.renderMonth(container, byDay, dateProp);
 
-		// Month/Week always render a grid, so a search that matches nothing needs its
-		// own message; Agenda renders its own (search-aware) empty state below.
-		if (rows.length === 0 && this.search && this.mode !== "agenda") {
-			container.createDiv({ cls: "bpp-empty", text: "No notes match the current search." });
+		// Month/Week always paint a grid, so an empty result needs its own message
+		// (Agenda renders its own, search-aware). Teach the driving property on a
+		// genuinely empty calendar, matching the other three views' empty states.
+		if (byDay.size === 0 && this.mode !== "agenda") {
+			container.createDiv({
+				cls: "bpp-empty",
+				text: this.searchQuery
+					? "No notes match the current search."
+					: `No notes with a "${dateProp}" date yet. Add "${dateProp}: 2026-01-01" to a note's frontmatter, or hover a day and click + to create one.`,
+			});
 		}
 	}
 
@@ -131,16 +125,8 @@ export class CalendarView extends PowerPackView {
 
 		toolbar.createSpan({ cls: "bpp-muted", text: `dates from "${dateProp}"` });
 
-		this.searchInputEl = renderSearchControl(toolbar, this.search, (value) => {
-			this.search = value;
-			void this.render();
-		});
-		if (this.restoreSearchFocus) {
-			this.restoreSearchFocus = false;
-			this.searchInputEl.focus();
-			const end = this.searchInputEl.value.length;
-			this.searchInputEl.setSelectionRange(end, end);
-		}
+		this.renderUndoButton(toolbar);
+		this.renderManagedSearch(toolbar);
 	}
 
 	private async setMode(mode: CalendarViewMode): Promise<void> {
@@ -267,7 +253,9 @@ export class CalendarView extends PowerPackView {
 	private renderCellEvents(cell: HTMLElement, rows: Row[], dateProp: string): void {
 		const colorProp = this.plugin.settings.calendarColorProp.trim();
 		for (const row of rows) {
-			const ev = cell.createDiv({ cls: "bpp-cal-event", text: row.name });
+			const ev = cell.createDiv({ cls: "bpp-cal-event" });
+			ev.createSpan({ cls: "bpp-cal-event-label", text: row.name });
+			const openMenu = (a: MouseEvent | HTMLElement): void => this.openEventMenu(a, row, dateProp);
 			if (colorProp) {
 				const value = toStr(row.scope.get(colorProp));
 				if (value) {
@@ -284,14 +272,16 @@ export class CalendarView extends PowerPackView {
 			});
 			ev.addEventListener("dragend", () => ev.removeClass("is-dragging"));
 			ev.addEventListener("click", () => this.openRow(row));
-			ev.addEventListener("contextmenu", (evt) => this.openEventMenu(evt, row, dateProp));
+			this.makeItemAccessible(ev, row.name, () => this.openRow(row), openMenu);
+			ev.addEventListener("contextmenu", (evt) => openMenu(evt));
+			this.addOverflowButton(ev, row.name, openMenu);
 		}
 	}
 
-	/** Right-click menu on a calendar event — a keyboard/mouse action path that
-	 * doesn't require dragging (reschedule via prompt, plus the shared note actions). */
-	private openEventMenu(evt: MouseEvent, row: Row, dateProp: string): void {
-		evt.preventDefault();
+	/** Action menu for a calendar event — reachable by right-click, the "⋯" button
+	 * (touch), or the keyboard. Reschedules via a prompt (no drag), plus shared actions. */
+	private openEventMenu(anchor: MouseEvent | HTMLElement, row: Row, dateProp: string): void {
+		if (anchor instanceof MouseEvent) anchor.preventDefault();
 		const after = (): void => void this.render();
 		const menu = new Menu();
 		menu.addItem((i) =>
@@ -318,7 +308,7 @@ export class CalendarView extends PowerPackView {
 		);
 		menu.addSeparator();
 		this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, after);
-		menu.showAtMouseEvent(evt);
+		this.showMenuAtAnchor(menu, anchor);
 	}
 
 	// ---- agenda ---------------------------------------------------------------
@@ -332,7 +322,7 @@ export class CalendarView extends PowerPackView {
 		if (days.length === 0) {
 			list.createDiv({
 				cls: "bpp-empty",
-				text: this.search ? "No upcoming notes match the current search." : "No upcoming dated notes.",
+				text: this.searchQuery ? "No upcoming notes match the current search." : "No upcoming dated notes.",
 			});
 			return;
 		}
@@ -343,9 +333,13 @@ export class CalendarView extends PowerPackView {
 			head.createSpan({ cls: "bpp-muted", text: key });
 			if (key === today) head.createSpan({ cls: "bpp-badge bpp-badge-lite", text: "Today" });
 			for (const row of byDay.get(key) || []) {
-				const item = group.createDiv({ cls: "bpp-agenda-item", text: row.name });
+				const item = group.createDiv({ cls: "bpp-agenda-item" });
+				item.createSpan({ cls: "bpp-agenda-item-label", text: row.name });
+				const openMenu = (a: MouseEvent | HTMLElement): void => this.openEventMenu(a, row, dateProp);
 				item.addEventListener("click", () => this.openRow(row));
-				item.addEventListener("contextmenu", (evt) => this.openEventMenu(evt, row, dateProp));
+				this.makeItemAccessible(item, row.name, () => this.openRow(row), openMenu);
+				item.addEventListener("contextmenu", (evt) => openMenu(evt));
+				this.addOverflowButton(item, row.name, openMenu);
 			}
 		}
 	}

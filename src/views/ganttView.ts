@@ -14,8 +14,8 @@ import {
 	type GanttBar,
 } from "../query/gantt";
 import { rescheduleDateValue, toIsoDateKey, todayIso } from "../query/dates";
-import { resolveViewRows, writeRowProperties, writeRowProperty } from "./viewData";
-import { renderContextControls, renderRollupBar, renderSearchControl } from "./viewChrome";
+import { writeRowProperties, writeRowProperty } from "./viewData";
+import { renderContextControls, renderRollupBar } from "./viewChrome";
 
 export const VIEW_TYPE_GANTT = "bpp-gantt-view";
 
@@ -41,9 +41,6 @@ const CLICK_SLOP = 4;
 export class GanttView extends PowerPackView {
 	private zoomPx = DEFAULT_ZOOM;
 	private scrollEl: HTMLElement | null = null;
-	private search = "";
-	private searchInputEl: HTMLInputElement | null = null;
-	private restoreSearchFocus = false;
 
 	getViewType(): string {
 		return VIEW_TYPE_GANTT;
@@ -57,7 +54,6 @@ export class GanttView extends PowerPackView {
 
 	async onClose(): Promise<void> {
 		this.scrollEl = null;
-		this.searchInputEl = null;
 		await super.onClose();
 	}
 
@@ -77,12 +73,10 @@ export class GanttView extends PowerPackView {
 			return;
 		}
 
-		const resolved = await resolveViewRows(this.app, this.plugin);
+		const resolved = await this.plugin.getResolvedView();
 		if (this.isStale(token)) return;
 
-		this.restoreSearchFocus =
-			this.searchInputEl !== null &&
-			this.searchInputEl.ownerDocument.activeElement === this.searchInputEl;
+		this.captureSearchState();
 		container.empty();
 		container.addClass("bpp-view");
 
@@ -106,21 +100,13 @@ export class GanttView extends PowerPackView {
 		const todayBtn = toolbar.createEl("button", { text: "Today", cls: "bpp-seg-btn" });
 		todayBtn.addEventListener("click", () => this.scrollToToday());
 
-		this.searchInputEl = renderSearchControl(toolbar, this.search, (value) => {
-			this.search = value;
-			void this.render();
-		});
-		if (this.restoreSearchFocus) {
-			this.restoreSearchFocus = false;
-			this.searchInputEl.focus();
-			const end = this.searchInputEl.value.length;
-			this.searchInputEl.setSelectionRange(end, end);
-		}
+		this.renderUndoButton(toolbar);
+		this.renderManagedSearch(toolbar);
 
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
 		renderRollupBar(container, this.plugin, resolved.rows);
 
-		const rows = filterRowsByText(resolved.rows, this.search);
+		const rows = filterRowsByText(resolved.rows, this.searchQuery);
 		const rowByPath = new Map<string, Row>();
 		const input = rows.map((row) => {
 			rowByPath.set(row.id, row);
@@ -136,7 +122,7 @@ export class GanttView extends PowerPackView {
 		if (model.bars.length === 0) {
 			container.createDiv({
 				cls: "bpp-empty",
-				text: this.search
+				text: this.searchQuery
 					? "No notes match the current search."
 					: `No notes with a "${startProp}" date found. Add "${startProp}: 2026-01-01" to a note's frontmatter to place it on the timeline.`,
 			});
@@ -149,6 +135,12 @@ export class GanttView extends PowerPackView {
 			container.createDiv({
 				cls: "bpp-muted bpp-gantt-skipped",
 				text: `${model.skipped} note${model.skipped === 1 ? "" : "s"} without a valid "${startProp}" date not shown.`,
+			});
+		}
+		if (model.offAxis > 0) {
+			container.createDiv({
+				cls: "bpp-muted bpp-gantt-skipped",
+				text: `${model.offAxis} note${model.offAxis === 1 ? "" : "s"} fall outside the visible date range.`,
 			});
 		}
 	}
@@ -204,10 +196,15 @@ export class GanttView extends PowerPackView {
 		endProp: string
 	): void {
 		const rowEl = chart.createDiv({ cls: "bpp-gantt-row" });
-		const name = rowEl.createDiv({ cls: "bpp-gantt-name", text: bar.name });
-		if (row) {
-			name.addEventListener("click", () => this.openRow(row));
-			rowEl.addEventListener("contextmenu", (evt) => this.openBarMenu(evt, row, startProp, endProp));
+		const openMenu = row
+			? (a: MouseEvent | HTMLElement): void => this.openBarMenu(a, row, startProp, endProp)
+			: null;
+		const name = rowEl.createDiv({ cls: "bpp-gantt-name" });
+		const nameLabel = name.createSpan({ cls: "bpp-gantt-name-label", text: bar.name });
+		if (row && openMenu) {
+			nameLabel.addEventListener("click", () => this.openRow(row));
+			rowEl.addEventListener("contextmenu", (evt) => openMenu(evt));
+			this.addOverflowButton(name, bar.name, openMenu);
 		}
 
 		const track = rowEl.createDiv({ cls: "bpp-gantt-track" });
@@ -229,7 +226,7 @@ export class GanttView extends PowerPackView {
 		barEl.setCssProps({ left: `${bar.startIndex * px}px`, width: `${Math.max(1, bar.span) * px}px` });
 		barEl.setAttr("title", `${bar.name}: ${bar.startDate} → ${bar.endDate}`);
 
-		if (row) {
+		if (row && openMenu) {
 			const progress = this.progressPct(row);
 			if (progress !== null) {
 				const fill = barEl.createDiv({ cls: "bpp-gantt-progress" });
@@ -237,6 +234,27 @@ export class GanttView extends PowerPackView {
 			}
 			const handle = barEl.createDiv({ cls: "bpp-gantt-handle" });
 			this.enableDrag(barEl, handle, row, startProp, endProp);
+
+			// Keyboard operability: the bar's dates live only in the title tooltip,
+			// which is mouse-only. Expose them via aria-label and drive move/resize
+			// with the arrow keys (Shift = resize the end).
+			barEl.tabIndex = 0;
+			barEl.setAttr("role", "button");
+			barEl.setAttr("aria-label", `${bar.name}: ${bar.startDate} to ${bar.endDate}`);
+			barEl.addEventListener("keydown", (evt) => {
+				if (evt.key === "Enter") {
+					evt.preventDefault();
+					this.openRow(row);
+				} else if (evt.key === "ArrowRight" || evt.key === "ArrowLeft") {
+					evt.preventDefault();
+					const delta = evt.key === "ArrowRight" ? 1 : -1;
+					if (evt.shiftKey) void this.applyResize(row, startProp, endProp, delta);
+					else void this.applyMove(row, startProp, endProp, delta);
+				} else if (evt.key === "ContextMenu" || (evt.key === "F10" && evt.shiftKey)) {
+					evt.preventDefault();
+					openMenu(barEl);
+				}
+			});
 		}
 	}
 
@@ -261,6 +279,9 @@ export class GanttView extends PowerPackView {
 			baseWidth = barEl.offsetWidth;
 			barEl.addClass("is-dragging");
 			barEl.setPointerCapture(evt.pointerId);
+			// Hold background re-renders so a metadata change mid-drag can't remove the
+			// bar and pointer capture (which would drop the reschedule write).
+			this.beginInteraction();
 		};
 
 		barEl.addEventListener("pointerdown", (evt) => begin(evt, "move"));
@@ -280,6 +301,7 @@ export class GanttView extends PowerPackView {
 			kind = null;
 			barEl.removeClass("is-dragging");
 			if (barEl.hasPointerCapture(evt.pointerId)) barEl.releasePointerCapture(evt.pointerId);
+			this.endInteraction();
 
 			if (Math.abs(dx) < CLICK_SLOP) {
 				barEl.setCssProps({ transform: "" });
@@ -301,8 +323,8 @@ export class GanttView extends PowerPackView {
 
 	/** Right-click menu on a Gantt bar — a non-drag path to set the dates, plus the
 	 * shared note actions (open / edit field / rename / delete). */
-	private openBarMenu(evt: MouseEvent, row: Row, startProp: string, endProp: string): void {
-		evt.preventDefault();
+	private openBarMenu(anchor: MouseEvent | HTMLElement, row: Row, startProp: string, endProp: string): void {
+		if (anchor instanceof MouseEvent) anchor.preventDefault();
 		const after = (): void => void this.render();
 		const menu = new Menu();
 		menu.addItem((i) =>
@@ -313,7 +335,7 @@ export class GanttView extends PowerPackView {
 		);
 		menu.addSeparator();
 		this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, after);
-		menu.showAtMouseEvent(evt);
+		this.showMenuAtAnchor(menu, anchor);
 	}
 
 	private setDateViaPrompt(row: Row, prop: string, which: string): void {
@@ -370,7 +392,13 @@ export class GanttView extends PowerPackView {
 		const marker = this.scrollEl.querySelector<HTMLElement>(".bpp-gantt-axis-track .bpp-gantt-today");
 		if (!marker) return;
 		const left = marker.offsetLeft;
-		this.scrollEl.scrollTo({ left: Math.max(0, left - this.scrollEl.clientWidth / 2), behavior: "smooth" });
+		// Honor reduced-motion: an explicit behavior option overrides the CSS
+		// scroll-behavior, so gate it on the media query.
+		const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+		this.scrollEl.scrollTo({
+			left: Math.max(0, left - this.scrollEl.clientWidth / 2),
+			behavior: reduce ? "auto" : "smooth",
+		});
 	}
 
 	// ---- helpers --------------------------------------------------------------

@@ -283,6 +283,29 @@ export function toNumber(v: unknown): number {
 	return NaN;
 }
 
+/** Matches a string that is ENTIRELY a number (optionally signed/decimal). */
+const STRICT_NUMERIC_RE = /^-?(?:\d+(?:\.\d+)?|\.\d+)$/;
+
+/**
+ * Coerce to a number ONLY when the value is genuinely numeric — a real number,
+ * a boolean, a Date, or a string that is wholly a number. Unlike `toNumber`
+ * (which uses parseFloat and happily reads `2026` out of `"2026-06-01"`), a
+ * numeric-leading string like an ISO date or a semver returns NaN here, so
+ * comparisons fall through to lexical order. This is what keeps `due >= "2026-06-01"`
+ * and `due == today` correct: two different dates must not collapse to the same
+ * leading number.
+ */
+export function strictNumber(v: unknown): number {
+	if (typeof v === "number") return v;
+	if (typeof v === "boolean") return v ? 1 : 0;
+	if (v instanceof Date) return v.getTime();
+	if (typeof v === "string") {
+		const t = v.trim();
+		return STRICT_NUMERIC_RE.test(t) ? Number(t) : NaN;
+	}
+	return NaN;
+}
+
 export function toBool(v: unknown): boolean {
 	if (v === null || v === undefined) return false;
 	if (typeof v === "boolean") return v;
@@ -325,18 +348,40 @@ function numeric(args: Value[]): number[] {
 		.filter((n) => !Number.isNaN(n));
 }
 
+/** A string that starts with an ISO date — compared lexically, never by number. */
+function looksDateLike(v: Value): boolean {
+	return typeof v === "string" && /^\s*\d{4}-\d{2}-\d{2}/.test(v);
+}
+
+/**
+ * Ordinal comparison for `<`, `>`, `<=`, `>=`. Date-like strings compare
+ * lexically (which is chronological for `YYYY-MM-DD`); any other pair that both
+ * coerce to numbers — including numeric-with-unit strings like `"50%"` or
+ * `"5 pts"` via lenient `toNumber` — compare numerically; otherwise lexically.
+ */
 function compare(a: Value, b: Value): number {
-	const na = toNumber(a);
-	const nb = toNumber(b);
-	if (!Number.isNaN(na) && !Number.isNaN(nb)) return na === nb ? 0 : na < nb ? -1 : 1;
+	if (!looksDateLike(a) && !looksDateLike(b)) {
+		const na = toNumber(a);
+		const nb = toNumber(b);
+		if (!Number.isNaN(na) && !Number.isNaN(nb)) return na === nb ? 0 : na < nb ? -1 : 1;
+	}
 	const sa = toStr(a);
 	const sb = toStr(b);
 	return sa === sb ? 0 : sa < sb ? -1 : 1;
 }
 
+/**
+ * Equality for `==` / `!=`. Uses STRICT numeric coercion, so a numeric-leading
+ * string that isn't wholly a number (an ISO date, a semver, `"50%"`) only matches
+ * by exact string — two different dates or versions are never equal, and
+ * `date == today` is date-accurate rather than "same year".
+ */
 function looseEquals(a: Value, b: Value): boolean {
 	if (a === null || b === null) return a === b || (isEmpty(a) && isEmpty(b));
-	return compare(a, b) === 0;
+	const na = strictNumber(a);
+	const nb = strictNumber(b);
+	if (!Number.isNaN(na) && !Number.isNaN(nb)) return na === nb;
+	return toStr(a) === toStr(b);
 }
 
 type BuiltIn = (args: Value[]) => Value;
@@ -463,9 +508,10 @@ function evalBinary(node: Extract<Node, { t: "bin" }>, scope: EvalScope): Value 
 		case ">=":
 			return compare(a, b) >= 0;
 		case "+": {
-			// Numeric add when both sides are numeric, else string concat.
-			const na = toNumber(a);
-			const nb = toNumber(b);
+			// Numeric add only when both sides are genuinely numeric, else string
+			// concat — so `"2026-01-01" + x` concatenates instead of adding 2026.
+			const na = strictNumber(a);
+			const nb = strictNumber(b);
 			if (!Number.isNaN(na) && !Number.isNaN(nb)) return na + nb;
 			return toStr(a) + toStr(b);
 		}

@@ -24,6 +24,7 @@ export interface GanttModel {
 	days: string[]; // ISO YYYY-MM-DD, one per column
 	bars: GanttBar[];
 	skipped: number; // rows without a valid start date
+	offAxis: number; // rows with a valid start date that falls beyond the clamped window
 }
 
 /** Parse a value to a UTC day number (days since epoch), or null. */
@@ -138,7 +139,7 @@ export function buildGantt(input: GanttInput[], defaultSpanDays = 1, maxDays = 1
 		});
 	}
 
-	if (bars.length === 0) return { days: [], bars: [], skipped };
+	if (bars.length === 0) return { days: [], bars: [], skipped, offAxis: 0 };
 
 	const minDay = Math.min(...bars.map((b) => b.startDay));
 	const maxDay = Math.min(Math.max(...bars.map((b) => b.endDay)), minDay + maxDays - 1);
@@ -146,21 +147,30 @@ export function buildGantt(input: GanttInput[], defaultSpanDays = 1, maxDays = 1
 	const days: string[] = [];
 	for (let d = minDay; d <= maxDay; d++) days.push(dayNumberToIso(d));
 
-	const finalBars: GanttBar[] = bars.map((b) => {
+	let offAxis = 0;
+	const finalBars: GanttBar[] = [];
+	for (const b of bars) {
+		// A valid bar whose start falls past the clamped axis can't be placed — it
+		// would sit thousands of px beyond the track. Count it separately from
+		// no-date rows so the view can explain the real reason ("outside the range").
+		if (b.startDay > maxDay) {
+			offAxis++;
+			continue;
+		}
 		const startIndex = b.startDay - minDay;
 		const clampedSpan = Math.min(b.span, maxDay - b.startDay + 1);
-		return {
+		finalBars.push({
 			id: b.id,
 			name: b.name,
 			startIndex,
 			span: Math.max(1, clampedSpan),
 			startDate: b.startDate,
 			endDate: b.endDate,
-		};
-	});
+		});
+	}
 
 	// Stable order: earliest start first, then name.
 	finalBars.sort((a, b) => a.startIndex - b.startIndex || a.name.localeCompare(b.name));
 
-	return { days, bars: finalBars, skipped };
+	return { days, bars: finalBars, skipped, offAxis };
 }

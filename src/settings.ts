@@ -31,6 +31,9 @@ export interface BasesPowerPackSettings {
 
 	/** Kanban (lite) */
 	kanbanGroupBy: string;
+	/** The group value treated as "done" — drives the Kanban hide-done toggle and
+	 * the Outline's per-branch progress roll-up. */
+	kanbanDoneValue: string;
 	kanbanCardFields: string[];
 	kanbanQuickAddFolder: string;
 	/** User-added empty columns, keyed by the group-by property they belong to. */
@@ -87,6 +90,7 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	licenseEmail: "",
 	purchaseUrl: "https://example.gumroad.com/l/bases-power-pack",
 	kanbanGroupBy: "status",
+	kanbanDoneValue: "done",
 	kanbanCardFields: ["due", "priority"],
 	kanbanQuickAddFolder: "",
 	kanbanExtraColumns: {},
@@ -189,17 +193,36 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl)
 			.setName("Group by property")
-			.setDesc("Frontmatter property (or, with premium, a formula) used to build kanban columns.")
+			.setDesc(
+				"Frontmatter property (or, with premium, a formula) used to build kanban columns. The Outline view also reads it to decide which notes count as done."
+			)
 			.addText((text) =>
 				text.setValue(this.plugin.settings.kanbanGroupBy).onChange((value) => {
 					this.plugin.settings.kanbanGroupBy = value.trim() || "status";
-					void this.plugin.saveSettings();
+					void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
 				})
 			);
 
 		new Setting(containerEl)
+			.setName("Done value")
+			.setDesc(
+				'The group value treated as "done" — used by the Kanban "Hide done" toggle and the Outline progress bars. e.g. done, Complete, Shipped.'
+			)
+			.addText((text) =>
+				text
+					.setPlaceholder("done")
+					.setValue(this.plugin.settings.kanbanDoneValue)
+					.onChange((value) => {
+						this.plugin.settings.kanbanDoneValue = value.trim() || "done";
+						void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+					})
+			);
+
+		new Setting(containerEl)
 			.setName("Card detail fields")
-			.setDesc("Comma-separated raw properties to show on free kanban cards, e.g. due, priority, owner, tags.")
+			.setDesc(
+				"Comma-separated raw properties shown on cards and editable from every view's menu, e.g. due, priority, owner, tags."
+			)
 			.addText((text) =>
 				text.setValue(this.plugin.settings.kanbanCardFields.join(", ")).onChange((value) => {
 					this.plugin.settings.kanbanCardFields = value
@@ -256,7 +279,11 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			return true;
 		};
 
-		// Active base (real Bases integration).
+		const subHeading = (name: string): void => {
+			new Setting(containerEl).setName(name).setHeading();
+		};
+
+		// Active base (real Bases integration) — shared by every view.
 		premium(
 			"Active base",
 			"Read a .base file's filters and formulas as the data source for all views. Choose “All notes” to run over the whole vault.",
@@ -275,6 +302,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			}
 		);
 
+		subHeading("Calendar");
 		premium(
 			"Calendar date property",
 			"Frontmatter date property used to place notes on the calendar.",
@@ -288,6 +316,36 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			}
 		);
 
+		premium(
+			"Calendar color property",
+			"Frontmatter property whose value tints each calendar event with a stable color. Leave blank for no coloring.",
+			(setting) => {
+				setting.addText((text) =>
+					text
+						.setPlaceholder("status")
+						.setValue(this.plugin.settings.calendarColorProp)
+						.onChange((value) => {
+							this.plugin.settings.calendarColorProp = value.trim();
+							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+						})
+				);
+			}
+		);
+
+		premium(
+			"Calendar quick-add folder",
+			"Optional folder for notes created by clicking a day (leave blank for the vault root).",
+			(setting) => {
+				setting.addText((text) =>
+					text.setValue(this.plugin.settings.calendarQuickAddFolder).onChange((value) => {
+						this.plugin.settings.calendarQuickAddFolder = value.trim();
+						void this.plugin.saveSettings();
+					})
+				);
+			}
+		);
+
+		subHeading("Gantt");
 		premium("Gantt start property", "Frontmatter date property for the start of each Gantt bar.", (setting) => {
 			setting.addText((text) =>
 				text.setValue(this.plugin.settings.ganttStartProp).onChange((value) => {
@@ -338,6 +396,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			}
 		);
 
+		subHeading("Outline");
 		premium(
 			"Outline parent property",
 			"Frontmatter property holding the vault-relative path of a note's parent (builds the Outline tree).",
@@ -383,37 +442,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			}
 		);
 
-		premium(
-			"Calendar color property",
-			"Frontmatter property whose value tints each calendar event with a stable color. Leave blank for no coloring.",
-			(setting) => {
-				setting.addText((text) =>
-					text
-						.setPlaceholder("status")
-						.setValue(this.plugin.settings.calendarColorProp)
-						.onChange((value) => {
-							this.plugin.settings.calendarColorProp = value.trim();
-							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-						})
-				);
-			}
-		);
-
-		premium(
-			"Calendar quick-add folder",
-			"Optional folder for notes created by clicking a day (leave blank for the vault root).",
-			(setting) => {
-				setting.addText((text) =>
-					text
-						.setValue(this.plugin.settings.calendarQuickAddFolder)
-						.onChange((value) => {
-							this.plugin.settings.calendarQuickAddFolder = value.trim();
-							void this.plugin.saveSettings();
-						})
-				);
-			}
-		);
-
+		subHeading("Kanban (premium)");
 		premium(
 			"Kanban card formula",
 			"An expression shown under each kanban card, e.g. round(done / total * 100, 0) + \"%\".",

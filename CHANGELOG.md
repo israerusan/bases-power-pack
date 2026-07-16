@@ -3,6 +3,57 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.10.0] - 2026-07-16
+
+A polish release focused on **touch, keyboard access, and correctness**, driven
+by a multi-agent audit across performance, UI, UX, maintainability,
+accessibility, mobile, and robustness — then a second adversarial pass to catch
+regressions.
+
+### Added — Touch & keyboard access
+- **Works on mobile now.** Every card, calendar event, Gantt bar, and Outline
+  row has a persistent **⋯ menu button** that reaches its full action set (move,
+  reschedule, set start/end date, set parent, edit, rename, delete) by tap —
+  previously these lived only behind HTML5 drag and right-click, both dead on
+  touch. Bigger touch targets, an always-visible calendar **+**, and a wider
+  Gantt resize handle on coarse pointers.
+- **Keyboard operable.** Cards/events/bars/rows are focusable: Enter opens,
+  Shift+F10 / Menu opens actions. The **Outline is a real tree** (arrow keys to
+  navigate, expand/collapse, `role=tree`/`aria-expanded`). Gantt bars move/resize
+  with the arrow keys; Kanban columns reorder from the column menu.
+- **Undo button.** Each view toolbar shows an **Undo** button (with the exact
+  action in its tooltip) when there's something to undo — undo was previously
+  only a hidden command.
+
+### Added — UI & settings
+- Focus rings throughout, a **high-contrast / forced-colors** fallback, and
+  theme-consistent colors (calendar hues now match the board; the Gantt grip is
+  visible in dark themes).
+- A configurable **Done value** (so "Hide done" and Outline progress work for
+  boards whose terminal column is "Complete", "Shipped", etc.).
+- Premium settings grouped under **Calendar / Gantt / Outline** sub-headings; a
+  confirmation before a bulk column rename.
+
+### Fixed
+- **Date & version comparisons were wrong.** `due >= "2026-06-01"` matched
+  January and `due == today` matched any date that year, because numeric-leading
+  strings were compared by their leading number. Dates/versions now compare
+  correctly; `"50%"`-style values still order numerically.
+- A single far-future date no longer renders a Gantt bar thousands of pixels off
+  the timeline (it's reported as "outside the visible range").
+- Search no longer jumps the caret to the end on every keystroke or breaks
+  mobile/CJK input; it's debounced.
+- A background vault change can no longer wipe an in-progress inline edit or drag
+  (and can no longer leave auto-refresh frozen).
+- Four view-driving settings are now type-sanitized on load; undo reports when a
+  note can't be restored because it moved.
+
+### Internal
+- The resolve pipeline is memoized (no per-keystroke `.base` re-read / Row
+  rebuild); the search + focus-restore logic is hoisted into `PowerPackView`;
+  new `dnd.ts` (drag MIME constants) and an Obsidian `App.setting` type
+  augmentation; expanded pure-core tests (date/unit compare, Gantt off-axis).
+
 ## [1.9.0] - 2026-07-16
 
 Adds the one axis the product was missing: **structure**. Status (Kanban), time
