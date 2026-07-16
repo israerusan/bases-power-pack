@@ -1,4 +1,4 @@
-import { Menu, Notice, TFile, normalizePath } from "obsidian";
+import { Menu, Notice, normalizePath } from "obsidian";
 import type { Row } from "../model/row";
 import { PowerPackView } from "./abstractView";
 import {
@@ -15,10 +15,11 @@ import {
 } from "../query/kanbanActions";
 import { coerceFieldInput, formatFieldForEdit } from "../query/inlineEdit";
 import { coerceLiteral, computeRuleWrites, rulesForTransition } from "../query/automation";
+import { dropWouldExceed, formatWipCount, isOverWip, limitFor, sanitizeWipLimit } from "../query/wip";
 import { evaluateSafe, toBool, toStr } from "../engine/expression";
 import { resolveViewRows, writeRowProperties, writeRowProperty, type PropertyWrite } from "./viewData";
 import { renderContextControls, renderRollupBar } from "./viewChrome";
-import { BulkEditModal, ConfirmModal, PromptModal, type BulkOp } from "./modals";
+import { BulkEditModal, PromptModal, type BulkOp } from "./modals";
 
 export const VIEW_TYPE_KANBAN = "bpp-kanban-view";
 
@@ -129,9 +130,18 @@ export class KanbanView extends PowerPackView {
 			colHead.addEventListener("contextmenu", (evt) =>
 				this.openColumnMenu(evt, column.name, groupBy, removable)
 			);
+			const wipLimit = limitFor(this.plugin.settings.kanbanWipLimits, column.name);
+			if (isOverWip(column.rows.length, wipLimit)) col.addClass("is-over-wip");
 			const colLabel = colHead.createDiv({ cls: "bpp-kanban-column-label" });
 			colLabel.createSpan({ text: column.name });
-			colLabel.createSpan({ cls: "bpp-count", text: String(column.rows.length) });
+			const count = colLabel.createSpan({
+				cls: "bpp-count",
+				text: formatWipCount(column.rows.length, wipLimit),
+			});
+			if (wipLimit !== null) {
+				count.addClass("has-wip");
+				count.setAttr("title", `${column.rows.length} of ${wipLimit} (WIP limit)`);
+			}
 
 			const actions = colHead.createDiv({ cls: "bpp-column-actions" });
 			const addButton = actions.createEl("button", {
@@ -252,7 +262,7 @@ export class KanbanView extends PowerPackView {
 			if (settled) return;
 			settled = true;
 			const { value, remove } = coerceFieldInput(field, input.value, previous);
-			await writeRowProperty(this.plugin, row.id, field, value, remove);
+			await writeRowProperty(this.plugin, row.id, field, value, remove, { label: `Edit "${field}"` });
 			await this.render();
 		};
 		input.addEventListener("click", (event) => event.stopPropagation());
@@ -278,41 +288,21 @@ export class KanbanView extends PowerPackView {
 	private openCardMenu(evt: MouseEvent, row: Row, groupBy: string, columns: string[]): void {
 		evt.preventDefault();
 		const menu = new Menu();
-		menu.addItem((i) => i.setTitle("Open").setIcon("file").onClick(() => this.openRow(row)));
-		menu.addItem((i) =>
-			i
-				.setTitle("Open to the right")
-				.setIcon("separator-vertical")
-				.onClick(() => {
-					const file = this.app.vault.getAbstractFileByPath(row.id);
-					if (file instanceof TFile) void this.app.workspace.getLeaf("split").openFile(file);
-				})
-		);
+		const after = (): void => void this.render();
 
+		// Kanban-only: move the card to any other column (fires Move Rules).
 		const current = toStr(row.scope.get(groupBy));
 		const others = columns.filter((c) => c !== current);
 		if (others.length > 0) {
-			menu.addSeparator();
 			for (const col of others) {
 				menu.addItem((i) =>
 					i.setTitle(`Move to "${col}"`).setIcon("arrow-right").onClick(() => void this.moveRowToColumn(row, groupBy, col))
 				);
 			}
-		}
-
-		const fields = this.plugin.settings.kanbanCardFields;
-		if (fields.length > 0) {
 			menu.addSeparator();
-			for (const field of fields) {
-				menu.addItem((i) =>
-					i.setTitle(`Edit ${field}…`).setIcon("pencil").onClick(() => this.editFieldViaModal(row, field))
-				);
-			}
 		}
 
-		menu.addSeparator();
-		menu.addItem((i) => i.setTitle("Rename note…").setIcon("text-cursor-input").onClick(() => this.renameNote(row)));
-		menu.addItem((i) => i.setTitle("Delete note").setIcon("trash").onClick(() => this.confirmDeleteNote(row)));
+		this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, after);
 		menu.showAtMouseEvent(evt);
 	}
 
@@ -321,6 +311,9 @@ export class KanbanView extends PowerPackView {
 		const menu = new Menu();
 		menu.addItem((i) => i.setTitle("Add note").setIcon("plus").onClick(() => void this.quickAddNote(columnName, groupBy)));
 		menu.addItem((i) => i.setTitle("Rename column…").setIcon("pencil").onClick(() => this.renameColumnValue(groupBy, columnName)));
+		menu.addItem((i) =>
+			i.setTitle("Set WIP limit…").setIcon("gauge").onClick(() => this.setWipLimit(columnName))
+		);
 
 		menu.addSeparator();
 		const swatches: Array<[string, number]> = [
@@ -349,59 +342,24 @@ export class KanbanView extends PowerPackView {
 
 	// ---- menu actions ---------------------------------------------------------
 
-	private editFieldViaModal(row: Row, field: string): void {
-		const previous = row.note.frontmatter[field];
+	/** Prompt for a column's WIP limit; a blank or non-positive entry clears it. */
+	private setWipLimit(columnName: string): void {
+		const current = this.plugin.settings.kanbanWipLimits[columnName];
 		new PromptModal(this.app, {
-			title: `Edit "${field}"`,
-			value: formatFieldForEdit(previous),
-			placeholder: field,
-			onSubmit: (v) => {
-				const { value, remove } = coerceFieldInput(field, v, previous);
-				void writeRowProperty(this.plugin, row.id, field, value, remove).then(() => this.render());
-			},
+			title: `WIP limit for "${columnName}"`,
+			value: current ? String(current) : "",
+			placeholder: "e.g. 5 (blank = no limit)",
+			cta: "Save",
+			onSubmit: (v) => void this.applyWipLimit(columnName, sanitizeWipLimit(v)),
 		}).open();
 	}
 
-	private renameNote(row: Row): void {
-		const file = this.app.vault.getAbstractFileByPath(row.id);
-		if (!(file instanceof TFile)) return;
-		new PromptModal(this.app, {
-			title: "Rename note",
-			value: file.basename,
-			cta: "Rename",
-			onSubmit: (name) => {
-				const clean = name.trim();
-				if (!clean || clean === file.basename) return;
-				const parent = file.parent?.path ? `${file.parent.path}/` : "";
-				const target = normalizePath(`${parent}${clean}.${file.extension}`);
-				this.app.fileManager
-					.renameFile(file, target)
-					.then(() => {
-						this.plugin.invalidateSnapshot();
-						return this.render();
-					})
-					.catch((e: unknown) => new Notice(`Rename failed: ${String(e)}`));
-			},
-		}).open();
-	}
-
-	private confirmDeleteNote(row: Row): void {
-		const file = this.app.vault.getAbstractFileByPath(row.id);
-		if (!(file instanceof TFile)) return;
-		new ConfirmModal(this.app, {
-			title: "Delete note?",
-			body: `"${file.basename}" will be moved to trash.`,
-			cta: "Delete",
-			onConfirm: () => {
-				this.app.fileManager
-					.trashFile(file)
-					.then(() => {
-						this.plugin.invalidateSnapshot();
-						return this.render();
-					})
-					.catch((e: unknown) => new Notice(`Delete failed: ${String(e)}`));
-			},
-		}).open();
+	private async applyWipLimit(columnName: string, limit: number | null): Promise<void> {
+		const map = this.plugin.settings.kanbanWipLimits;
+		if (limit === null) delete map[columnName];
+		else map[columnName] = limit;
+		await this.plugin.saveSettings();
+		await this.render();
 	}
 
 	private async setColumnColor(columnName: string, hue: number | null): Promise<void> {
@@ -428,9 +386,11 @@ export class KanbanView extends PowerPackView {
 		const key = groupBy || "status";
 		const targets = this.plugin.getNotesSnapshot().filter((n) => toStr(n.frontmatter[key]) === from);
 		let ok = 0;
+		const batch = this.plugin.undo.beginBatch(`Rename column "${from}" → "${to}"`);
 		for (const note of targets) {
-			if (await writeRowProperties(this.plugin, note.path, [{ key, value: to }])) ok++;
+			if (await writeRowProperties(this.plugin, note.path, [{ key, value: to }], { batch })) ok++;
 		}
+		this.plugin.undo.commitBatch(batch);
 		// Carry the column's color + order identity across the rename.
 		const overrides = this.plugin.settings.kanbanColorOverrides;
 		if (overrides[from] !== undefined) {
@@ -439,6 +399,11 @@ export class KanbanView extends PowerPackView {
 		}
 		const order = this.plugin.settings.kanbanColumnOrder[groupBy];
 		if (order) this.plugin.settings.kanbanColumnOrder[groupBy] = order.map((n) => (n === from ? to : n));
+		const wip = this.plugin.settings.kanbanWipLimits;
+		if (wip[from] !== undefined) {
+			wip[to] = wip[from];
+			delete wip[from];
+		}
 		await this.plugin.saveSettings();
 		new Notice(`Renamed "${from}" → "${to}" on ${ok} note${ok === 1 ? "" : "s"}.`);
 		await this.render();
@@ -457,6 +422,9 @@ export class KanbanView extends PowerPackView {
 
 	private async applyBulk(rows: Row[], prop: string, op: BulkOp, value: string): Promise<void> {
 		let ok = 0;
+		const batch = this.plugin.undo.beginBatch(
+			`Bulk ${op} "${prop}" on ${rows.length} note${rows.length === 1 ? "" : "s"}`
+		);
 		for (const row of rows) {
 			const write: PropertyWrite =
 				op === "clear"
@@ -464,8 +432,9 @@ export class KanbanView extends PowerPackView {
 					: op === "toggle"
 						? { key: prop, value: !toBool(row.note.frontmatter[prop]) }
 						: { key: prop, value: coerceLiteral(value) };
-			if (await writeRowProperties(this.plugin, row.id, [write])) ok++;
+			if (await writeRowProperties(this.plugin, row.id, [write], { batch })) ok++;
 		}
+		this.plugin.undo.commitBatch(batch);
 		new Notice(`Updated "${prop}" on ${ok} note${ok === 1 ? "" : "s"}.`);
 		await this.render();
 	}
@@ -616,12 +585,28 @@ export class KanbanView extends PowerPackView {
 		// an ordinary in-place drop). Compare the note's actual current value.
 		if (toStr(row.scope.get(key)) === columnName) return;
 
+		// WIP enforcement: block a move that would push the target past its limit.
+		// Count the SAME rows the header badge shows — the currently visible board
+		// membership (post search + post base/saved-filter), evaluated through the
+		// row scope like buildKanbanColumns — so the badge and the block never
+		// contradict each other. The moving card sits in another column (guaranteed
+		// by the early return above), so it isn't in this count.
+		if (this.plugin.settings.kanbanBlockOverWip) {
+			const limit = limitFor(this.plugin.settings.kanbanWipLimits, columnName);
+			const targetCount = this.lastVisibleRows.filter((r) => toStr(r.scope.get(key)) === columnName).length;
+			if (dropWouldExceed(targetCount, limit)) {
+				new Notice(`"${columnName}" is at its WIP limit (${limit}). Move blocked.`);
+				await this.render();
+				return;
+			}
+		}
+
 		const writes: PropertyWrite[] = [{ key, value: columnName }];
 		if (this.plugin.settings.isPro) {
 			const matched = rulesForTransition(this.plugin.settings.automations, key, columnName);
 			writes.push(...computeRuleWrites(matched, row.note.frontmatter, new Date()));
 		}
-		const ok = await writeRowProperties(this.plugin, row.id, writes);
+		const ok = await writeRowProperties(this.plugin, row.id, writes, { label: `Move to "${columnName}"` });
 		if (ok && writes.length > 1) {
 			const n = writes.length - 1;
 			new Notice(`Moved to "${columnName}" · ${n} automation write${n === 1 ? "" : "s"}.`);

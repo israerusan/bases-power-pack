@@ -17,7 +17,9 @@ import {
 import { KanbanView, VIEW_TYPE_KANBAN } from "./views/kanbanView";
 import { CalendarView, VIEW_TYPE_CALENDAR } from "./views/calendarView";
 import { GanttView, VIEW_TYPE_GANTT } from "./views/ganttView";
-import { buildRawNotes } from "./views/viewData";
+import { buildRawNotes, writeRowProperties } from "./views/viewData";
+import { UndoManager } from "./query/undo";
+import { sanitizeWipLimit } from "./query/wip";
 import type { RawNote } from "./model/row";
 
 const PREMIUM_VIEW_TYPES = [VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT];
@@ -45,6 +47,8 @@ export interface BasesPowerPackApi {
 
 export default class BasesPowerPackPlugin extends Plugin {
 	settings: BasesPowerPackSettings = DEFAULT_SETTINGS;
+	/** In-memory undo stack for the frontmatter writes every view makes. */
+	readonly undo = new UndoManager();
 	private api: BasesPowerPackApi | null = null;
 	/** Cached vault snapshot shared by every view, rebuilt only when notes change. */
 	private notesSnapshot: RawNote[] | null = null;
@@ -90,6 +94,16 @@ export default class BasesPowerPackPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: "undo-last-change",
+			name: "Undo last change",
+			checkCallback: (checking) => {
+				if (!this.undo.canUndo()) return false;
+				if (!checking) void this.performUndo();
+				return true;
+			},
+		});
+
+		this.addCommand({
 			id: "verify-license",
 			name: "Verify license key",
 			callback: async () => {
@@ -122,6 +136,22 @@ export default class BasesPowerPackPlugin extends Plugin {
 	/** Drop the cached snapshot so the next read (and re-render) sees current notes. */
 	invalidateSnapshot(): void {
 		this.notesSnapshot = null;
+	}
+
+	/**
+	 * Reverse the most recent undoable edit by applying its captured inverse
+	 * writes. The inverses are applied with `record: false` so undoing an edit
+	 * doesn't push another entry onto the stack.
+	 */
+	async performUndo(): Promise<void> {
+		const entry = this.undo.pop();
+		if (!entry) return;
+		let ok = 0;
+		for (const note of entry.notes) {
+			if (await writeRowProperties(this, note.path, note.writes, { record: false })) ok++;
+		}
+		new Notice(`Undid "${entry.label}" — restored ${ok} note${ok === 1 ? "" : "s"}.`);
+		this.refreshViews();
 	}
 
 	private createApi(): BasesPowerPackApi {
@@ -229,6 +259,8 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.settings.rollups = sanitizeRollups(this.settings.rollups);
 		this.settings.automations = sanitizeAutomations(this.settings.automations);
 		this.settings.kanbanColorOverrides = sanitizeColorOverrides(this.settings.kanbanColorOverrides);
+		this.settings.kanbanWipLimits = sanitizeWipLimits(this.settings.kanbanWipLimits);
+		if (typeof this.settings.kanbanBlockOverWip !== "boolean") this.settings.kanbanBlockOverWip = DEFAULT_SETTINGS.kanbanBlockOverWip;
 		this.settings.kanbanCardFields = sanitizeStringArray(this.settings.kanbanCardFields, DEFAULT_SETTINGS.kanbanCardFields);
 		this.settings.kanbanExtraColumns = sanitizeStringMap(this.settings.kanbanExtraColumns);
 		this.settings.kanbanColumnOrder = sanitizeStringMap(this.settings.kanbanColumnOrder);
@@ -304,6 +336,16 @@ function sanitizeAutomations(value: unknown): AutomationRule[] {
 			enterValue: r.enterValue,
 			actions,
 		});
+	}
+	return out;
+}
+
+function sanitizeWipLimits(value: unknown): Record<string, number> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const out: Record<string, number> = {};
+	for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+		const limit = sanitizeWipLimit(raw);
+		if (limit !== null) out[key] = limit;
 	}
 	return out;
 }

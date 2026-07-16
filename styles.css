@@ -161,6 +161,10 @@
   font-size: 0.8em;
 }
 
+.bpp-count.has-wip {
+  font-variant-numeric: tabular-nums;
+}
+
 /* Column coloring (Lite) — a stable hue per column value, cards inherit it. */
 .bpp-kanban-board.is-colored .bpp-kanban-column {
   border-top: 3px solid hsl(var(--bpp-col-hue, 210) 55% 55%);
@@ -172,6 +176,20 @@
 
 .bpp-kanban-board.is-colored .bpp-card {
   border-left: 3px solid hsl(var(--bpp-col-hue, 210) 55% 60%);
+}
+
+/* WIP limits — a column past its cap is flagged red (and can block moves). The
+ * selectors are qualified so they win over the column-coloring rules above. */
+.bpp-kanban-board .bpp-kanban-column.is-over-wip,
+.bpp-kanban-board.is-colored .bpp-kanban-column.is-over-wip {
+  border-top: 3px solid var(--color-red, #e03131);
+}
+
+.bpp-kanban-board .bpp-kanban-column.is-over-wip .bpp-count,
+.bpp-kanban-board.is-colored .bpp-kanban-column.is-over-wip .bpp-count {
+  background: var(--color-red, #e03131);
+  color: var(--text-on-accent, #fff);
+  font-weight: 600;
 }
 
 /* Add-column tile */

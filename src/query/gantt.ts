@@ -94,6 +94,22 @@ export function pxToDays(px: number, dayWidthPx: number): number {
 }
 
 /**
+ * Normalize a raw progress value to a 0–100 percentage for the bar fill, or null
+ * when it isn't a number. Accepts both conventions: a percentage (`0`–`100`) and
+ * a fraction (`0`–`1`, e.g. `0.5` or `1`). Because `1` is ambiguous, any value in
+ * `(0, 1]` is treated as a fraction and scaled ×100 (so `0.5` → 50, `1` → 100),
+ * while `>1` is treated as an already-scaled percentage and clamped to 100.
+ */
+export function normalizeProgress(raw: unknown): number | null {
+	if (raw === undefined || raw === null) return null;
+	if (typeof raw === "string" && raw.trim() === "") return null;
+	const n = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw.trim()) : NaN;
+	if (!Number.isFinite(n)) return null;
+	const pct = n > 0 && n <= 1 ? n * 100 : n;
+	return Math.max(0, Math.min(100, pct));
+}
+
+/**
  * Build the Gantt model. Bars without an end use `defaultSpanDays`. The axis is
  * clamped to `maxDays` columns starting at the earliest bar so a stray
  * far-future date can't produce a runaway grid.

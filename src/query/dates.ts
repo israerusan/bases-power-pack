@@ -6,18 +6,28 @@
 import { toStr } from "../engine/expression";
 import { dayNumberToIso, shiftIso, toDayNumber } from "./gantt";
 
-/** Normalize any frontmatter value to a `YYYY-MM-DD` key, or null if it isn't a date. */
+/** Normalize any frontmatter value to a `YYYY-MM-DD` key, or null if it isn't a
+ * real calendar date. The fast path range-checks the components (via a round-trip
+ * through Date) so a syntactically-valid but impossible value like `2026-13-45`
+ * is rejected rather than written back and silently dropped from the grid. */
 export function toIsoDateKey(value: unknown): string | null {
 	if (value === undefined || value === null || value === "") return null;
 	const raw = toStr(value);
 	const head = raw.slice(0, 10);
-	if (/^\d{4}-\d{2}-\d{2}$/.test(head)) return head;
+	const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(head);
+	if (m) {
+		const y = Number(m[1]);
+		const mo = Number(m[2]);
+		const day = Number(m[3]);
+		const dt = new Date(y, mo - 1, day);
+		return dt.getFullYear() === y && dt.getMonth() === mo - 1 && dt.getDate() === day ? head : null;
+	}
 	const d = new Date(raw);
 	if (Number.isNaN(d.getTime())) return null;
-	const y = d.getFullYear();
-	const m = String(d.getMonth() + 1).padStart(2, "0");
-	const day = String(d.getDate()).padStart(2, "0");
-	return `${y}-${m}-${day}`;
+	const yy = d.getFullYear();
+	const mm = String(d.getMonth() + 1).padStart(2, "0");
+	const dd = String(d.getDate()).padStart(2, "0");
+	return `${yy}-${mm}-${dd}`;
 }
 
 /**

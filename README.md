@@ -20,12 +20,16 @@ Advanced database views and automation on top of Obsidian's native **Bases** fea
 | **Kanban card metadata** (raw due / priority / owner / tags lines) | ✅ | ✅ |
 | **Kanban inline card edit** (click a field, write frontmatter in place) | ✅ | ✅ |
 | **Kanban group-by picker** (re-group the board from the toolbar) | ✅ | ✅ |
-| **Right-click menus** (card: open/move/rename/edit/delete · column: color/rename/add) | ✅ | ✅ |
+| **Right-click menus** (card: open/move/rename/edit/delete · column: color/rename/WIP/add) | ✅ | ✅ |
 | **Bulk edit** (set/clear/toggle a property across the visible cards) | ✅ | ✅ |
+| **WIP limits** (per-column work-in-progress caps; flag or block over-limit) | ✅ | ✅ |
+| **Undo** (reverse the last move, edit, bulk change, or column rename) | ✅ | ✅ |
 | **Move Rules automation** (on entering a column, auto-write frontmatter) | — | ✅ |
 | **Calendar view** (Month / Week / Agenda) | — | ✅ |
 | **Calendar drag-to-reschedule** (move an event, write the date) | — | ✅ |
 | **Calendar create-on-day** + color-by property | — | ✅ |
+| **Quick search** (filter cards/events/bars by name, path, folder, tags) | ✅ | ✅ |
+| **Right-click menus on calendar events & Gantt bars** (reschedule/set-date, open, rename, delete) | — | ✅ |
 | **Gantt timeline view** (bars from start/end dates) | — | ✅ |
 | **Gantt drag-to-move / resize** (reschedule + change duration) | — | ✅ |
 | **Gantt zoom, scroll-to-today, progress fill & milestones** | — | ✅ |
@@ -40,9 +44,17 @@ Lite is a genuinely useful kanban layer: create, move, and inline-edit cards, re
 
 All three views run on a shared query engine. In the **Lite** tier they read standard frontmatter across the vault; in **Premium** they can instead take a `.base` file as their data source, applying its filters and formulas.
 
-- **Kanban** — groups rows by a configurable property (default `status`), supports quick search/sort/hide-done controls and a toolbar **group-by picker**, lets you create a note directly from any column, add brand-new status columns from the board (so you can drag a card to a status no note has yet), drag cards between columns to update frontmatter, and drag column headers to reorder the board. Click any card metadata field to **edit it in place** — the parsed value is written straight to frontmatter. Columns and their cards are color-coded by a stable hue per value (toggle in settings). Premium cards can also show a formula value (e.g. `round(done / total * 100, 0) + "%"`). Click a card to open the note.
-- **Calendar** — Month, Week, or Agenda. Places rows onto days using a configurable date property (default `due`), highlights today, and can color events by any property. **Drag an event to another day to reschedule it** (the date property is rewritten, preserving any time-of-day), or hover a day and click **+** to create a note dated to that day.
-- **Gantt** — horizontal timeline; each row becomes a bar from a start date property to an optional end date. **Drag a bar to move it, drag its right edge to resize** (both write frontmatter). Zoom the time scale, scroll to today, fill bars by a `progress` property, and show `milestone` notes as diamonds.
+- **Kanban** — groups rows by a configurable property (default `status`), supports quick search/sort/hide-done controls and a toolbar **group-by picker**, lets you create a note directly from any column, add brand-new status columns from the board (so you can drag a card to a status no note has yet), drag cards between columns to update frontmatter, and drag column headers to reorder the board. Click any card metadata field to **edit it in place** — the parsed value is written straight to frontmatter. Set a **WIP limit** on any column (right-click its header) to cap its cards. Columns and their cards are color-coded by a stable hue per value (toggle in settings). Premium cards can also show a formula value (e.g. `round(done / total * 100, 0) + "%"`). Click a card to open the note.
+- **Calendar** — Month, Week, or Agenda. Places rows onto days using a configurable date property (default `due`), highlights today, and can color events by any property. **Drag an event to another day to reschedule it** (the date property is rewritten, preserving any time-of-day), or hover a day and click **+** to create a note dated to that day. A toolbar **search** filters events; **right-click an event** to reschedule via a prompt, open, rename, or delete without dragging.
+- **Gantt** — horizontal timeline; each row becomes a bar from a start date property to an optional end date. **Drag a bar to move it, drag its right edge to resize** (both write frontmatter). Zoom the time scale, scroll to today, fill bars by a `progress` property (accepts a `0–1` fraction or a `0–100` percent), and show `milestone` notes as diamonds. A toolbar **search** filters bars; **right-click a bar** to set its start/end date via a prompt, open, rename, or delete.
+
+### WIP limits (Free)
+
+Right-click a Kanban column header and choose **Set WIP limit…** to cap how many cards it should hold. The header then shows `count / limit`, and a column over its cap turns red. Turn on **Settings → Bases Power Pack → Enforce WIP limits** to *block* a move that would push a column past its limit (a notice explains why) — with it off, over-limit columns are simply flagged. Creating notes, bulk edits, and Move Rules are never blocked; only moves are. A limit follows its column across a rename.
+
+### Undo (Free)
+
+Every frontmatter write Power Pack makes — a drag-to-move, a reschedule, a Gantt resize, an inline card edit, a bulk edit, or a whole column rename across many notes — is reversible. Run **Undo last change** from the command palette to restore the exact prior values; a multi-note operation (bulk edit, column rename) undoes as a single step.
 
 ### `.base` integration (Premium)
 
@@ -96,6 +108,7 @@ Commands (open the command palette):
 - **Open Kanban view (Lite)**
 - **Open Calendar view (Premium)** — hidden until a valid license is active
 - **Open Gantt view (Premium)** — hidden until a valid license is active
+- **Undo last change** — reverse the most recent frontmatter edit (available only when there is something to undo)
 - **Verify license key**
 
 There's also a ribbon icon for the Kanban board.

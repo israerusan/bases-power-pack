@@ -8,6 +8,7 @@ import {
 	type BaseDefinition,
 } from "../bases/baseDefinition";
 import type { FilterNode } from "../query/filter";
+import { invertWrites, type UndoBatch } from "../query/undo";
 
 /** Snapshot every markdown note as a RawNote for the query engine. */
 export function buildRawNotes(app: App): RawNote[] {
@@ -54,6 +55,17 @@ export async function loadBaseDefinition(app: App, path: string): Promise<BaseDe
 	}
 }
 
+export interface WriteOptions {
+	/** Label shown if this edit is undone. Ignored when `batch` is given (the
+	 * batch carries the label for the whole grouped operation). */
+	label?: string;
+	/** When false, the edit is applied but NOT pushed to the undo stack — used by
+	 * the undo command itself so reversing an edit doesn't record another. */
+	record?: boolean;
+	/** Join this reentrant batch so a multi-note operation undoes as one entry. */
+	batch?: UndoBatch;
+}
+
 /**
  * Set (or remove) a single frontmatter key on the note at `path`. Shared by the
  * calendar drag-to-reschedule, Gantt drag/resize, and the free inline card
@@ -65,9 +77,10 @@ export async function writeRowProperty(
 	path: string,
 	key: string,
 	value: unknown,
-	remove = false
+	remove = false,
+	opts?: WriteOptions
 ): Promise<boolean> {
-	return writeRowProperties(plugin, path, [{ key, value, remove }]);
+	return writeRowProperties(plugin, path, [{ key, value, remove }], opts);
 }
 
 export interface PropertyWrite {
@@ -80,24 +93,30 @@ export interface PropertyWrite {
  * Apply several frontmatter edits to one note in a single processFrontMatter
  * pass. A failure surfaces as a Notice rather than an unhandled rejection; a
  * success invalidates the shared vault snapshot so the caller's immediate
- * re-render reads the just-written state instead of the stale cache.
+ * re-render reads the just-written state instead of the stale cache, and records
+ * the inverse writes so the change can be undone.
  */
 export async function writeRowProperties(
 	plugin: BasesPowerPackPlugin,
 	path: string,
-	writes: PropertyWrite[]
+	writes: PropertyWrite[],
+	opts?: WriteOptions
 ): Promise<boolean> {
 	const app = plugin.app;
 	const file = app.vault.getAbstractFileByPath(path);
 	if (!(file instanceof TFile) || writes.length === 0) return false;
+	let inverse: PropertyWrite[] = [];
 	try {
 		await app.fileManager.processFrontMatter(file, (frontmatter) => {
 			const target = frontmatter as Record<string, unknown>;
+			// Capture the inverse against the pre-write state, then apply.
+			inverse = invertWrites(target, writes);
 			for (const write of writes) {
 				if (write.remove) delete target[write.key];
 				else target[write.key] = write.value;
 			}
 		});
+		if (opts?.record !== false) plugin.undo.record(opts?.label ?? "Edit", path, inverse, opts?.batch);
 		plugin.invalidateSnapshot();
 		return true;
 	} catch (error) {

@@ -3,6 +3,28 @@ import type { Row } from "../model/row";
 import { computeRollup } from "../query/rollup";
 import type { ResolvedView } from "./viewData";
 
+/**
+ * A quick-search input for a view toolbar. Returns the input so the caller can
+ * restore focus after a re-render blows it away (the same pattern the Kanban
+ * uses for its inline search). `onInput` fires on every keystroke.
+ */
+export function renderSearchControl(
+	container: HTMLElement,
+	current: string,
+	onInput: (value: string) => void
+): HTMLInputElement {
+	const wrap = container.createDiv({ cls: "bpp-lite-control" });
+	wrap.createSpan({ cls: "bpp-muted", text: "Search" });
+	const input = wrap.createEl("input", {
+		type: "search",
+		cls: "bpp-lite-input",
+		placeholder: "Filter notes…",
+	});
+	input.value = current;
+	input.addEventListener("input", () => onInput(input.value));
+	return input;
+}
+
 /** Render the base + active-filter indicators and a saved-filter switcher. */
 export function renderContextControls(
 	container: HTMLElement,

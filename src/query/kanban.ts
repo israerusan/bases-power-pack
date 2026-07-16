@@ -1,5 +1,6 @@
 import { toNumber, toStr } from "../engine/expression";
 import type { Row } from "../model/row";
+import { rowMatchesText } from "./search";
 
 export type KanbanSort = "manual" | "name-asc" | "name-desc" | "due-asc" | "priority-desc" | "mtime-desc";
 export type KanbanMetaField = "due" | "priority" | "owner" | "tags" | "file.folder";
@@ -92,14 +93,9 @@ export function getCardMeta(row: Row, fields: string[]): string[] {
 }
 
 function matchesSearch(row: Row, search: string, columnName: string): boolean {
-	const haystacks = [
-		row.name,
-		row.note.path,
-		row.note.folder,
-		columnName,
-		...row.note.tags,
-	];
-	return haystacks.some((value) => normalize(value).includes(search));
+	// The shared matcher covers name/path/folder/tags; the column value is a
+	// Kanban-only haystack passed as an extra.
+	return rowMatchesText(row, search, [columnName]);
 }
 
 function sortRows(rows: Row[], sortBy: KanbanSort): Row[] {

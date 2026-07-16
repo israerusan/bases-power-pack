@@ -1,9 +1,10 @@
-import { Notice, TFile } from "obsidian";
+import { Menu, Notice, TFile } from "obsidian";
 import type { Row } from "../model/row";
 import type { CalendarViewMode } from "../settings";
 import { PowerPackView } from "./abstractView";
 import { toStr } from "../engine/expression";
 import { columnHue } from "../query/kanban";
+import { filterRowsByText } from "../query/search";
 import {
 	dayLabel,
 	rescheduleDateValue,
@@ -14,7 +15,8 @@ import {
 } from "../query/dates";
 import { shiftIso } from "../query/gantt";
 import { createSeededNote, resolveViewRows, writeRowProperty } from "./viewData";
-import { renderContextControls, renderRollupBar } from "./viewChrome";
+import { PromptModal } from "./modals";
+import { renderContextControls, renderRollupBar, renderSearchControl } from "./viewChrome";
 
 export const VIEW_TYPE_CALENDAR = "bpp-calendar-view";
 
@@ -29,6 +31,9 @@ const DND_ROW = "application/x-bpp-row";
 export class CalendarView extends PowerPackView {
 	/** Anchor day the visible period is derived from (month/week/agenda all use it). */
 	private anchor: string = todayIso();
+	private search = "";
+	private searchInputEl: HTMLInputElement | null = null;
+	private restoreSearchFocus = false;
 
 	getViewType(): string {
 		return VIEW_TYPE_CALENDAR;
@@ -38,6 +43,11 @@ export class CalendarView extends PowerPackView {
 	}
 	getIcon(): string {
 		return "calendar";
+	}
+
+	async onClose(): Promise<void> {
+		this.searchInputEl = null;
+		await super.onClose();
 	}
 
 	private get mode(): CalendarViewMode {
@@ -63,6 +73,11 @@ export class CalendarView extends PowerPackView {
 		const resolved = await resolveViewRows(this.app, this.plugin);
 		if (this.isStale(token)) return;
 
+		// Capture focus intent before empty() destroys the search input, so a keystroke
+		// re-render (or a vault change mid-type) hands focus back to its replacement.
+		this.restoreSearchFocus =
+			this.searchInputEl !== null &&
+			this.searchInputEl.ownerDocument.activeElement === this.searchInputEl;
 		container.empty();
 		container.addClass("bpp-view");
 
@@ -72,10 +87,17 @@ export class CalendarView extends PowerPackView {
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
 		renderRollupBar(container, this.plugin, resolved.rows);
 
-		const byDay = this.collectByDay(resolved.rows, dateProp);
+		const rows = filterRowsByText(resolved.rows, this.search);
+		const byDay = this.collectByDay(rows, dateProp);
 		if (this.mode === "agenda") this.renderAgenda(container, byDay, dateProp);
 		else if (this.mode === "week") this.renderWeek(container, byDay, dateProp);
 		else this.renderMonth(container, byDay, dateProp);
+
+		// Month/Week always render a grid, so a search that matches nothing needs its
+		// own message; Agenda renders its own (search-aware) empty state below.
+		if (rows.length === 0 && this.search && this.mode !== "agenda") {
+			container.createDiv({ cls: "bpp-empty", text: "No notes match the current search." });
+		}
 	}
 
 	// ---- toolbar --------------------------------------------------------------
@@ -108,6 +130,17 @@ export class CalendarView extends PowerPackView {
 		nav.createSpan({ cls: "bpp-cal-label", text: this.periodLabel() });
 
 		toolbar.createSpan({ cls: "bpp-muted", text: `dates from "${dateProp}"` });
+
+		this.searchInputEl = renderSearchControl(toolbar, this.search, (value) => {
+			this.search = value;
+			void this.render();
+		});
+		if (this.restoreSearchFocus) {
+			this.restoreSearchFocus = false;
+			this.searchInputEl.focus();
+			const end = this.searchInputEl.value.length;
+			this.searchInputEl.setSelectionRange(end, end);
+		}
 	}
 
 	private async setMode(mode: CalendarViewMode): Promise<void> {
@@ -175,7 +208,7 @@ export class CalendarView extends PowerPackView {
 			const key = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 			const cell = this.renderDayCell(grid, key, dateProp, byDay.get(key) || [], today);
 			cell.createDiv({ cls: "bpp-cal-daynum", text: String(day) });
-			this.renderCellEvents(cell, byDay.get(key) || []);
+			this.renderCellEvents(cell, byDay.get(key) || [], dateProp);
 		}
 	}
 
@@ -189,7 +222,7 @@ export class CalendarView extends PowerPackView {
 		}
 		for (const key of weekKeys(this.anchor)) {
 			const cell = this.renderDayCell(grid, key, dateProp, byDay.get(key) || [], today);
-			this.renderCellEvents(cell, byDay.get(key) || []);
+			this.renderCellEvents(cell, byDay.get(key) || [], dateProp);
 		}
 	}
 
@@ -231,7 +264,7 @@ export class CalendarView extends PowerPackView {
 		return cell;
 	}
 
-	private renderCellEvents(cell: HTMLElement, rows: Row[]): void {
+	private renderCellEvents(cell: HTMLElement, rows: Row[], dateProp: string): void {
 		const colorProp = this.plugin.settings.calendarColorProp.trim();
 		for (const row of rows) {
 			const ev = cell.createDiv({ cls: "bpp-cal-event", text: row.name });
@@ -251,19 +284,58 @@ export class CalendarView extends PowerPackView {
 			});
 			ev.addEventListener("dragend", () => ev.removeClass("is-dragging"));
 			ev.addEventListener("click", () => this.openRow(row));
+			ev.addEventListener("contextmenu", (evt) => this.openEventMenu(evt, row, dateProp));
 		}
+	}
+
+	/** Right-click menu on a calendar event — a keyboard/mouse action path that
+	 * doesn't require dragging (reschedule via prompt, plus the shared note actions). */
+	private openEventMenu(evt: MouseEvent, row: Row, dateProp: string): void {
+		evt.preventDefault();
+		const after = (): void => void this.render();
+		const menu = new Menu();
+		menu.addItem((i) =>
+			i
+				.setTitle("Reschedule…")
+				.setIcon("calendar-clock")
+				.onClick(() => {
+					const current = toIsoDateKey(row.scope.get(dateProp)) ?? todayIso();
+					new PromptModal(this.app, {
+						title: `Reschedule "${row.name}"`,
+						value: current,
+						placeholder: "YYYY-MM-DD",
+						cta: "Reschedule",
+						onSubmit: (v) => {
+							const key = toIsoDateKey(v);
+							if (!key) {
+								new Notice("Enter a date as YYYY-MM-DD.");
+								return;
+							}
+							void this.reschedule(row.id, dateProp, key);
+						},
+					}).open();
+				})
+		);
+		menu.addSeparator();
+		this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, after);
+		menu.showAtMouseEvent(evt);
 	}
 
 	// ---- agenda ---------------------------------------------------------------
 
-	private renderAgenda(container: HTMLElement, byDay: Map<string, Row[]>, _dateProp: string): void {
-		const days = [...byDay.keys()].sort();
+	private renderAgenda(container: HTMLElement, byDay: Map<string, Row[]>, dateProp: string): void {
+		// "Upcoming" means upcoming: today and forward. ISO keys sort lexically, so a
+		// string compare against today is a correct date filter.
+		const today = todayIso();
+		const days = [...byDay.keys()].filter((key) => key >= today).sort();
 		const list = container.createDiv({ cls: "bpp-agenda" });
 		if (days.length === 0) {
-			list.createDiv({ cls: "bpp-empty", text: "No dated notes to show." });
+			list.createDiv({
+				cls: "bpp-empty",
+				text: this.search ? "No upcoming notes match the current search." : "No upcoming dated notes.",
+			});
 			return;
 		}
-		const today = todayIso();
 		for (const key of days) {
 			const group = list.createDiv({ cls: "bpp-agenda-day" });
 			const head = group.createDiv({ cls: "bpp-agenda-date" });
@@ -273,6 +345,7 @@ export class CalendarView extends PowerPackView {
 			for (const row of byDay.get(key) || []) {
 				const item = group.createDiv({ cls: "bpp-agenda-item", text: row.name });
 				item.addEventListener("click", () => this.openRow(row));
+				item.addEventListener("contextmenu", (evt) => this.openEventMenu(evt, row, dateProp));
 			}
 		}
 	}
@@ -284,7 +357,9 @@ export class CalendarView extends PowerPackView {
 		if (!(file instanceof TFile)) return;
 		const cache = this.app.metadataCache.getFileCache(file);
 		const original: unknown = cache?.frontmatter?.[dateProp];
-		await writeRowProperty(this.plugin, rowId, dateProp, rescheduleDateValue(original, targetKey));
+		await writeRowProperty(this.plugin, rowId, dateProp, rescheduleDateValue(original, targetKey), false, {
+			label: `Reschedule to ${targetKey}`,
+		});
 		await this.render();
 	}
 

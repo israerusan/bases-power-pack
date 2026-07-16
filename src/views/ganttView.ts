@@ -1,17 +1,21 @@
+import { Menu, Notice } from "obsidian";
 import type { Row } from "../model/row";
 import { PowerPackView } from "./abstractView";
-import { toBool, toNumber, toStr } from "../engine/expression";
+import { toBool, toStr } from "../engine/expression";
+import { filterRowsByText } from "../query/search";
+import { PromptModal } from "./modals";
 import {
 	buildGantt,
 	moveBarDates,
+	normalizeProgress,
 	pxToDays,
 	resizeBarEnd,
 	toDayNumber,
 	type GanttBar,
 } from "../query/gantt";
-import { rescheduleDateValue, todayIso } from "../query/dates";
-import { resolveViewRows, writeRowProperty } from "./viewData";
-import { renderContextControls, renderRollupBar } from "./viewChrome";
+import { rescheduleDateValue, toIsoDateKey, todayIso } from "../query/dates";
+import { resolveViewRows, writeRowProperties, writeRowProperty } from "./viewData";
+import { renderContextControls, renderRollupBar, renderSearchControl } from "./viewChrome";
 
 export const VIEW_TYPE_GANTT = "bpp-gantt-view";
 
@@ -37,6 +41,9 @@ const CLICK_SLOP = 4;
 export class GanttView extends PowerPackView {
 	private zoomPx = DEFAULT_ZOOM;
 	private scrollEl: HTMLElement | null = null;
+	private search = "";
+	private searchInputEl: HTMLInputElement | null = null;
+	private restoreSearchFocus = false;
 
 	getViewType(): string {
 		return VIEW_TYPE_GANTT;
@@ -50,6 +57,7 @@ export class GanttView extends PowerPackView {
 
 	async onClose(): Promise<void> {
 		this.scrollEl = null;
+		this.searchInputEl = null;
 		await super.onClose();
 	}
 
@@ -72,6 +80,9 @@ export class GanttView extends PowerPackView {
 		const resolved = await resolveViewRows(this.app, this.plugin);
 		if (this.isStale(token)) return;
 
+		this.restoreSearchFocus =
+			this.searchInputEl !== null &&
+			this.searchInputEl.ownerDocument.activeElement === this.searchInputEl;
 		container.empty();
 		container.addClass("bpp-view");
 
@@ -95,11 +106,23 @@ export class GanttView extends PowerPackView {
 		const todayBtn = toolbar.createEl("button", { text: "Today", cls: "bpp-seg-btn" });
 		todayBtn.addEventListener("click", () => this.scrollToToday());
 
+		this.searchInputEl = renderSearchControl(toolbar, this.search, (value) => {
+			this.search = value;
+			void this.render();
+		});
+		if (this.restoreSearchFocus) {
+			this.restoreSearchFocus = false;
+			this.searchInputEl.focus();
+			const end = this.searchInputEl.value.length;
+			this.searchInputEl.setSelectionRange(end, end);
+		}
+
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
 		renderRollupBar(container, this.plugin, resolved.rows);
 
+		const rows = filterRowsByText(resolved.rows, this.search);
 		const rowByPath = new Map<string, Row>();
-		const input = resolved.rows.map((row) => {
+		const input = rows.map((row) => {
 			rowByPath.set(row.id, row);
 			return {
 				id: row.id,
@@ -113,7 +136,9 @@ export class GanttView extends PowerPackView {
 		if (model.bars.length === 0) {
 			container.createDiv({
 				cls: "bpp-empty",
-				text: `No notes with a "${startProp}" date found. Add "${startProp}: 2026-01-01" to a note's frontmatter to place it on the timeline.`,
+				text: this.search
+					? "No notes match the current search."
+					: `No notes with a "${startProp}" date found. Add "${startProp}: 2026-01-01" to a note's frontmatter to place it on the timeline.`,
 			});
 			return;
 		}
@@ -180,7 +205,10 @@ export class GanttView extends PowerPackView {
 	): void {
 		const rowEl = chart.createDiv({ cls: "bpp-gantt-row" });
 		const name = rowEl.createDiv({ cls: "bpp-gantt-name", text: bar.name });
-		if (row) name.addEventListener("click", () => this.openRow(row));
+		if (row) {
+			name.addEventListener("click", () => this.openRow(row));
+			rowEl.addEventListener("contextmenu", (evt) => this.openBarMenu(evt, row, startProp, endProp));
+		}
 
 		const track = rowEl.createDiv({ cls: "bpp-gantt-track" });
 		if (todayOffset !== null) {
@@ -271,6 +299,44 @@ export class GanttView extends PowerPackView {
 		barEl.addEventListener("pointercancel", finish);
 	}
 
+	/** Right-click menu on a Gantt bar — a non-drag path to set the dates, plus the
+	 * shared note actions (open / edit field / rename / delete). */
+	private openBarMenu(evt: MouseEvent, row: Row, startProp: string, endProp: string): void {
+		evt.preventDefault();
+		const after = (): void => void this.render();
+		const menu = new Menu();
+		menu.addItem((i) =>
+			i.setTitle("Set start date…").setIcon("calendar").onClick(() => this.setDateViaPrompt(row, startProp, "start"))
+		);
+		menu.addItem((i) =>
+			i.setTitle("Set end date…").setIcon("calendar").onClick(() => this.setDateViaPrompt(row, endProp, "end"))
+		);
+		menu.addSeparator();
+		this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, after);
+		menu.showAtMouseEvent(evt);
+	}
+
+	private setDateViaPrompt(row: Row, prop: string, which: string): void {
+		const raw = row.scope.get(prop);
+		const current = toIsoDateKey(raw) ?? todayIso();
+		new PromptModal(this.app, {
+			title: `Set ${which} date for "${row.name}"`,
+			value: current,
+			placeholder: "YYYY-MM-DD",
+			cta: "Save",
+			onSubmit: (v) => {
+				const key = toIsoDateKey(v);
+				if (!key) {
+					new Notice("Enter a date as YYYY-MM-DD.");
+					return;
+				}
+				void writeRowProperty(this.plugin, row.id, prop, rescheduleDateValue(raw, key), false, {
+					label: `Set ${which} date`,
+				}).then(() => this.render());
+			},
+		}).open();
+	}
+
 	private async applyMove(row: Row, startProp: string, endProp: string, deltaDays: number): Promise<void> {
 		const startRaw = row.scope.get(startProp);
 		const endRaw = row.scope.get(endProp);
@@ -278,10 +344,11 @@ export class GanttView extends PowerPackView {
 		if (!startIso) return void this.render();
 		const endIso = valueToDateString(endRaw);
 		const moved = moveBarDates(startIso, endIso, deltaDays);
-		await writeRowProperty(this.plugin, row.id, startProp, rescheduleDateValue(startRaw, moved.start));
-		if (moved.end !== null) {
-			await writeRowProperty(this.plugin, row.id, endProp, rescheduleDateValue(endRaw, moved.end));
-		}
+		// One write for both endpoints: a single undo entry, and a faithful inverse
+		// (start and end are distinct keys, so no same-key-twice ambiguity).
+		const writes = [{ key: startProp, value: rescheduleDateValue(startRaw, moved.start) }];
+		if (moved.end !== null) writes.push({ key: endProp, value: rescheduleDateValue(endRaw, moved.end) });
+		await writeRowProperties(this.plugin, row.id, writes, { label: `Move "${row.name}"` });
 		await this.render();
 	}
 
@@ -292,7 +359,9 @@ export class GanttView extends PowerPackView {
 		if (!startIso) return void this.render();
 		const endIso = valueToDateString(endRaw);
 		const nextEnd = resizeBarEnd(startIso, endIso, deltaDays);
-		await writeRowProperty(this.plugin, row.id, endProp, rescheduleDateValue(endRaw, nextEnd));
+		await writeRowProperty(this.plugin, row.id, endProp, rescheduleDateValue(endRaw, nextEnd), false, {
+			label: `Resize "${row.name}"`,
+		});
 		await this.render();
 	}
 
@@ -324,11 +393,7 @@ export class GanttView extends PowerPackView {
 	private progressPct(row: Row): number | null {
 		const prop = this.plugin.settings.ganttProgressProp.trim();
 		if (!prop) return null;
-		const raw = row.scope.get(prop);
-		if (raw === undefined || raw === null || raw === "") return null;
-		const n = toNumber(raw);
-		if (Number.isNaN(n)) return null;
-		return Math.max(0, Math.min(100, n));
+		return normalizeProgress(row.scope.get(prop));
 	}
 
 }

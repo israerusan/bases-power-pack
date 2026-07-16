@@ -3,6 +3,52 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.8.0] - 2026-07-16
+
+"Control & Confidence." Makes every destructive edit reversible, brings the
+premium views up to Kanban's usability, and gives the free board a real
+workflow tool — WIP limits — that honors the "Power Pack" name.
+
+### Added — WIP limits (free, flagship)
+- **Per-column work-in-progress limits.** Right-click a Kanban column header →
+  **Set WIP limit…** to cap how many cards a column should hold. The header
+  shows `count / limit`, and a column over its cap turns red.
+- **Optional enforcement.** A new **Enforce WIP limits** setting blocks a move
+  that would push a column past its limit (a notice explains why); left off, an
+  over-limit column is only flagged. Creation, bulk edit, and automation are
+  never blocked — only moves. WIP limits survive a column rename.
+
+### Added — Undo
+- **Undo last change.** A command that reverses the most recent Power Pack
+  frontmatter edit — a drag-to-move, reschedule, Gantt resize, inline edit,
+  bulk edit, or a whole column rename across many notes — restoring the exact
+  prior values. Multi-note operations undo as a single step.
+
+### Added — Usability parity across views
+- **Quick search on Calendar and Gantt.** The search box that filtered the
+  Kanban now filters the Calendar and Gantt too (name, path, folder, tags).
+- **Right-click menus on Calendar events and Gantt bars.** A keyboard/mouse
+  action path that doesn't require dragging: reschedule / set start·end date via
+  a prompt, plus open, open-to-the-right, edit a field, rename, and delete —
+  the same actions the Kanban card menu offers.
+
+### Fixed
+- **Agenda means upcoming.** The Calendar agenda listed every dated note ever;
+  it now shows today and forward, with a search-aware empty state.
+- **Gantt progress accepts fractions.** A `progress` of `0.5` now fills a bar to
+  50% (previously it read as 0.5%); both `0–1` fractions and `0–100` percentages
+  work, clamped to 100.
+- **Invalid dates are rejected.** Typing an impossible date (e.g. `2026-13-45`)
+  into a reschedule/set-date prompt is refused instead of being written to
+  frontmatter and silently dropped from the calendar.
+
+### Internal
+- New pure, unit-tested cores: `query/undo.ts` (invertible writes + a bounded,
+  reentrant undo stack), `query/search.ts` (the shared row matcher), and
+  `query/wip.ts` (limit math). The per-note actions (open / rename / delete /
+  edit field) are hoisted into the shared `PowerPackView` base so all three
+  views share one implementation.
+
 ## [1.7.0] - 2026-07-15
 
 Makes the "automation" in the plugin's own description true, adds the missing

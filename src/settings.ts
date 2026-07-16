@@ -38,6 +38,13 @@ export interface BasesPowerPackSettings {
 	/** Explicit column order per group-by property, set by dragging column headers. */
 	kanbanColumnOrder: Record<string, string[]>;
 	kanbanColorColumns: boolean;
+	/** Per-column-value WIP (work-in-progress) limits, keyed by column value
+	 * (like kanbanColorOverrides — a limit set for "Doing" applies to a "Doing"
+	 * column under any group-by property). */
+	kanbanWipLimits: Record<string, number>;
+	/** When true, a move that would push a column past its WIP limit is blocked
+	 * (rather than merely flagged). */
+	kanbanBlockOverWip: boolean;
 
 	/** Calendar (premium) */
 	calendarDateProp: string;
@@ -80,6 +87,8 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	kanbanExtraColumns: {},
 	kanbanColumnOrder: {},
 	kanbanColorColumns: true,
+	kanbanWipLimits: {},
+	kanbanBlockOverWip: false,
 	calendarDateProp: "due",
 	calendarViewMode: "month",
 	calendarColorProp: "",
@@ -210,6 +219,18 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 				toggle.setValue(this.plugin.settings.kanbanColorColumns).onChange((value) => {
 					this.plugin.settings.kanbanColorColumns = value;
 					void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+				})
+			);
+
+		new Setting(containerEl)
+			.setName("Enforce WIP limits")
+			.setDesc(
+				"Set a per-column work-in-progress limit by right-clicking a column header on the board. When on, a move that would push a column past its limit is blocked; when off, over-limit columns are only flagged in red."
+			)
+			.addToggle((toggle) =>
+				toggle.setValue(this.plugin.settings.kanbanBlockOverWip).onChange((value) => {
+					this.plugin.settings.kanbanBlockOverWip = value;
+					void this.plugin.saveSettings();
 				})
 			);
 

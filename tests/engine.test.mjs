@@ -17,6 +17,9 @@ await build({
 			export * as dates from "./src/query/dates.ts";
 			export * as inlineEdit from "./src/query/inlineEdit.ts";
 			export * as automation from "./src/query/automation.ts";
+			export * as undo from "./src/query/undo.ts";
+			export * as search from "./src/query/search.ts";
+			export * as wip from "./src/query/wip.ts";
 			export * as kanban from "./src/query/kanban.ts";
 			export * as kanbanActions from "./src/query/kanbanActions.ts";
 			export * as base from "./src/bases/baseDefinition.ts";
@@ -34,7 +37,7 @@ await build({
 });
 
 const m = await import(`file://${outfile.replace(/\\/g, "/")}`);
-const { expr, filter, rollup, gantt, dates, inlineEdit, automation, kanban, kanbanActions, base, resolve, rowmod } = m;
+const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, kanban, kanbanActions, base, resolve, rowmod } = m;
 
 // ---- expression engine -----------------------------------------------------
 const scope = {
@@ -185,6 +188,9 @@ assert.equal(dates.toIsoDateKey("2026-01-15"), "2026-01-15", "toIsoDateKey passe
 assert.equal(dates.toIsoDateKey("2026-01-15T09:30"), "2026-01-15", "toIsoDateKey drops a time suffix");
 assert.equal(dates.toIsoDateKey(""), null, "toIsoDateKey rejects empty");
 assert.equal(dates.toIsoDateKey("nope"), null, "toIsoDateKey rejects a non-date");
+assert.equal(dates.toIsoDateKey("2026-13-45"), null, "toIsoDateKey rejects an impossible month/day");
+assert.equal(dates.toIsoDateKey("2026-02-30"), null, "toIsoDateKey rejects Feb 30 (range round-trip)");
+assert.equal(dates.toIsoDateKey("2026-02-28"), "2026-02-28", "toIsoDateKey accepts a real edge date");
 assert.equal(dates.rescheduleDateValue("2026-01-01", "2026-01-05"), "2026-01-05", "reschedule writes a bare date");
 assert.equal(
 	dates.rescheduleDateValue("2026-01-01T09:00", "2026-01-05"),
@@ -346,6 +352,133 @@ assert.equal(
 	'---\nstatus: "Blocked: waiting"\n---\n\n# New card\n',
 	"buildQuickAddContent quotes YAML-significant column names so frontmatter stays valid"
 );
+
+// ---- gantt progress normalization -------------------------------------------
+assert.equal(gantt.normalizeProgress(50), 50, "percent passthrough");
+assert.equal(gantt.normalizeProgress(0.5), 50, "fraction scaled to percent");
+assert.equal(gantt.normalizeProgress(1), 100, "1 treated as full fraction");
+assert.equal(gantt.normalizeProgress(0), 0, "zero stays zero");
+assert.equal(gantt.normalizeProgress(140), 100, "over-100 percent clamped");
+assert.equal(gantt.normalizeProgress(-5), 0, "negative clamped to zero");
+assert.equal(gantt.normalizeProgress("75"), 75, "numeric string parsed");
+assert.equal(gantt.normalizeProgress("nope"), null, "non-numeric is null");
+assert.equal(gantt.normalizeProgress(""), null, "empty is null");
+assert.equal(gantt.normalizeProgress("   "), null, "whitespace-only string is null, not 0");
+assert.equal(gantt.normalizeProgress(null), null, "null is null");
+assert.equal(gantt.normalizeProgress({}), null, "object is null");
+
+// ---- undo: inverse writes ---------------------------------------------------
+assert.deepEqual(
+	undo.invertWrites({ status: "todo" }, [{ key: "status", value: "done" }]),
+	[{ key: "status", value: "todo" }],
+	"invert restores a changed key's original value"
+);
+assert.deepEqual(
+	undo.invertWrites({}, [{ key: "completed", value: "2026-07-16" }]),
+	[{ key: "completed", remove: true }],
+	"invert removes a key that didn't exist before"
+);
+assert.deepEqual(
+	undo.invertWrites({ done: true }, [{ key: "done", remove: true }]),
+	[{ key: "done", value: true }],
+	"invert of a removal restores the value"
+);
+assert.deepEqual(
+	undo.invertWrites({ n: 1 }, [{ key: "n", value: 2 }, { key: "n", value: 3 }]),
+	[{ key: "n", value: 1 }],
+	"duplicate-key writes invert to the single original value"
+);
+// Captured arrays are cloned, so a later mutation of the source can't corrupt the inverse.
+const src = { tags: ["a", "b"] };
+const inv = undo.invertWrites(src, [{ key: "tags", value: ["x"] }]);
+src.tags.push("c");
+assert.deepEqual(inv, [{ key: "tags", value: ["a", "b"] }], "inverse clones captured array values");
+// A non-plain object (Date-like) is captured as-is, never flattened to {}.
+const when = new Date("2026-07-16T00:00:00Z");
+const dateInv = undo.invertWrites({ at: when }, [{ key: "at", remove: true }]);
+assert.equal(dateInv[0].value, when, "non-plain object value is preserved by reference, not flattened");
+
+// ---- undo: manager stack + batching -----------------------------------------
+const mgr = new undo.UndoManager(3);
+assert.equal(mgr.canUndo(), false, "empty manager can't undo");
+mgr.record("Edit A", "a.md", [{ key: "x", value: 1 }]);
+assert.equal(mgr.canUndo(), true, "recorded edit is undoable");
+assert.equal(mgr.peekLabel(), "Edit A", "peek shows last label");
+const b1 = mgr.beginBatch("Rename");
+mgr.record("ignored", "b.md", [{ key: "s", value: "q" }], b1);
+mgr.record("ignored", "c.md", [{ key: "s", value: "q" }], b1);
+mgr.commitBatch(b1);
+assert.equal(mgr.peekLabel(), "Rename", "batch pushes one labelled entry");
+const popped = mgr.pop();
+assert.equal(popped.notes.length, 2, "batch entry groups both notes");
+mgr.record("empty", "d.md", []);
+assert.equal(mgr.peekLabel(), "Edit A", "empty inverse is not recorded");
+
+// Reentrancy: two batches open at once (interleaved async ops) never mix notes.
+const bx = mgr.beginBatch("Op X");
+const by = mgr.beginBatch("Op Y");
+mgr.record("i", "x1.md", [{ key: "k", value: 1 }], bx);
+mgr.record("i", "y1.md", [{ key: "k", value: 1 }], by);
+mgr.record("i", "x2.md", [{ key: "k", value: 2 }], bx);
+mgr.commitBatch(by);
+assert.deepEqual(mgr.pop().notes.map((n) => n.path), ["y1.md"], "Op Y committed only its own note");
+mgr.commitBatch(bx);
+assert.deepEqual(mgr.pop().notes.map((n) => n.path), ["x1.md", "x2.md"], "Op X kept both its notes despite interleaving");
+
+// Bound respected: fill past the limit of 3.
+for (let i = 0; i < 5; i++) mgr.record(`E${i}`, `f${i}.md`, [{ key: "k", value: i }]);
+assert.equal(mgr.peekLabel(), "E4", "newest entry on top");
+let depth = 0;
+while (mgr.pop()) depth++;
+assert.equal(depth, 3, "stack is bounded to its limit");
+// An empty batch leaves the stack untouched.
+mgr.record("Keep", "g.md", [{ key: "k", value: 9 }]);
+mgr.commitBatch(mgr.beginBatch("Nothing"));
+assert.equal(mgr.peekLabel(), "Keep", "an empty batch pushes no entry");
+
+// ---- shared quick-search ----------------------------------------------------
+const searchRow = rowmod.makeRow({
+	path: "Projects/Alpha.md",
+	name: "Alpha Launch",
+	folder: "Projects",
+	ext: "md",
+	tags: ["urgent", "q3"],
+	ctime: 0,
+	mtime: 0,
+	size: 0,
+	frontmatter: { status: "active", owner: "Ada" },
+});
+assert.equal(search.rowMatchesText(searchRow, ""), true, "blank query matches everything");
+assert.equal(search.rowMatchesText(searchRow, "   "), true, "whitespace query matches everything");
+assert.equal(search.rowMatchesText(searchRow, "alpha"), true, "matches note name, case-insensitive");
+assert.equal(search.rowMatchesText(searchRow, "projects"), true, "matches folder/path");
+assert.equal(search.rowMatchesText(searchRow, "q3"), true, "matches a tag");
+assert.equal(search.rowMatchesText(searchRow, "ada"), false, "does NOT match arbitrary frontmatter by default");
+assert.equal(search.rowMatchesText(searchRow, "active", ["active"]), true, "extra haystack (kanban column) matches");
+assert.equal(search.rowMatchesText(searchRow, "zzz"), false, "no false positive");
+assert.equal(search.filterRowsByText([searchRow], "").length, 1, "blank query returns all rows (identity)");
+assert.equal(search.filterRowsByText([searchRow], "alpha").length, 1, "filter keeps matching rows");
+assert.equal(search.filterRowsByText([searchRow], "zzz").length, 0, "filter drops non-matching rows");
+
+// ---- WIP limits -------------------------------------------------------------
+assert.equal(wip.sanitizeWipLimit("5"), 5, "parses a positive integer string");
+assert.equal(wip.sanitizeWipLimit(3), 3, "accepts a number");
+assert.equal(wip.sanitizeWipLimit("2.9"), 2, "floors a fractional limit");
+assert.equal(wip.sanitizeWipLimit("0"), null, "zero means no limit");
+assert.equal(wip.sanitizeWipLimit("-4"), null, "negative means no limit");
+assert.equal(wip.sanitizeWipLimit(""), null, "blank means no limit");
+assert.equal(wip.sanitizeWipLimit("abc"), null, "non-numeric means no limit");
+assert.equal(wip.limitFor({ Doing: 3 }, "Doing"), 3, "limitFor reads a configured column");
+assert.equal(wip.limitFor({ Doing: 3 }, "Done"), null, "limitFor is null for an unset column");
+assert.equal(wip.limitFor({ Doing: 0 }, "Doing"), null, "limitFor sanitizes a stored 0 to null");
+assert.equal(wip.isOverWip(4, 3), true, "over the limit");
+assert.equal(wip.isOverWip(3, 3), false, "exactly at the limit is not over");
+assert.equal(wip.isOverWip(10, null), false, "no limit is never over");
+assert.equal(wip.dropWouldExceed(3, 3), true, "a 4th card exceeds a limit of 3");
+assert.equal(wip.dropWouldExceed(2, 3), false, "a 3rd card fills but doesn't exceed a limit of 3");
+assert.equal(wip.dropWouldExceed(99, null), false, "no limit never blocks a drop");
+assert.equal(wip.formatWipCount(3, 5), "3 / 5", "count renders with a limit");
+assert.equal(wip.formatWipCount(3, null), "3", "count renders bare without a limit");
 
 fs.unlinkSync(outfile);
 console.log("engine tests passed");
