@@ -1,6 +1,16 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import type BasesPowerPackPlugin from "./main";
 import { AGGREGATIONS, type Aggregation, type Rollup } from "./query/rollup";
+import { AUTOMATION_ACTION_TYPES, type AutomationActionType, type AutomationRule } from "./query/automation";
+
+const ACTION_LABELS: Record<AutomationActionType, string> = {
+	set: "Set to value",
+	today: "Set to today",
+	now: "Set to now (with time)",
+	clear: "Clear property",
+	toggle: "Toggle true/false",
+	copy: "Copy from property",
+};
 import { listBaseFiles } from "./views/viewData";
 
 export type CalendarViewMode = "month" | "week" | "agenda";
@@ -51,6 +61,12 @@ export interface BasesPowerPackSettings {
 	/** Roll-ups & formulas (premium) */
 	rollups: Rollup[];
 	cardFormula: string;
+
+	/** Move Rules automation (premium) */
+	automations: AutomationRule[];
+
+	/** Per-column-value color overrides (free), keyed by column value → hue (0–359). */
+	kanbanColorOverrides: Record<string, string>;
 }
 
 export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
@@ -77,6 +93,8 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	activeFilterId: "",
 	rollups: [],
 	cardFormula: "",
+	automations: [],
+	kanbanColorOverrides: {},
 };
 
 export function genId(prefix: string): string {
@@ -339,9 +357,135 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 		);
 
 		if (this.plugin.settings.isPro) {
+			this.renderAutomations(containerEl);
 			this.renderRollups(containerEl);
 			this.renderSavedFilters(containerEl);
 		}
+	}
+
+	private renderAutomations(containerEl: HTMLElement): void {
+		new Setting(containerEl)
+			.setName("Move Rules")
+			.setDesc(
+				"When a card's trigger property enters a value (e.g. dragged into a Kanban column), run these frontmatter actions automatically."
+			)
+			.setHeading();
+
+		for (const rule of this.plugin.settings.automations) {
+			const box = containerEl.createDiv({ cls: "bpp-rule" });
+
+			new Setting(box)
+				.setName("When")
+				.addToggle((t) =>
+					t
+						.setTooltip("Enable this rule")
+						.setValue(rule.enabled)
+						.onChange((v) => {
+							rule.enabled = v;
+							void this.plugin.saveSettings();
+						})
+				)
+				.addText((t) =>
+					t
+						.setPlaceholder("Rule name")
+						.setValue(rule.name)
+						.onChange((v) => {
+							rule.name = v;
+							void this.plugin.saveSettings();
+						})
+				)
+				.addText((t) =>
+					t
+						.setPlaceholder("trigger (status)")
+						.setValue(rule.triggerProp)
+						.onChange((v) => {
+							rule.triggerProp = v.trim();
+							void this.plugin.saveSettings();
+						})
+				)
+				.addText((t) =>
+					t
+						.setPlaceholder("enters value (Done)")
+						.setValue(rule.enterValue)
+						.onChange((v) => {
+							rule.enterValue = v;
+							void this.plugin.saveSettings();
+						})
+				)
+				.addExtraButton((b) =>
+					b
+						.setIcon("trash")
+						.setTooltip("Remove rule")
+						.onClick(() => {
+							this.plugin.settings.automations = this.plugin.settings.automations.filter((r) => r.id !== rule.id);
+							void this.plugin.saveSettings().then(() => this.display());
+						})
+				);
+
+			for (const action of rule.actions) {
+				const row = new Setting(box).setClass("bpp-rule-action");
+				row.addText((t) =>
+					t
+						.setPlaceholder("property")
+						.setValue(action.prop)
+						.onChange((v) => {
+							action.prop = v.trim();
+							void this.plugin.saveSettings();
+						})
+				);
+				row.addDropdown((dd) => {
+					for (const type of AUTOMATION_ACTION_TYPES) dd.addOption(type, ACTION_LABELS[type]);
+					dd.setValue(action.type).onChange((v) => {
+						action.type = v as AutomationActionType;
+						void this.plugin.saveSettings().then(() => this.display());
+					});
+				});
+				if (action.type === "set" || action.type === "copy") {
+					row.addText((t) =>
+						t
+							.setPlaceholder(action.type === "copy" ? "source property" : "value")
+							.setValue(action.value)
+							.onChange((v) => {
+								action.value = v;
+								void this.plugin.saveSettings();
+							})
+					);
+				}
+				row.addExtraButton((b) =>
+					b
+						.setIcon("x")
+						.setTooltip("Remove action")
+						.onClick(() => {
+							rule.actions = rule.actions.filter((a) => a !== action);
+							void this.plugin.saveSettings().then(() => this.display());
+						})
+				);
+			}
+
+			new Setting(box).addButton((b) =>
+				b.setButtonText("Add action").onClick(() => {
+					rule.actions.push({ prop: "", type: "set", value: "" });
+					void this.plugin.saveSettings().then(() => this.display());
+				})
+			);
+		}
+
+		new Setting(containerEl).addButton((b) =>
+			b
+				.setButtonText("Add rule")
+				.setCta()
+				.onClick(() => {
+					this.plugin.settings.automations.push({
+						id: genId("rule"),
+						name: "New rule",
+						enabled: true,
+						triggerProp: "status",
+						enterValue: "Done",
+						actions: [],
+					});
+					void this.plugin.saveSettings().then(() => this.display());
+				})
+		);
 	}
 
 	private renderRollups(containerEl: HTMLElement): void {

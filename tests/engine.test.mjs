@@ -16,6 +16,7 @@ await build({
 			export * as gantt from "./src/query/gantt.ts";
 			export * as dates from "./src/query/dates.ts";
 			export * as inlineEdit from "./src/query/inlineEdit.ts";
+			export * as automation from "./src/query/automation.ts";
 			export * as kanban from "./src/query/kanban.ts";
 			export * as kanbanActions from "./src/query/kanbanActions.ts";
 			export * as base from "./src/bases/baseDefinition.ts";
@@ -33,7 +34,7 @@ await build({
 });
 
 const m = await import(`file://${outfile.replace(/\\/g, "/")}`);
-const { expr, filter, rollup, gantt, dates, inlineEdit, kanban, kanbanActions, base, resolve, rowmod } = m;
+const { expr, filter, rollup, gantt, dates, inlineEdit, automation, kanban, kanbanActions, base, resolve, rowmod } = m;
 
 // ---- expression engine -----------------------------------------------------
 const scope = {
@@ -214,6 +215,50 @@ assert.deepEqual(
 assert.deepEqual(inlineEdit.coerceFieldInput("done", "true", false), { value: true, remove: false }, "boolean field coerces when prev was boolean");
 assert.equal(inlineEdit.formatFieldForEdit(["a", "b"]), "a, b", "formatFieldForEdit joins arrays");
 assert.equal(inlineEdit.formatFieldForEdit(null), "", "formatFieldForEdit renders null as empty");
+
+// ---- automation (move rules) -----------------------------------------------
+const rules = [
+	{
+		id: "r1",
+		name: "Finish",
+		enabled: true,
+		triggerProp: "status",
+		enterValue: "Done",
+		actions: [
+			{ prop: "completed", type: "today", value: "" },
+			{ prop: "done", type: "set", value: "true" },
+			{ prop: "assignee", type: "clear", value: "" },
+		],
+	},
+	{ id: "r2", name: "Disabled", enabled: false, triggerProp: "status", enterValue: "Done", actions: [{ prop: "x", type: "set", value: "1" }] },
+	{ id: "r3", name: "Start", enabled: true, triggerProp: "status", enterValue: "Doing", actions: [{ prop: "flag", type: "toggle", value: "" }] },
+];
+assert.equal(automation.rulesForTransition(rules, "status", "done").length, 1, "matches case-insensitively, skips disabled + non-matching");
+assert.equal(automation.rulesForTransition(rules, "status", "Backlog").length, 0, "no rule for an unconfigured value");
+const clock = new Date(2026, 0, 15, 9, 30); // 2026-01-15 09:30 local
+const writes = automation.computeRuleWrites(automation.rulesForTransition(rules, "status", "Done"), { assignee: "Ada", done: false }, clock);
+assert.deepEqual(
+	writes,
+	[
+		{ key: "completed", value: "2026-01-15" },
+		{ key: "done", value: true },
+		{ key: "assignee", remove: true },
+	],
+	"computeRuleWrites resolves today/set/clear in order"
+);
+assert.deepEqual(
+	automation.computeRuleWrites(automation.rulesForTransition(rules, "status", "Doing"), { flag: true }, clock),
+	[{ key: "flag", value: false }],
+	"toggle flips the current truthiness"
+);
+assert.deepEqual(
+	automation.computeRuleWrites([{ id: "c", name: "c", enabled: true, triggerProp: "status", enterValue: "Done", actions: [{ prop: "closed", type: "copy", value: "due" }] }], { due: "2026-02-01" }, clock),
+	[{ key: "closed", value: "2026-02-01" }],
+	"copy reads the source property's current value"
+);
+assert.equal(automation.coerceLiteral("42"), 42, "coerceLiteral parses numbers");
+assert.equal(automation.coerceLiteral("false"), false, "coerceLiteral parses booleans");
+assert.equal(automation.coerceLiteral("open"), "open", "coerceLiteral keeps strings");
 
 // ---- kanban helpers ---------------------------------------------------------
 const kanbanRows = [

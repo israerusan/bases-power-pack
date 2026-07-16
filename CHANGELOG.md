@@ -3,6 +3,46 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.7.0] - 2026-07-15
+
+Makes the "automation" in the plugin's own description true, adds the missing
+right-click actions, and rebuilds the engine room for speed and robustness.
+
+### Added — Automation
+- **Move Rules (premium).** When a card's trigger property *enters* a value
+  (e.g. dragged into "Done"), run ordered frontmatter actions automatically:
+  set a literal, set today / now, clear, toggle true/false, or copy another
+  property. Rules only fire on a real transition, and automation writes never
+  re-trigger another rule. Configure them in settings.
+- **Bulk edit (free).** A **Bulk edit** button on the Kanban toolbar sets,
+  clears, or toggles one property across every visible/filtered card in one
+  pass, with a confirmation showing the count.
+
+### Added — Right-click menus (free)
+- **Card context menu.** Right-click a card for: open / open to the right,
+  move to another column (which fires Move Rules), edit any card field, rename
+  the note, and delete it (to trash, with confirmation).
+- **Column context menu.** Right-click a column header to add a note, rename
+  the column (rewrites the property on every note in it), set a color, or
+  remove an empty column.
+
+### Changed — Performance & robustness
+- **Shared vault snapshot.** Views previously re-scanned every markdown file on
+  every render *and* every search keystroke. There is now one cached snapshot,
+  rebuilt only when the vault actually changes — search and metadata updates no
+  longer walk the whole vault.
+- **Debounced re-render.** A burst of vault writes now coalesces into a single
+  re-render instead of one per changed note.
+- **Transactional writes.** All frontmatter writes go through one hardened path:
+  a failed write surfaces as a notice instead of an unhandled error, and the
+  cache is refreshed so the board never shows stale state after an edit.
+
+### Internal
+- New `PowerPackView` base class removes the lifecycle/upgrade-notice
+  duplication across the three views.
+- New pure, unit-tested automation engine (`query/automation.ts`).
+- Reduced-motion support and empty/upgrade-state polish.
+
 ## [1.6.0] - 2026-07-15
 
 Premium stops being read-only. Every premium view can now write back to your

@@ -1,6 +1,5 @@
-import { ItemView, TFile, WorkspaceLeaf } from "obsidian";
-import type BasesPowerPackPlugin from "../main";
 import type { Row } from "../model/row";
+import { PowerPackView } from "./abstractView";
 import { toBool, toNumber, toStr } from "../engine/expression";
 import {
 	buildGantt,
@@ -35,16 +34,9 @@ const CLICK_SLOP = 4;
  * scale, and scroll to today. Bars can show a progress fill and milestones
  * render as diamonds.
  */
-export class GanttView extends ItemView {
-	private plugin: BasesPowerPackPlugin;
-	private renderToken = 0;
+export class GanttView extends PowerPackView {
 	private zoomPx = DEFAULT_ZOOM;
 	private scrollEl: HTMLElement | null = null;
-
-	constructor(leaf: WorkspaceLeaf, plugin: BasesPowerPackPlugin) {
-		super(leaf);
-		this.plugin = plugin;
-	}
 
 	getViewType(): string {
 		return VIEW_TYPE_GANTT;
@@ -56,14 +48,9 @@ export class GanttView extends ItemView {
 		return "gantt-chart";
 	}
 
-	async onOpen(): Promise<void> {
-		await this.render();
-		this.registerEvent(this.app.metadataCache.on("changed", () => void this.render()));
-	}
-
 	async onClose(): Promise<void> {
 		this.scrollEl = null;
-		this.contentEl.empty();
+		await super.onClose();
 	}
 
 	async render(): Promise<void> {
@@ -73,12 +60,17 @@ export class GanttView extends ItemView {
 		if (!this.plugin.settings.isPro) {
 			container.empty();
 			container.addClass("bpp-view");
-			this.renderUpgradeNotice(container);
+			this.renderUpgradeNotice(
+				container,
+				"📊",
+				"Gantt is a Premium view",
+				"Drag bars to reschedule, resize to change duration, zoom the timeline, and track progress — unlock it with a Bases Power Pack license."
+			);
 			return;
 		}
 
 		const resolved = await resolveViewRows(this.app, this.plugin);
-		if (token !== this.renderToken) return;
+		if (this.isStale(token)) return;
 
 		container.empty();
 		container.addClass("bpp-view");
@@ -286,9 +278,9 @@ export class GanttView extends ItemView {
 		if (!startIso) return void this.render();
 		const endIso = valueToDateString(endRaw);
 		const moved = moveBarDates(startIso, endIso, deltaDays);
-		await writeRowProperty(this.app, row.id, startProp, rescheduleDateValue(startRaw, moved.start));
+		await writeRowProperty(this.plugin, row.id, startProp, rescheduleDateValue(startRaw, moved.start));
 		if (moved.end !== null) {
-			await writeRowProperty(this.app, row.id, endProp, rescheduleDateValue(endRaw, moved.end));
+			await writeRowProperty(this.plugin, row.id, endProp, rescheduleDateValue(endRaw, moved.end));
 		}
 		await this.render();
 	}
@@ -300,7 +292,7 @@ export class GanttView extends ItemView {
 		if (!startIso) return void this.render();
 		const endIso = valueToDateString(endRaw);
 		const nextEnd = resizeBarEnd(startIso, endIso, deltaDays);
-		await writeRowProperty(this.app, row.id, endProp, rescheduleDateValue(endRaw, nextEnd));
+		await writeRowProperty(this.plugin, row.id, endProp, rescheduleDateValue(endRaw, nextEnd));
 		await this.render();
 	}
 
@@ -339,24 +331,6 @@ export class GanttView extends ItemView {
 		return Math.max(0, Math.min(100, n));
 	}
 
-	private renderUpgradeNotice(container: HTMLElement): void {
-		const box = container.createDiv({ cls: "bpp-upgrade" });
-		box.createEl("h3", { text: "📊 Gantt is a Premium view" });
-		box.createEl("p", {
-			text: "Drag bars to reschedule, resize to change duration, zoom the timeline, and track progress — unlock it with a Bases Power Pack license.",
-		});
-		const btn = box.createEl("button", { text: "Enter license key in settings", cls: "mod-cta" });
-		btn.addEventListener("click", () => {
-			const setting = (this.app as unknown as { setting?: { open?: () => void; openTabById?: (id: string) => void } }).setting;
-			setting?.open?.();
-			setting?.openTabById?.(this.plugin.manifest.id);
-		});
-	}
-
-	private openRow(row: Row): void {
-		const file = this.app.vault.getAbstractFileByPath(row.id);
-		if (file instanceof TFile) void this.app.workspace.getLeaf(false).openFile(file);
-	}
 }
 
 function valueToDateString(value: unknown): string | null {

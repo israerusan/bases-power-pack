@@ -20,6 +20,9 @@ Advanced database views and automation on top of Obsidian's native **Bases** fea
 | **Kanban card metadata** (raw due / priority / owner / tags lines) | ✅ | ✅ |
 | **Kanban inline card edit** (click a field, write frontmatter in place) | ✅ | ✅ |
 | **Kanban group-by picker** (re-group the board from the toolbar) | ✅ | ✅ |
+| **Right-click menus** (card: open/move/rename/edit/delete · column: color/rename/add) | ✅ | ✅ |
+| **Bulk edit** (set/clear/toggle a property across the visible cards) | ✅ | ✅ |
+| **Move Rules automation** (on entering a column, auto-write frontmatter) | — | ✅ |
 | **Calendar view** (Month / Week / Agenda) | — | ✅ |
 | **Calendar drag-to-reschedule** (move an event, write the date) | — | ✅ |
 | **Calendar create-on-day** + color-by property | — | ✅ |
@@ -51,6 +54,32 @@ Formulas and roll-ups share one safe expression language (no `eval`): arithmetic
 
 - **Formulas** from the active `.base` are available to every filter, roll-up, and the Kanban card line.
 - **Roll-ups** aggregate an expression across the visible rows (`count`, `sum`, `avg`, `min`, `max`, `unique`, `filled`, `empty`, `range`) and render as a summary bar. Configure them in settings.
+
+### Automation — Move Rules (Premium)
+
+Turn the Kanban board into a workflow. A **Move Rule** fires when a card's
+trigger property *enters* a value — for example, dragging a card into the
+**Done** column. Each rule runs an ordered list of frontmatter actions:
+
+- **Set to value** — write a literal (e.g. `done = true`).
+- **Set to today / now** — stamp a date (e.g. `completed = 2026-07-15`) or a
+  timestamp.
+- **Clear** — remove a property.
+- **Toggle** — flip a boolean.
+- **Copy from** — copy another property's current value.
+
+Rules fire only on a genuine transition (dropping a card back where it already
+was does nothing), and the writes a rule makes never trigger another rule.
+Configure them under **Settings → Bases Power Pack → Move Rules**.
+
+### Right-click menus & bulk edit (Free)
+
+Right-click a **card** to open it, move it to another column (which fires any
+Move Rules), edit a field, rename the note, or delete it. Right-click a
+**column header** to add a note, recolor the column, rename it (which rewrites
+the property on every note in that column), or remove an empty column. The
+**Bulk edit** toolbar button sets, clears, or toggles a property across every
+card currently visible on the board.
 
 ### Saved filters (Premium)
 

@@ -654,3 +654,85 @@
 .bpp-setting-locked {
   opacity: 0.55;
 }
+
+/* ---- 1.7 automation + polish ---------------------------------------------- */
+
+.bpp-lite-btn {
+  font-size: 0.85em;
+  padding: 3px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  cursor: pointer;
+}
+
+.bpp-lite-btn:hover {
+  border-color: var(--interactive-accent);
+  color: var(--interactive-accent);
+}
+
+.bpp-hidden {
+  display: none;
+}
+
+/* Move Rules editor */
+.bpp-rule {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 2px 10px 8px;
+  margin-bottom: 10px;
+  background: var(--background-secondary);
+}
+
+.bpp-rule-action {
+  padding-left: 14px;
+  border-left: 2px solid var(--background-modifier-border);
+}
+
+/* Card polish + smoother interactions */
+.bpp-card {
+  transition: border-color 120ms ease, box-shadow 120ms ease, transform 90ms ease;
+}
+
+.bpp-card:active {
+  transform: scale(0.99);
+}
+
+.bpp-cal-event,
+.bpp-seg-btn,
+.bpp-gantt-bar {
+  transition: background-color 120ms ease, color 120ms ease, filter 120ms ease, box-shadow 120ms ease;
+}
+
+/* Nicer empty/upgrade states */
+.bpp-empty {
+  text-align: center;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: 8px;
+  margin: 8px 0;
+}
+
+.bpp-upgrade {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  background: var(--background-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bpp-card,
+  .bpp-kanban-column,
+  .bpp-cal-event,
+  .bpp-seg-btn,
+  .bpp-gantt-bar {
+    transition: none;
+  }
+
+  .bpp-card:active {
+    transform: none;
+  }
+
+  .bpp-gantt-scroll {
+    scroll-behavior: auto;
+  }
+}

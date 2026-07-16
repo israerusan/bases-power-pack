@@ -1,7 +1,7 @@
-import { ItemView, Notice, TFile, WorkspaceLeaf } from "obsidian";
-import type BasesPowerPackPlugin from "../main";
+import { Notice, TFile } from "obsidian";
 import type { Row } from "../model/row";
 import type { CalendarViewMode } from "../settings";
+import { PowerPackView } from "./abstractView";
 import { toStr } from "../engine/expression";
 import { columnHue } from "../query/kanban";
 import {
@@ -26,17 +26,9 @@ const DND_ROW = "application/x-bpp-row";
  * and switch between Month / Week / Agenda. Honors the active base, saved
  * filter, roll-up bar, and an optional color-by property.
  */
-export class CalendarView extends ItemView {
-	private plugin: BasesPowerPackPlugin;
+export class CalendarView extends PowerPackView {
 	/** Anchor day the visible period is derived from (month/week/agenda all use it). */
-	private anchor: string;
-	private renderToken = 0;
-
-	constructor(leaf: WorkspaceLeaf, plugin: BasesPowerPackPlugin) {
-		super(leaf);
-		this.plugin = plugin;
-		this.anchor = todayIso();
-	}
+	private anchor: string = todayIso();
 
 	getViewType(): string {
 		return VIEW_TYPE_CALENDAR;
@@ -46,15 +38,6 @@ export class CalendarView extends ItemView {
 	}
 	getIcon(): string {
 		return "calendar";
-	}
-
-	async onOpen(): Promise<void> {
-		await this.render();
-		this.registerEvent(this.app.metadataCache.on("changed", () => void this.render()));
-	}
-
-	async onClose(): Promise<void> {
-		this.contentEl.empty();
 	}
 
 	private get mode(): CalendarViewMode {
@@ -68,12 +51,17 @@ export class CalendarView extends ItemView {
 		if (!this.plugin.settings.isPro) {
 			container.empty();
 			container.addClass("bpp-view");
-			this.renderUpgradeNotice(container);
+			this.renderUpgradeNotice(
+				container,
+				"📅",
+				"Calendar is a Premium view",
+				"Drag notes to reschedule, click a day to create one, and switch between month, week, and agenda — unlock it with a Bases Power Pack license."
+			);
 			return;
 		}
 
 		const resolved = await resolveViewRows(this.app, this.plugin);
-		if (token !== this.renderToken) return;
+		if (this.isStale(token)) return;
 
 		container.empty();
 		container.addClass("bpp-view");
@@ -296,14 +284,14 @@ export class CalendarView extends ItemView {
 		if (!(file instanceof TFile)) return;
 		const cache = this.app.metadataCache.getFileCache(file);
 		const original: unknown = cache?.frontmatter?.[dateProp];
-		await writeRowProperty(this.app, rowId, dateProp, rescheduleDateValue(original, targetKey));
+		await writeRowProperty(this.plugin, rowId, dateProp, rescheduleDateValue(original, targetKey));
 		await this.render();
 	}
 
 	private async createOnDay(key: string, dateProp: string): Promise<void> {
 		try {
 			const file = await createSeededNote(
-				this.app,
+				this.plugin,
 				this.plugin.settings.calendarQuickAddFolder,
 				dateProp,
 				key,
@@ -316,22 +304,4 @@ export class CalendarView extends ItemView {
 		await this.render();
 	}
 
-	private renderUpgradeNotice(container: HTMLElement): void {
-		const box = container.createDiv({ cls: "bpp-upgrade" });
-		box.createEl("h3", { text: "📅 Calendar is a Premium view" });
-		box.createEl("p", {
-			text: "Drag notes to reschedule, click a day to create one, and switch between month, week, and agenda — unlock it with a Bases Power Pack license.",
-		});
-		const btn = box.createEl("button", { text: "Enter license key in settings", cls: "mod-cta" });
-		btn.addEventListener("click", () => {
-			const setting = (this.app as unknown as { setting?: { open?: () => void; openTabById?: (id: string) => void } }).setting;
-			setting?.open?.();
-			setting?.openTabById?.(this.plugin.manifest.id);
-		});
-	}
-
-	private openRow(row: Row): void {
-		const file = this.app.vault.getAbstractFileByPath(row.id);
-		if (file instanceof TFile) void this.app.workspace.getLeaf(false).openFile(file);
-	}
 }

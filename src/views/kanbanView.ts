@@ -1,6 +1,6 @@
-import { ItemView, Notice, TFile, WorkspaceLeaf, normalizePath } from "obsidian";
-import type BasesPowerPackPlugin from "../main";
+import { Menu, Notice, TFile, normalizePath } from "obsidian";
 import type { Row } from "../model/row";
+import { PowerPackView } from "./abstractView";
 import {
 	buildKanbanColumns,
 	columnHue,
@@ -12,12 +12,13 @@ import {
 	buildQuickAddContent,
 	buildQuickAddPath,
 	buildQuickAddTitle,
-	setKanbanGroupValue,
 } from "../query/kanbanActions";
 import { coerceFieldInput, formatFieldForEdit } from "../query/inlineEdit";
-import { evaluateSafe, toStr } from "../engine/expression";
-import { resolveViewRows, writeRowProperty } from "./viewData";
+import { coerceLiteral, computeRuleWrites, rulesForTransition } from "../query/automation";
+import { evaluateSafe, toBool, toStr } from "../engine/expression";
+import { resolveViewRows, writeRowProperties, writeRowProperty, type PropertyWrite } from "./viewData";
 import { renderContextControls, renderRollupBar } from "./viewChrome";
+import { BulkEditModal, ConfirmModal, PromptModal, type BulkOp } from "./modals";
 
 export const VIEW_TYPE_KANBAN = "bpp-kanban-view";
 
@@ -36,9 +37,7 @@ const SORT_OPTIONS: Array<{ value: KanbanSort; label: string }> = [
  * active base + saved filter, a roll-up summary bar, and an optional per-card
  * formula line — all driven by the shared query engine.
  */
-export class KanbanView extends ItemView {
-	private plugin: BasesPowerPackPlugin;
-	private renderToken = 0;
+export class KanbanView extends PowerPackView {
 	private search = "";
 	private hideDoneColumn = false;
 	private sortBy: KanbanSort = "manual";
@@ -46,11 +45,8 @@ export class KanbanView extends ItemView {
 	 * container.empty() destroys it, and hand focus back to its replacement. */
 	private searchInputEl: HTMLInputElement | null = null;
 	private restoreSearchFocus = false;
-
-	constructor(leaf: WorkspaceLeaf, plugin: BasesPowerPackPlugin) {
-		super(leaf);
-		this.plugin = plugin;
-	}
+	/** The currently visible (filtered) rows, captured for the bulk-edit action. */
+	private lastVisibleRows: Row[] = [];
 
 	getViewType(): string {
 		return VIEW_TYPE_KANBAN;
@@ -62,26 +58,23 @@ export class KanbanView extends ItemView {
 		return "layout-dashboard";
 	}
 
-	async onOpen(): Promise<void> {
-		await this.render();
-		this.registerEvent(this.app.metadataCache.on("changed", () => void this.render()));
-	}
-
 	async onClose(): Promise<void> {
 		this.searchInputEl = null;
-		this.contentEl.empty();
+		await super.onClose();
 	}
 
 	async render(): Promise<void> {
 		const token = ++this.renderToken;
 		const resolved = await resolveViewRows(this.app, this.plugin);
-		if (token !== this.renderToken) return;
+		if (this.isStale(token)) return;
 
 		const groupBy = this.plugin.settings.kanbanGroupBy || "status";
 		const container = this.contentEl;
 		// Capture focus intent before empty() blows the input away, so any re-render
 		// that fires while the user is typing (a keystroke, or a vault change) restores it.
-		this.restoreSearchFocus = this.searchInputEl !== null && document.activeElement === this.searchInputEl;
+		this.restoreSearchFocus =
+			this.searchInputEl !== null &&
+			this.searchInputEl.ownerDocument.activeElement === this.searchInputEl;
 		container.empty();
 		container.addClass("bpp-view");
 
@@ -103,6 +96,7 @@ export class KanbanView extends ItemView {
 			extraColumns,
 			columnOrder: this.plugin.settings.kanbanColumnOrder[groupBy] ?? [],
 		});
+		this.lastVisibleRows = columns.flatMap((column) => column.rows);
 		// The displayed order — the basis for a header-drag reorder.
 		const orderedNames = columns.map((column) => column.name);
 		const colored = this.plugin.settings.kanbanColorColumns;
@@ -126,11 +120,15 @@ export class KanbanView extends ItemView {
 
 		for (const column of columns) {
 			const col = board.createDiv({ cls: "bpp-kanban-column" });
-			if (colored) col.style.setProperty("--bpp-col-hue", String(columnHue(column.name)));
+			if (colored) col.setCssProps({ "--bpp-col-hue": this.columnHueFor(column.name) });
 			this.wireColumnDrop(col, column.name, groupBy, rowById, orderedNames);
 
 			const colHead = col.createDiv({ cls: "bpp-kanban-column-head" });
 			this.makeColumnDraggable(col, colHead, column.name);
+			const removable = column.rows.length === 0 && extraColumns.includes(column.name);
+			colHead.addEventListener("contextmenu", (evt) =>
+				this.openColumnMenu(evt, column.name, groupBy, removable)
+			);
 			const colLabel = colHead.createDiv({ cls: "bpp-kanban-column-label" });
 			colLabel.createSpan({ text: column.name });
 			colLabel.createSpan({ cls: "bpp-count", text: String(column.rows.length) });
@@ -176,6 +174,7 @@ export class KanbanView extends ItemView {
 				});
 				card.addEventListener("dragend", () => card.removeClass("is-dragging"));
 				card.addEventListener("click", () => this.openRow(row));
+				card.addEventListener("contextmenu", (evt) => this.openCardMenu(evt, row, groupBy, orderedNames));
 			}
 		}
 
@@ -253,7 +252,7 @@ export class KanbanView extends ItemView {
 			if (settled) return;
 			settled = true;
 			const { value, remove } = coerceFieldInput(field, input.value, previous);
-			await writeRowProperty(this.app, row.id, field, value, remove);
+			await writeRowProperty(this.plugin, row.id, field, value, remove);
 			await this.render();
 		};
 		input.addEventListener("click", (event) => event.stopPropagation());
@@ -268,6 +267,207 @@ export class KanbanView extends ItemView {
 			}
 		});
 		input.addEventListener("blur", () => void commit());
+	}
+
+	private columnHueFor(name: string): string {
+		return this.plugin.settings.kanbanColorOverrides[name] ?? String(columnHue(name));
+	}
+
+	// ---- context menus --------------------------------------------------------
+
+	private openCardMenu(evt: MouseEvent, row: Row, groupBy: string, columns: string[]): void {
+		evt.preventDefault();
+		const menu = new Menu();
+		menu.addItem((i) => i.setTitle("Open").setIcon("file").onClick(() => this.openRow(row)));
+		menu.addItem((i) =>
+			i
+				.setTitle("Open to the right")
+				.setIcon("separator-vertical")
+				.onClick(() => {
+					const file = this.app.vault.getAbstractFileByPath(row.id);
+					if (file instanceof TFile) void this.app.workspace.getLeaf("split").openFile(file);
+				})
+		);
+
+		const current = toStr(row.scope.get(groupBy));
+		const others = columns.filter((c) => c !== current);
+		if (others.length > 0) {
+			menu.addSeparator();
+			for (const col of others) {
+				menu.addItem((i) =>
+					i.setTitle(`Move to "${col}"`).setIcon("arrow-right").onClick(() => void this.moveRowToColumn(row, groupBy, col))
+				);
+			}
+		}
+
+		const fields = this.plugin.settings.kanbanCardFields;
+		if (fields.length > 0) {
+			menu.addSeparator();
+			for (const field of fields) {
+				menu.addItem((i) =>
+					i.setTitle(`Edit ${field}…`).setIcon("pencil").onClick(() => this.editFieldViaModal(row, field))
+				);
+			}
+		}
+
+		menu.addSeparator();
+		menu.addItem((i) => i.setTitle("Rename note…").setIcon("text-cursor-input").onClick(() => this.renameNote(row)));
+		menu.addItem((i) => i.setTitle("Delete note").setIcon("trash").onClick(() => this.confirmDeleteNote(row)));
+		menu.showAtMouseEvent(evt);
+	}
+
+	private openColumnMenu(evt: MouseEvent, columnName: string, groupBy: string, removable: boolean): void {
+		evt.preventDefault();
+		const menu = new Menu();
+		menu.addItem((i) => i.setTitle("Add note").setIcon("plus").onClick(() => void this.quickAddNote(columnName, groupBy)));
+		menu.addItem((i) => i.setTitle("Rename column…").setIcon("pencil").onClick(() => this.renameColumnValue(groupBy, columnName)));
+
+		menu.addSeparator();
+		const swatches: Array<[string, number]> = [
+			["Red", 0],
+			["Orange", 30],
+			["Yellow", 50],
+			["Green", 130],
+			["Teal", 175],
+			["Blue", 215],
+			["Purple", 270],
+			["Pink", 320],
+		];
+		for (const [label, hue] of swatches) {
+			menu.addItem((i) => i.setTitle(label).setIcon("circle").onClick(() => void this.setColumnColor(columnName, hue)));
+		}
+		menu.addItem((i) => i.setTitle("Reset color").onClick(() => void this.setColumnColor(columnName, null)));
+
+		if (removable) {
+			menu.addSeparator();
+			menu.addItem((i) =>
+				i.setTitle("Remove empty column").setIcon("trash").onClick(() => void this.removeExtraColumn(groupBy, columnName))
+			);
+		}
+		menu.showAtMouseEvent(evt);
+	}
+
+	// ---- menu actions ---------------------------------------------------------
+
+	private editFieldViaModal(row: Row, field: string): void {
+		const previous = row.note.frontmatter[field];
+		new PromptModal(this.app, {
+			title: `Edit "${field}"`,
+			value: formatFieldForEdit(previous),
+			placeholder: field,
+			onSubmit: (v) => {
+				const { value, remove } = coerceFieldInput(field, v, previous);
+				void writeRowProperty(this.plugin, row.id, field, value, remove).then(() => this.render());
+			},
+		}).open();
+	}
+
+	private renameNote(row: Row): void {
+		const file = this.app.vault.getAbstractFileByPath(row.id);
+		if (!(file instanceof TFile)) return;
+		new PromptModal(this.app, {
+			title: "Rename note",
+			value: file.basename,
+			cta: "Rename",
+			onSubmit: (name) => {
+				const clean = name.trim();
+				if (!clean || clean === file.basename) return;
+				const parent = file.parent?.path ? `${file.parent.path}/` : "";
+				const target = normalizePath(`${parent}${clean}.${file.extension}`);
+				this.app.fileManager
+					.renameFile(file, target)
+					.then(() => {
+						this.plugin.invalidateSnapshot();
+						return this.render();
+					})
+					.catch((e: unknown) => new Notice(`Rename failed: ${String(e)}`));
+			},
+		}).open();
+	}
+
+	private confirmDeleteNote(row: Row): void {
+		const file = this.app.vault.getAbstractFileByPath(row.id);
+		if (!(file instanceof TFile)) return;
+		new ConfirmModal(this.app, {
+			title: "Delete note?",
+			body: `"${file.basename}" will be moved to trash.`,
+			cta: "Delete",
+			onConfirm: () => {
+				this.app.fileManager
+					.trashFile(file)
+					.then(() => {
+						this.plugin.invalidateSnapshot();
+						return this.render();
+					})
+					.catch((e: unknown) => new Notice(`Delete failed: ${String(e)}`));
+			},
+		}).open();
+	}
+
+	private async setColumnColor(columnName: string, hue: number | null): Promise<void> {
+		const map = this.plugin.settings.kanbanColorOverrides;
+		if (hue === null) delete map[columnName];
+		else map[columnName] = String(hue);
+		await this.plugin.saveSettings();
+		await this.render();
+	}
+
+	private renameColumnValue(groupBy: string, columnName: string): void {
+		new PromptModal(this.app, {
+			title: `Rename column "${columnName}"`,
+			value: columnName,
+			placeholder: "New value",
+			cta: "Rename",
+			onSubmit: (next) => void this.applyColumnRename(groupBy, columnName, next.trim()),
+		}).open();
+	}
+
+	/** Rewrite the group property from `from` to `to` on every note in that column. */
+	private async applyColumnRename(groupBy: string, from: string, to: string): Promise<void> {
+		if (!to || to === from) return;
+		const key = groupBy || "status";
+		const targets = this.plugin.getNotesSnapshot().filter((n) => toStr(n.frontmatter[key]) === from);
+		let ok = 0;
+		for (const note of targets) {
+			if (await writeRowProperties(this.plugin, note.path, [{ key, value: to }])) ok++;
+		}
+		// Carry the column's color + order identity across the rename.
+		const overrides = this.plugin.settings.kanbanColorOverrides;
+		if (overrides[from] !== undefined) {
+			overrides[to] = overrides[from];
+			delete overrides[from];
+		}
+		const order = this.plugin.settings.kanbanColumnOrder[groupBy];
+		if (order) this.plugin.settings.kanbanColumnOrder[groupBy] = order.map((n) => (n === from ? to : n));
+		await this.plugin.saveSettings();
+		new Notice(`Renamed "${from}" → "${to}" on ${ok} note${ok === 1 ? "" : "s"}.`);
+		await this.render();
+	}
+
+	// ---- bulk edit ------------------------------------------------------------
+
+	private openBulkEdit(): void {
+		const rows = this.lastVisibleRows;
+		if (rows.length === 0) {
+			new Notice("No cards to edit.");
+			return;
+		}
+		new BulkEditModal(this.app, rows.length, (prop, op, value) => void this.applyBulk(rows, prop, op, value)).open();
+	}
+
+	private async applyBulk(rows: Row[], prop: string, op: BulkOp, value: string): Promise<void> {
+		let ok = 0;
+		for (const row of rows) {
+			const write: PropertyWrite =
+				op === "clear"
+					? { key: prop, remove: true }
+					: op === "toggle"
+						? { key: prop, value: !toBool(row.note.frontmatter[prop]) }
+						: { key: prop, value: coerceLiteral(value) };
+			if (await writeRowProperties(this.plugin, row.id, [write])) ok++;
+		}
+		new Notice(`Updated "${prop}" on ${ok} note${ok === 1 ? "" : "s"}.`);
+		await this.render();
 	}
 
 	private collectGroupByOptions(rows: Row[], current: string): string[] {
@@ -335,6 +535,11 @@ export class KanbanView extends ItemView {
 			void this.render();
 		});
 		toggleWrap.createSpan({ cls: "bpp-muted", text: "Hide done" });
+
+		const bulkWrap = controls.createDiv({ cls: "bpp-lite-control" });
+		const bulkBtn = bulkWrap.createEl("button", { cls: "bpp-lite-btn", text: "Bulk edit" });
+		bulkBtn.setAttr("aria-label", "Bulk edit the visible cards");
+		bulkBtn.addEventListener("click", () => this.openBulkEdit());
 	}
 
 	/** The whole column is a drop target for two kinds of drag: a card (move the
@@ -398,15 +603,29 @@ export class KanbanView extends ItemView {
 		await this.render();
 	}
 
+	/**
+	 * Move a card to a column: write the group property, then apply any premium
+	 * Move Rules that fire on entering this value — all in one transaction. The
+	 * rules read the note's pre-move frontmatter, so an automation write never
+	 * re-triggers another rule.
+	 */
 	private async moveRowToColumn(row: Row, groupBy: string, columnName: string): Promise<void> {
-		const file = this.app.vault.getAbstractFileByPath(row.id);
-		if (!(file instanceof TFile)) return;
-		await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
-			const target = frontmatter as Record<string, unknown>;
-			const next = setKanbanGroupValue(target, groupBy, columnName);
-			for (const [key, value] of Object.entries(next)) target[key] = value;
-		});
+		const key = groupBy || "status";
+		// Dropped back onto its own column: no transition, so no write and — crucially
+		// — no Move Rules fire (else a "set completed = today" rule would re-stamp on
+		// an ordinary in-place drop). Compare the note's actual current value.
+		if (toStr(row.scope.get(key)) === columnName) return;
 
+		const writes: PropertyWrite[] = [{ key, value: columnName }];
+		if (this.plugin.settings.isPro) {
+			const matched = rulesForTransition(this.plugin.settings.automations, key, columnName);
+			writes.push(...computeRuleWrites(matched, row.note.frontmatter, new Date()));
+		}
+		const ok = await writeRowProperties(this.plugin, row.id, writes);
+		if (ok && writes.length > 1) {
+			const n = writes.length - 1;
+			new Notice(`Moved to "${columnName}" · ${n} automation write${n === 1 ? "" : "s"}.`);
+		}
 		await this.render();
 	}
 
@@ -445,10 +664,5 @@ export class KanbanView extends ItemView {
 			if (!this.app.vault.getAbstractFileByPath(candidate)) return candidate;
 		}
 		throw new Error(`Could not find free path for ${basePath}`);
-	}
-
-	private openRow(row: Row): void {
-		const file = this.app.vault.getAbstractFileByPath(row.id);
-		if (file instanceof TFile) void this.app.workspace.getLeaf(false).openFile(file);
 	}
 }

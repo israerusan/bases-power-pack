@@ -2271,7 +2271,7 @@ __export(main_exports, {
   default: () => BasesPowerPackPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // src/settings.ts
 var import_obsidian2 = require("obsidian");
@@ -2780,6 +2780,206 @@ function formatNumber(n) {
   return String(Math.round(n * 100) / 100);
 }
 
+// src/query/gantt.ts
+function toDayNumber(value) {
+  if (!value) return null;
+  const iso = String(value).slice(0, 10);
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  let ms;
+  if (m) {
+    ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  } else {
+    const d = new Date(String(value));
+    if (Number.isNaN(d.getTime())) return null;
+    ms = Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
+  }
+  return Math.floor(ms / 864e5);
+}
+function dayNumberToIso(day) {
+  const d = new Date(day * 864e5);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
+function shiftIso(value, deltaDays) {
+  const dn = toDayNumber(value);
+  if (dn === null) return value != null ? value : "";
+  return dayNumberToIso(dn + deltaDays);
+}
+function moveBarDates(start, end, deltaDays) {
+  return {
+    start: shiftIso(start, deltaDays),
+    end: end && toDayNumber(end) !== null ? shiftIso(end, deltaDays) : null
+  };
+}
+function resizeBarEnd(start, end, deltaDays) {
+  const startDay = toDayNumber(start);
+  const base = end && toDayNumber(end) !== null ? end : start;
+  const baseDay = toDayNumber(base);
+  if (startDay === null || baseDay === null) return end != null ? end : start;
+  const next = Math.max(startDay, baseDay + deltaDays);
+  return dayNumberToIso(next);
+}
+function pxToDays(px, dayWidthPx) {
+  if (!Number.isFinite(dayWidthPx) || dayWidthPx <= 0) return 0;
+  return Math.round(px / dayWidthPx);
+}
+function buildGantt(input, defaultSpanDays = 1, maxDays = 120) {
+  const bars = [];
+  let skipped = 0;
+  for (const row of input) {
+    const startDay = toDayNumber(row.start);
+    if (startDay === null) {
+      skipped++;
+      continue;
+    }
+    let endDay = toDayNumber(row.end);
+    if (endDay === null || endDay < startDay) endDay = startDay + Math.max(0, defaultSpanDays - 1);
+    bars.push({
+      id: row.id,
+      name: row.name,
+      startIndex: 0,
+      span: endDay - startDay + 1,
+      startDate: dayNumberToIso(startDay),
+      endDate: dayNumberToIso(endDay),
+      startDay,
+      endDay
+    });
+  }
+  if (bars.length === 0) return { days: [], bars: [], skipped };
+  const minDay = Math.min(...bars.map((b) => b.startDay));
+  const maxDay = Math.min(Math.max(...bars.map((b) => b.endDay)), minDay + maxDays - 1);
+  const days = [];
+  for (let d = minDay; d <= maxDay; d++) days.push(dayNumberToIso(d));
+  const finalBars = bars.map((b) => {
+    const startIndex = b.startDay - minDay;
+    const clampedSpan = Math.min(b.span, maxDay - b.startDay + 1);
+    return {
+      id: b.id,
+      name: b.name,
+      startIndex,
+      span: Math.max(1, clampedSpan),
+      startDate: b.startDate,
+      endDate: b.endDate
+    };
+  });
+  finalBars.sort((a, b) => a.startIndex - b.startIndex || a.name.localeCompare(b.name));
+  return { days, bars: finalBars, skipped };
+}
+
+// src/query/dates.ts
+function toIsoDateKey(value) {
+  if (value === void 0 || value === null || value === "") return null;
+  const raw = toStr(value);
+  const head = raw.slice(0, 10);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(head)) return head;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+function rescheduleDateValue(original, newIso) {
+  const raw = original === void 0 || original === null ? "" : toStr(original);
+  const m = raw.match(/^\d{4}-\d{2}-\d{2}(.*)$/);
+  return newIso + (m ? m[1] : "");
+}
+function weekdayOf(dayNumber) {
+  return (dayNumber % 7 + 7 + 4) % 7;
+}
+function startOfWeekIso(iso, weekStartsOn = 0) {
+  const dn = toDayNumber(iso);
+  if (dn === null) return iso;
+  const offset = (weekdayOf(dn) - weekStartsOn + 7) % 7;
+  return dayNumberToIso(dn - offset);
+}
+function weekKeys(iso, weekStartsOn = 0) {
+  const start = startOfWeekIso(iso, weekStartsOn);
+  const keys = [];
+  for (let i = 0; i < 7; i++) keys.push(shiftIso(start, i));
+  return keys;
+}
+function todayIso(now = /* @__PURE__ */ new Date()) {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+function dayLabel(iso) {
+  const dn = toDayNumber(iso);
+  if (dn === null) return iso;
+  const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const day = Number(iso.slice(8, 10));
+  return `${names[weekdayOf(dn)]} ${day}`;
+}
+
+// src/query/automation.ts
+function eqi(a, b) {
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+function rulesForTransition(rules, triggerProp, newValue) {
+  const prop = triggerProp || "status";
+  return rules.filter(
+    (r) => r.enabled && eqi(r.triggerProp || "status", prop) && eqi(r.enterValue, newValue)
+  );
+}
+function coerceLiteral(raw) {
+  const trimmed = raw.trim();
+  if (trimmed === "") return "";
+  if (trimmed === "true") return true;
+  if (trimmed === "false") return false;
+  if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
+  return trimmed;
+}
+function nowStamp(now) {
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  return `${todayIso(now)}T${hh}:${mm}`;
+}
+function computeRuleWrites(rules, frontmatter, now) {
+  var _a;
+  const writes = [];
+  for (const rule of rules) {
+    for (const action of rule.actions) {
+      const key = action.prop.trim();
+      if (!key) continue;
+      switch (action.type) {
+        case "set":
+          writes.push({ key, value: coerceLiteral(action.value) });
+          break;
+        case "today":
+          writes.push({ key, value: todayIso(now) });
+          break;
+        case "now":
+          writes.push({ key, value: nowStamp(now) });
+          break;
+        case "clear":
+          writes.push({ key, remove: true });
+          break;
+        case "toggle":
+          writes.push({ key, value: !toBool(frontmatter[key]) });
+          break;
+        case "copy": {
+          const src = action.value.trim();
+          writes.push({ key, value: src ? (_a = frontmatter[src]) != null ? _a : null : null });
+          break;
+        }
+      }
+    }
+  }
+  return writes;
+}
+var AUTOMATION_ACTION_TYPES = [
+  "set",
+  "today",
+  "now",
+  "clear",
+  "toggle",
+  "copy"
+];
+
 // src/views/viewData.ts
 var import_obsidian = require("obsidian");
 
@@ -2946,14 +3146,27 @@ async function loadBaseDefinition(app, path) {
     return null;
   }
 }
-async function writeRowProperty(app, path, key, value, remove = false) {
+async function writeRowProperty(plugin, path, key, value, remove = false) {
+  return writeRowProperties(plugin, path, [{ key, value, remove }]);
+}
+async function writeRowProperties(plugin, path, writes) {
+  const app = plugin.app;
   const file = app.vault.getAbstractFileByPath(path);
-  if (!(file instanceof import_obsidian.TFile)) return;
-  await app.fileManager.processFrontMatter(file, (frontmatter) => {
-    const target = frontmatter;
-    if (remove) delete target[key];
-    else target[key] = value;
-  });
+  if (!(file instanceof import_obsidian.TFile) || writes.length === 0) return false;
+  try {
+    await app.fileManager.processFrontMatter(file, (frontmatter) => {
+      const target = frontmatter;
+      for (const write of writes) {
+        if (write.remove) delete target[write.key];
+        else target[write.key] = write.value;
+      }
+    });
+    plugin.invalidateSnapshot();
+    return true;
+  } catch (error) {
+    new import_obsidian.Notice(`Bases Power Pack: couldn't update "${file.basename}" (${String(error)}).`);
+    return false;
+  }
 }
 async function ensureParentFolders(app, path) {
   const parts = path.split("/");
@@ -2966,7 +3179,8 @@ async function ensureParentFolders(app, path) {
     await app.vault.createFolder(normalized);
   }
 }
-async function createSeededNote(app, folder, key, value, titleHint) {
+async function createSeededNote(plugin, folder, key, value, titleHint) {
+  const app = plugin.app;
   const cleanFolder = folder.trim().replace(/^[/\\]+|[/\\]+$/g, "");
   const stem = `${cleanFolder ? `${cleanFolder}/` : ""}${titleHint}`;
   let path = (0, import_obsidian.normalizePath)(`${stem}.md`);
@@ -2981,13 +3195,14 @@ ${key}: ${JSON.stringify(value)}
 # ${titleHint}
 `;
   const file = await app.vault.create(path, content);
+  plugin.invalidateSnapshot();
   await app.workspace.getLeaf("tab").openFile(file);
   return file;
 }
 async function resolveViewRows(app, plugin) {
   var _a;
   const s = plugin.settings;
-  const notes = buildRawNotes(app);
+  const notes = plugin.getNotesSnapshot();
   if (!s.isPro) {
     return { rows: resolveRows(notes, emptyBaseDefinition()), def: emptyBaseDefinition(), baseLabel: null, filterLabel: null };
   }
@@ -3007,6 +3222,14 @@ async function resolveViewRows(app, plugin) {
 }
 
 // src/settings.ts
+var ACTION_LABELS = {
+  set: "Set to value",
+  today: "Set to today",
+  now: "Set to now (with time)",
+  clear: "Clear property",
+  toggle: "Toggle true/false",
+  copy: "Copy from property"
+};
 var CALENDAR_VIEW_MODES = ["month", "week", "agenda"];
 var DEFAULT_SETTINGS = {
   licenseKey: "",
@@ -3031,7 +3254,9 @@ var DEFAULT_SETTINGS = {
   savedFilters: [],
   activeFilterId: "",
   rollups: [],
-  cardFormula: ""
+  cardFormula: "",
+  automations: [],
+  kanbanColorOverrides: {}
 };
 function genId(prefix) {
   const c = window.crypto;
@@ -3218,9 +3443,93 @@ var BasesPowerPackSettingTab = class extends import_obsidian2.PluginSettingTab {
       }
     );
     if (this.plugin.settings.isPro) {
+      this.renderAutomations(containerEl);
       this.renderRollups(containerEl);
       this.renderSavedFilters(containerEl);
     }
+  }
+  renderAutomations(containerEl) {
+    new import_obsidian2.Setting(containerEl).setName("Move Rules").setDesc(
+      "When a card's trigger property enters a value (e.g. dragged into a Kanban column), run these frontmatter actions automatically."
+    ).setHeading();
+    for (const rule of this.plugin.settings.automations) {
+      const box = containerEl.createDiv({ cls: "bpp-rule" });
+      new import_obsidian2.Setting(box).setName("When").addToggle(
+        (t) => t.setTooltip("Enable this rule").setValue(rule.enabled).onChange((v) => {
+          rule.enabled = v;
+          void this.plugin.saveSettings();
+        })
+      ).addText(
+        (t) => t.setPlaceholder("Rule name").setValue(rule.name).onChange((v) => {
+          rule.name = v;
+          void this.plugin.saveSettings();
+        })
+      ).addText(
+        (t) => t.setPlaceholder("trigger (status)").setValue(rule.triggerProp).onChange((v) => {
+          rule.triggerProp = v.trim();
+          void this.plugin.saveSettings();
+        })
+      ).addText(
+        (t) => t.setPlaceholder("enters value (Done)").setValue(rule.enterValue).onChange((v) => {
+          rule.enterValue = v;
+          void this.plugin.saveSettings();
+        })
+      ).addExtraButton(
+        (b) => b.setIcon("trash").setTooltip("Remove rule").onClick(() => {
+          this.plugin.settings.automations = this.plugin.settings.automations.filter((r) => r.id !== rule.id);
+          void this.plugin.saveSettings().then(() => this.display());
+        })
+      );
+      for (const action of rule.actions) {
+        const row = new import_obsidian2.Setting(box).setClass("bpp-rule-action");
+        row.addText(
+          (t) => t.setPlaceholder("property").setValue(action.prop).onChange((v) => {
+            action.prop = v.trim();
+            void this.plugin.saveSettings();
+          })
+        );
+        row.addDropdown((dd) => {
+          for (const type of AUTOMATION_ACTION_TYPES) dd.addOption(type, ACTION_LABELS[type]);
+          dd.setValue(action.type).onChange((v) => {
+            action.type = v;
+            void this.plugin.saveSettings().then(() => this.display());
+          });
+        });
+        if (action.type === "set" || action.type === "copy") {
+          row.addText(
+            (t) => t.setPlaceholder(action.type === "copy" ? "source property" : "value").setValue(action.value).onChange((v) => {
+              action.value = v;
+              void this.plugin.saveSettings();
+            })
+          );
+        }
+        row.addExtraButton(
+          (b) => b.setIcon("x").setTooltip("Remove action").onClick(() => {
+            rule.actions = rule.actions.filter((a) => a !== action);
+            void this.plugin.saveSettings().then(() => this.display());
+          })
+        );
+      }
+      new import_obsidian2.Setting(box).addButton(
+        (b) => b.setButtonText("Add action").onClick(() => {
+          rule.actions.push({ prop: "", type: "set", value: "" });
+          void this.plugin.saveSettings().then(() => this.display());
+        })
+      );
+    }
+    new import_obsidian2.Setting(containerEl).addButton(
+      (b) => b.setButtonText("Add rule").setCta().onClick(() => {
+        this.plugin.settings.automations.push({
+          id: genId("rule"),
+          name: "New rule",
+          enabled: true,
+          triggerProp: "status",
+          enterValue: "Done",
+          actions: []
+        });
+        void this.plugin.saveSettings().then(() => this.display());
+      })
+    );
   }
   renderRollups(containerEl) {
     new import_obsidian2.Setting(containerEl).setName("Roll-ups").setDesc("Aggregate an expression across the rows in each view (shown as a summary bar).").setHeading();
@@ -3361,7 +3670,47 @@ _LicenseManager.PRODUCT = "bases-power-pack";
 var LicenseManager = _LicenseManager;
 
 // src/views/kanbanView.ts
+var import_obsidian5 = require("obsidian");
+
+// src/views/abstractView.ts
 var import_obsidian3 = require("obsidian");
+var PowerPackView = class extends import_obsidian3.ItemView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.renderToken = 0;
+    this.plugin = plugin;
+    this.scheduleRender = (0, import_obsidian3.debounce)(() => void this.render(), 120, false);
+  }
+  async onOpen() {
+    await this.render();
+    this.registerEvent(this.app.metadataCache.on("changed", () => this.scheduleRender()));
+  }
+  async onClose() {
+    this.scheduleRender.cancel();
+    this.contentEl.empty();
+  }
+  /** True when a newer render has started since `token` was taken. */
+  isStale(token) {
+    return token !== this.renderToken;
+  }
+  openRow(row) {
+    const file = this.app.vault.getAbstractFileByPath(row.id);
+    if (file instanceof import_obsidian3.TFile) void this.app.workspace.getLeaf(false).openFile(file);
+  }
+  openSettings() {
+    var _a, _b;
+    const setting = this.app.setting;
+    (_a = setting == null ? void 0 : setting.open) == null ? void 0 : _a.call(setting);
+    (_b = setting == null ? void 0 : setting.openTabById) == null ? void 0 : _b.call(setting, this.plugin.manifest.id);
+  }
+  renderUpgradeNotice(container, emoji, title, body) {
+    const box = container.createDiv({ cls: "bpp-upgrade" });
+    box.createEl("h3", { text: `${emoji} ${title}` });
+    box.createEl("p", { text: body });
+    const btn = box.createEl("button", { text: "Enter license key in settings", cls: "mod-cta" });
+    btn.addEventListener("click", () => this.openSettings());
+  }
+};
 
 // src/query/kanban.ts
 function buildKanbanColumns(rows, options) {
@@ -3493,12 +3842,6 @@ function normalize(value) {
 }
 
 // src/query/kanbanActions.ts
-function setKanbanGroupValue(frontmatter, groupBy, columnName) {
-  return {
-    ...frontmatter,
-    [groupBy || "status"]: columnName
-  };
-}
 function buildQuickAddPath(folder, title) {
   const cleanFolder = trimSlashes(folder.trim());
   const cleanTitle = title.trim() || "Untitled";
@@ -3583,6 +3926,98 @@ function renderRollupBar(container, plugin, rows) {
   }
 }
 
+// src/views/modals.ts
+var import_obsidian4 = require("obsidian");
+var PromptModal = class extends import_obsidian4.Modal {
+  constructor(app, opts) {
+    super(app);
+    this.opts = opts;
+    this.value = opts.value;
+  }
+  onOpen() {
+    this.titleEl.setText(this.opts.title);
+    const submit = () => {
+      this.close();
+      this.opts.onSubmit(this.value);
+    };
+    new import_obsidian4.Setting(this.contentEl).addText((text) => {
+      text.setValue(this.value).onChange((v) => this.value = v);
+      if (this.opts.placeholder) text.setPlaceholder(this.opts.placeholder);
+      text.inputEl.addEventListener("keydown", (evt) => {
+        if (evt.key === "Enter") {
+          evt.preventDefault();
+          submit();
+        }
+      });
+      window.setTimeout(() => {
+        text.inputEl.focus();
+        text.inputEl.select();
+      }, 0);
+    });
+    new import_obsidian4.Setting(this.contentEl).addButton((b) => b.setButtonText("Cancel").onClick(() => this.close())).addButton((b) => {
+      var _a;
+      return b.setButtonText((_a = this.opts.cta) != null ? _a : "Save").setCta().onClick(submit);
+    });
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var ConfirmModal = class extends import_obsidian4.Modal {
+  constructor(app, opts) {
+    super(app);
+    this.opts = opts;
+  }
+  onOpen() {
+    this.titleEl.setText(this.opts.title);
+    this.contentEl.createEl("p", { text: this.opts.body });
+    new import_obsidian4.Setting(this.contentEl).addButton((b) => b.setButtonText("Cancel").onClick(() => this.close())).addButton(
+      (b) => b.setButtonText(this.opts.cta).setWarning().onClick(() => {
+        this.close();
+        this.opts.onConfirm();
+      })
+    );
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var BulkEditModal = class extends import_obsidian4.Modal {
+  constructor(app, count, onApply) {
+    super(app);
+    this.prop = "";
+    this.op = "set";
+    this.value = "";
+    this.count = count;
+    this.onApply = onApply;
+  }
+  onOpen() {
+    this.titleEl.setText(`Bulk edit ${this.count} note${this.count === 1 ? "" : "s"}`);
+    let valueSetting = null;
+    new import_obsidian4.Setting(this.contentEl).setName("Property").setDesc("Frontmatter key to change on every note in the current view.").addText((t) => t.setPlaceholder("status").setValue(this.prop).onChange((v) => this.prop = v.trim()));
+    new import_obsidian4.Setting(this.contentEl).setName("Operation").addDropdown((dd) => {
+      dd.addOption("set", "Set to value");
+      dd.addOption("clear", "Clear (remove)");
+      dd.addOption("toggle", "Toggle true/false");
+      dd.setValue(this.op).onChange((v) => {
+        this.op = v;
+        if (valueSetting) valueSetting.settingEl.toggleClass("bpp-hidden", this.op !== "set");
+      });
+    });
+    valueSetting = new import_obsidian4.Setting(this.contentEl).setName("Value").addText((t) => t.setPlaceholder("done").setValue(this.value).onChange((v) => this.value = v));
+    new import_obsidian4.Setting(this.contentEl).addButton((b) => b.setButtonText("Cancel").onClick(() => this.close())).addButton(
+      (b) => b.setButtonText(`Apply to ${this.count}`).setCta().onClick(() => {
+        if (!this.prop) return;
+        this.close();
+        this.onApply(this.prop, this.op, this.value);
+      })
+    );
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+
 // src/views/kanbanView.ts
 var VIEW_TYPE_KANBAN = "bpp-kanban-view";
 var SORT_OPTIONS = [
@@ -3593,10 +4028,9 @@ var SORT_OPTIONS = [
   { value: "priority-desc", label: "Priority" },
   { value: "mtime-desc", label: "Recently changed" }
 ];
-var KanbanView = class extends import_obsidian3.ItemView {
-  constructor(leaf, plugin) {
-    super(leaf);
-    this.renderToken = 0;
+var KanbanView = class extends PowerPackView {
+  constructor() {
+    super(...arguments);
     this.search = "";
     this.hideDoneColumn = false;
     this.sortBy = "manual";
@@ -3604,7 +4038,8 @@ var KanbanView = class extends import_obsidian3.ItemView {
      * container.empty() destroys it, and hand focus back to its replacement. */
     this.searchInputEl = null;
     this.restoreSearchFocus = false;
-    this.plugin = plugin;
+    /** The currently visible (filtered) rows, captured for the bulk-edit action. */
+    this.lastVisibleRows = [];
   }
   getViewType() {
     return VIEW_TYPE_KANBAN;
@@ -3615,22 +4050,18 @@ var KanbanView = class extends import_obsidian3.ItemView {
   getIcon() {
     return "layout-dashboard";
   }
-  async onOpen() {
-    await this.render();
-    this.registerEvent(this.app.metadataCache.on("changed", () => void this.render()));
-  }
   async onClose() {
     this.searchInputEl = null;
-    this.contentEl.empty();
+    await super.onClose();
   }
   async render() {
     var _a, _b;
     const token = ++this.renderToken;
     const resolved = await resolveViewRows(this.app, this.plugin);
-    if (token !== this.renderToken) return;
+    if (this.isStale(token)) return;
     const groupBy = this.plugin.settings.kanbanGroupBy || "status";
     const container = this.contentEl;
-    this.restoreSearchFocus = this.searchInputEl !== null && document.activeElement === this.searchInputEl;
+    this.restoreSearchFocus = this.searchInputEl !== null && this.searchInputEl.ownerDocument.activeElement === this.searchInputEl;
     container.empty();
     container.addClass("bpp-view");
     const header = container.createDiv({ cls: "bpp-toolbar" });
@@ -3649,6 +4080,7 @@ var KanbanView = class extends import_obsidian3.ItemView {
       extraColumns,
       columnOrder: (_b = this.plugin.settings.kanbanColumnOrder[groupBy]) != null ? _b : []
     });
+    this.lastVisibleRows = columns.flatMap((column) => column.rows);
     const orderedNames = columns.map((column) => column.name);
     const colored = this.plugin.settings.kanbanColorColumns;
     const board = container.createDiv({ cls: "bpp-kanban-board" });
@@ -3666,10 +4098,15 @@ var KanbanView = class extends import_obsidian3.ItemView {
     const metaFields = this.plugin.settings.kanbanCardFields;
     for (const column of columns) {
       const col = board.createDiv({ cls: "bpp-kanban-column" });
-      if (colored) col.style.setProperty("--bpp-col-hue", String(columnHue(column.name)));
+      if (colored) col.setCssProps({ "--bpp-col-hue": this.columnHueFor(column.name) });
       this.wireColumnDrop(col, column.name, groupBy, rowById, orderedNames);
       const colHead = col.createDiv({ cls: "bpp-kanban-column-head" });
       this.makeColumnDraggable(col, colHead, column.name);
+      const removable = column.rows.length === 0 && extraColumns.includes(column.name);
+      colHead.addEventListener(
+        "contextmenu",
+        (evt) => this.openColumnMenu(evt, column.name, groupBy, removable)
+      );
       const colLabel = colHead.createDiv({ cls: "bpp-kanban-column-label" });
       colLabel.createSpan({ text: column.name });
       colLabel.createSpan({ cls: "bpp-count", text: String(column.rows.length) });
@@ -3712,6 +4149,7 @@ var KanbanView = class extends import_obsidian3.ItemView {
         });
         card.addEventListener("dragend", () => card.removeClass("is-dragging"));
         card.addEventListener("click", () => this.openRow(row));
+        card.addEventListener("contextmenu", (evt) => this.openCardMenu(evt, row, groupBy, orderedNames));
       }
     }
     if (!this.search) this.renderAddColumnTile(board, groupBy);
@@ -3784,7 +4222,7 @@ var KanbanView = class extends import_obsidian3.ItemView {
       if (settled) return;
       settled = true;
       const { value, remove } = coerceFieldInput(field, input.value, previous);
-      await writeRowProperty(this.app, row.id, field, value, remove);
+      await writeRowProperty(this.plugin, row.id, field, value, remove);
       await this.render();
     };
     input.addEventListener("click", (event) => event.stopPropagation());
@@ -3799,6 +4237,175 @@ var KanbanView = class extends import_obsidian3.ItemView {
       }
     });
     input.addEventListener("blur", () => void commit());
+  }
+  columnHueFor(name) {
+    var _a;
+    return (_a = this.plugin.settings.kanbanColorOverrides[name]) != null ? _a : String(columnHue(name));
+  }
+  // ---- context menus --------------------------------------------------------
+  openCardMenu(evt, row, groupBy, columns) {
+    evt.preventDefault();
+    const menu = new import_obsidian5.Menu();
+    menu.addItem((i) => i.setTitle("Open").setIcon("file").onClick(() => this.openRow(row)));
+    menu.addItem(
+      (i) => i.setTitle("Open to the right").setIcon("separator-vertical").onClick(() => {
+        const file = this.app.vault.getAbstractFileByPath(row.id);
+        if (file instanceof import_obsidian5.TFile) void this.app.workspace.getLeaf("split").openFile(file);
+      })
+    );
+    const current = toStr(row.scope.get(groupBy));
+    const others = columns.filter((c) => c !== current);
+    if (others.length > 0) {
+      menu.addSeparator();
+      for (const col of others) {
+        menu.addItem(
+          (i) => i.setTitle(`Move to "${col}"`).setIcon("arrow-right").onClick(() => void this.moveRowToColumn(row, groupBy, col))
+        );
+      }
+    }
+    const fields = this.plugin.settings.kanbanCardFields;
+    if (fields.length > 0) {
+      menu.addSeparator();
+      for (const field of fields) {
+        menu.addItem(
+          (i) => i.setTitle(`Edit ${field}\u2026`).setIcon("pencil").onClick(() => this.editFieldViaModal(row, field))
+        );
+      }
+    }
+    menu.addSeparator();
+    menu.addItem((i) => i.setTitle("Rename note\u2026").setIcon("text-cursor-input").onClick(() => this.renameNote(row)));
+    menu.addItem((i) => i.setTitle("Delete note").setIcon("trash").onClick(() => this.confirmDeleteNote(row)));
+    menu.showAtMouseEvent(evt);
+  }
+  openColumnMenu(evt, columnName, groupBy, removable) {
+    evt.preventDefault();
+    const menu = new import_obsidian5.Menu();
+    menu.addItem((i) => i.setTitle("Add note").setIcon("plus").onClick(() => void this.quickAddNote(columnName, groupBy)));
+    menu.addItem((i) => i.setTitle("Rename column\u2026").setIcon("pencil").onClick(() => this.renameColumnValue(groupBy, columnName)));
+    menu.addSeparator();
+    const swatches = [
+      ["Red", 0],
+      ["Orange", 30],
+      ["Yellow", 50],
+      ["Green", 130],
+      ["Teal", 175],
+      ["Blue", 215],
+      ["Purple", 270],
+      ["Pink", 320]
+    ];
+    for (const [label, hue] of swatches) {
+      menu.addItem((i) => i.setTitle(label).setIcon("circle").onClick(() => void this.setColumnColor(columnName, hue)));
+    }
+    menu.addItem((i) => i.setTitle("Reset color").onClick(() => void this.setColumnColor(columnName, null)));
+    if (removable) {
+      menu.addSeparator();
+      menu.addItem(
+        (i) => i.setTitle("Remove empty column").setIcon("trash").onClick(() => void this.removeExtraColumn(groupBy, columnName))
+      );
+    }
+    menu.showAtMouseEvent(evt);
+  }
+  // ---- menu actions ---------------------------------------------------------
+  editFieldViaModal(row, field) {
+    const previous = row.note.frontmatter[field];
+    new PromptModal(this.app, {
+      title: `Edit "${field}"`,
+      value: formatFieldForEdit(previous),
+      placeholder: field,
+      onSubmit: (v) => {
+        const { value, remove } = coerceFieldInput(field, v, previous);
+        void writeRowProperty(this.plugin, row.id, field, value, remove).then(() => this.render());
+      }
+    }).open();
+  }
+  renameNote(row) {
+    const file = this.app.vault.getAbstractFileByPath(row.id);
+    if (!(file instanceof import_obsidian5.TFile)) return;
+    new PromptModal(this.app, {
+      title: "Rename note",
+      value: file.basename,
+      cta: "Rename",
+      onSubmit: (name) => {
+        var _a;
+        const clean = name.trim();
+        if (!clean || clean === file.basename) return;
+        const parent = ((_a = file.parent) == null ? void 0 : _a.path) ? `${file.parent.path}/` : "";
+        const target = (0, import_obsidian5.normalizePath)(`${parent}${clean}.${file.extension}`);
+        this.app.fileManager.renameFile(file, target).then(() => {
+          this.plugin.invalidateSnapshot();
+          return this.render();
+        }).catch((e) => new import_obsidian5.Notice(`Rename failed: ${String(e)}`));
+      }
+    }).open();
+  }
+  confirmDeleteNote(row) {
+    const file = this.app.vault.getAbstractFileByPath(row.id);
+    if (!(file instanceof import_obsidian5.TFile)) return;
+    new ConfirmModal(this.app, {
+      title: "Delete note?",
+      body: `"${file.basename}" will be moved to trash.`,
+      cta: "Delete",
+      onConfirm: () => {
+        this.app.fileManager.trashFile(file).then(() => {
+          this.plugin.invalidateSnapshot();
+          return this.render();
+        }).catch((e) => new import_obsidian5.Notice(`Delete failed: ${String(e)}`));
+      }
+    }).open();
+  }
+  async setColumnColor(columnName, hue) {
+    const map = this.plugin.settings.kanbanColorOverrides;
+    if (hue === null) delete map[columnName];
+    else map[columnName] = String(hue);
+    await this.plugin.saveSettings();
+    await this.render();
+  }
+  renameColumnValue(groupBy, columnName) {
+    new PromptModal(this.app, {
+      title: `Rename column "${columnName}"`,
+      value: columnName,
+      placeholder: "New value",
+      cta: "Rename",
+      onSubmit: (next) => void this.applyColumnRename(groupBy, columnName, next.trim())
+    }).open();
+  }
+  /** Rewrite the group property from `from` to `to` on every note in that column. */
+  async applyColumnRename(groupBy, from, to) {
+    if (!to || to === from) return;
+    const key = groupBy || "status";
+    const targets = this.plugin.getNotesSnapshot().filter((n) => toStr(n.frontmatter[key]) === from);
+    let ok = 0;
+    for (const note of targets) {
+      if (await writeRowProperties(this.plugin, note.path, [{ key, value: to }])) ok++;
+    }
+    const overrides = this.plugin.settings.kanbanColorOverrides;
+    if (overrides[from] !== void 0) {
+      overrides[to] = overrides[from];
+      delete overrides[from];
+    }
+    const order = this.plugin.settings.kanbanColumnOrder[groupBy];
+    if (order) this.plugin.settings.kanbanColumnOrder[groupBy] = order.map((n) => n === from ? to : n);
+    await this.plugin.saveSettings();
+    new import_obsidian5.Notice(`Renamed "${from}" \u2192 "${to}" on ${ok} note${ok === 1 ? "" : "s"}.`);
+    await this.render();
+  }
+  // ---- bulk edit ------------------------------------------------------------
+  openBulkEdit() {
+    const rows = this.lastVisibleRows;
+    if (rows.length === 0) {
+      new import_obsidian5.Notice("No cards to edit.");
+      return;
+    }
+    new BulkEditModal(this.app, rows.length, (prop, op, value) => void this.applyBulk(rows, prop, op, value)).open();
+  }
+  async applyBulk(rows, prop, op, value) {
+    let ok = 0;
+    for (const row of rows) {
+      const write = op === "clear" ? { key: prop, remove: true } : op === "toggle" ? { key: prop, value: !toBool(row.note.frontmatter[prop]) } : { key: prop, value: coerceLiteral(value) };
+      if (await writeRowProperties(this.plugin, row.id, [write])) ok++;
+    }
+    new import_obsidian5.Notice(`Updated "${prop}" on ${ok} note${ok === 1 ? "" : "s"}.`);
+    await this.render();
   }
   collectGroupByOptions(rows, current) {
     const set = /* @__PURE__ */ new Set();
@@ -3860,6 +4467,10 @@ var KanbanView = class extends import_obsidian3.ItemView {
       void this.render();
     });
     toggleWrap.createSpan({ cls: "bpp-muted", text: "Hide done" });
+    const bulkWrap = controls.createDiv({ cls: "bpp-lite-control" });
+    const bulkBtn = bulkWrap.createEl("button", { cls: "bpp-lite-btn", text: "Bulk edit" });
+    bulkBtn.setAttr("aria-label", "Bulk edit the visible cards");
+    bulkBtn.addEventListener("click", () => this.openBulkEdit());
   }
   /** The whole column is a drop target for two kinds of drag: a card (move the
    * note to this column) and a column header (reorder columns). They are told
@@ -3909,23 +4520,34 @@ var KanbanView = class extends import_obsidian3.ItemView {
     await this.plugin.saveSettings();
     await this.render();
   }
+  /**
+   * Move a card to a column: write the group property, then apply any premium
+   * Move Rules that fire on entering this value — all in one transaction. The
+   * rules read the note's pre-move frontmatter, so an automation write never
+   * re-triggers another rule.
+   */
   async moveRowToColumn(row, groupBy, columnName) {
-    const file = this.app.vault.getAbstractFileByPath(row.id);
-    if (!(file instanceof import_obsidian3.TFile)) return;
-    await this.app.fileManager.processFrontMatter(file, (frontmatter) => {
-      const target = frontmatter;
-      const next = setKanbanGroupValue(target, groupBy, columnName);
-      for (const [key, value] of Object.entries(next)) target[key] = value;
-    });
+    const key = groupBy || "status";
+    if (toStr(row.scope.get(key)) === columnName) return;
+    const writes = [{ key, value: columnName }];
+    if (this.plugin.settings.isPro) {
+      const matched = rulesForTransition(this.plugin.settings.automations, key, columnName);
+      writes.push(...computeRuleWrites(matched, row.note.frontmatter, /* @__PURE__ */ new Date()));
+    }
+    const ok = await writeRowProperties(this.plugin, row.id, writes);
+    if (ok && writes.length > 1) {
+      const n = writes.length - 1;
+      new import_obsidian5.Notice(`Moved to "${columnName}" \xB7 ${n} automation write${n === 1 ? "" : "s"}.`);
+    }
     await this.render();
   }
   async quickAddNote(columnName, groupBy) {
     const title = buildQuickAddTitle(columnName);
-    const basePath = (0, import_obsidian3.normalizePath)(buildQuickAddPath(this.plugin.settings.kanbanQuickAddFolder, title));
+    const basePath = (0, import_obsidian5.normalizePath)(buildQuickAddPath(this.plugin.settings.kanbanQuickAddFolder, title));
     const path = await this.makeUniquePath(basePath);
     await this.ensureFolder(path);
     const file = await this.app.vault.create(path, buildQuickAddContent(groupBy, columnName, title));
-    new import_obsidian3.Notice(`Created ${file.basename}`);
+    new import_obsidian5.Notice(`Created ${file.basename}`);
     await this.app.workspace.getLeaf("tab").openFile(file);
     await this.render();
   }
@@ -3935,7 +4557,7 @@ var KanbanView = class extends import_obsidian3.ItemView {
     let current = "";
     for (const part of parts) {
       current = current ? `${current}/${part}` : part;
-      const normalized = (0, import_obsidian3.normalizePath)(current);
+      const normalized = (0, import_obsidian5.normalizePath)(current);
       if (!normalized) continue;
       if (this.app.vault.getAbstractFileByPath(normalized)) continue;
       await this.app.vault.createFolder(normalized);
@@ -3951,158 +4573,16 @@ var KanbanView = class extends import_obsidian3.ItemView {
     }
     throw new Error(`Could not find free path for ${basePath}`);
   }
-  openRow(row) {
-    const file = this.app.vault.getAbstractFileByPath(row.id);
-    if (file instanceof import_obsidian3.TFile) void this.app.workspace.getLeaf(false).openFile(file);
-  }
 };
 
 // src/views/calendarView.ts
-var import_obsidian4 = require("obsidian");
-
-// src/query/gantt.ts
-function toDayNumber(value) {
-  if (!value) return null;
-  const iso = String(value).slice(0, 10);
-  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  let ms;
-  if (m) {
-    ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  } else {
-    const d = new Date(String(value));
-    if (Number.isNaN(d.getTime())) return null;
-    ms = Date.UTC(d.getFullYear(), d.getMonth(), d.getDate());
-  }
-  return Math.floor(ms / 864e5);
-}
-function dayNumberToIso(day) {
-  const d = new Date(day * 864e5);
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(d.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${dd}`;
-}
-function shiftIso(value, deltaDays) {
-  const dn = toDayNumber(value);
-  if (dn === null) return value != null ? value : "";
-  return dayNumberToIso(dn + deltaDays);
-}
-function moveBarDates(start, end, deltaDays) {
-  return {
-    start: shiftIso(start, deltaDays),
-    end: end && toDayNumber(end) !== null ? shiftIso(end, deltaDays) : null
-  };
-}
-function resizeBarEnd(start, end, deltaDays) {
-  const startDay = toDayNumber(start);
-  const base = end && toDayNumber(end) !== null ? end : start;
-  const baseDay = toDayNumber(base);
-  if (startDay === null || baseDay === null) return end != null ? end : start;
-  const next = Math.max(startDay, baseDay + deltaDays);
-  return dayNumberToIso(next);
-}
-function pxToDays(px, dayWidthPx) {
-  if (!Number.isFinite(dayWidthPx) || dayWidthPx <= 0) return 0;
-  return Math.round(px / dayWidthPx);
-}
-function buildGantt(input, defaultSpanDays = 1, maxDays = 120) {
-  const bars = [];
-  let skipped = 0;
-  for (const row of input) {
-    const startDay = toDayNumber(row.start);
-    if (startDay === null) {
-      skipped++;
-      continue;
-    }
-    let endDay = toDayNumber(row.end);
-    if (endDay === null || endDay < startDay) endDay = startDay + Math.max(0, defaultSpanDays - 1);
-    bars.push({
-      id: row.id,
-      name: row.name,
-      startIndex: 0,
-      span: endDay - startDay + 1,
-      startDate: dayNumberToIso(startDay),
-      endDate: dayNumberToIso(endDay),
-      startDay,
-      endDay
-    });
-  }
-  if (bars.length === 0) return { days: [], bars: [], skipped };
-  const minDay = Math.min(...bars.map((b) => b.startDay));
-  const maxDay = Math.min(Math.max(...bars.map((b) => b.endDay)), minDay + maxDays - 1);
-  const days = [];
-  for (let d = minDay; d <= maxDay; d++) days.push(dayNumberToIso(d));
-  const finalBars = bars.map((b) => {
-    const startIndex = b.startDay - minDay;
-    const clampedSpan = Math.min(b.span, maxDay - b.startDay + 1);
-    return {
-      id: b.id,
-      name: b.name,
-      startIndex,
-      span: Math.max(1, clampedSpan),
-      startDate: b.startDate,
-      endDate: b.endDate
-    };
-  });
-  finalBars.sort((a, b) => a.startIndex - b.startIndex || a.name.localeCompare(b.name));
-  return { days, bars: finalBars, skipped };
-}
-
-// src/query/dates.ts
-function toIsoDateKey(value) {
-  if (value === void 0 || value === null || value === "") return null;
-  const raw = toStr(value);
-  const head = raw.slice(0, 10);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(head)) return head;
-  const d = new Date(raw);
-  if (Number.isNaN(d.getTime())) return null;
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-function rescheduleDateValue(original, newIso) {
-  const raw = original === void 0 || original === null ? "" : toStr(original);
-  const m = raw.match(/^\d{4}-\d{2}-\d{2}(.*)$/);
-  return newIso + (m ? m[1] : "");
-}
-function weekdayOf(dayNumber) {
-  return (dayNumber % 7 + 7 + 4) % 7;
-}
-function startOfWeekIso(iso, weekStartsOn = 0) {
-  const dn = toDayNumber(iso);
-  if (dn === null) return iso;
-  const offset = (weekdayOf(dn) - weekStartsOn + 7) % 7;
-  return dayNumberToIso(dn - offset);
-}
-function weekKeys(iso, weekStartsOn = 0) {
-  const start = startOfWeekIso(iso, weekStartsOn);
-  const keys = [];
-  for (let i = 0; i < 7; i++) keys.push(shiftIso(start, i));
-  return keys;
-}
-function todayIso(now = /* @__PURE__ */ new Date()) {
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-function dayLabel(iso) {
-  const dn = toDayNumber(iso);
-  if (dn === null) return iso;
-  const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-  const day = Number(iso.slice(8, 10));
-  return `${names[weekdayOf(dn)]} ${day}`;
-}
-
-// src/views/calendarView.ts
+var import_obsidian6 = require("obsidian");
 var VIEW_TYPE_CALENDAR = "bpp-calendar-view";
 var DND_ROW = "application/x-bpp-row";
-var CalendarView = class extends import_obsidian4.ItemView {
-  constructor(leaf, plugin) {
-    super(leaf);
-    this.renderToken = 0;
-    this.plugin = plugin;
+var CalendarView = class extends PowerPackView {
+  constructor() {
+    super(...arguments);
+    /** Anchor day the visible period is derived from (month/week/agenda all use it). */
     this.anchor = todayIso();
   }
   getViewType() {
@@ -4114,13 +4594,6 @@ var CalendarView = class extends import_obsidian4.ItemView {
   getIcon() {
     return "calendar";
   }
-  async onOpen() {
-    await this.render();
-    this.registerEvent(this.app.metadataCache.on("changed", () => void this.render()));
-  }
-  async onClose() {
-    this.contentEl.empty();
-  }
   get mode() {
     return this.plugin.settings.calendarViewMode;
   }
@@ -4130,11 +4603,16 @@ var CalendarView = class extends import_obsidian4.ItemView {
     if (!this.plugin.settings.isPro) {
       container.empty();
       container.addClass("bpp-view");
-      this.renderUpgradeNotice(container);
+      this.renderUpgradeNotice(
+        container,
+        "\u{1F4C5}",
+        "Calendar is a Premium view",
+        "Drag notes to reschedule, click a day to create one, and switch between month, week, and agenda \u2014 unlock it with a Bases Power Pack license."
+      );
       return;
     }
     const resolved = await resolveViewRows(this.app, this.plugin);
-    if (token !== this.renderToken) return;
+    if (this.isStale(token)) return;
     container.empty();
     container.addClass("bpp-view");
     const dateProp = this.plugin.settings.calendarDateProp || "due";
@@ -4323,49 +4801,30 @@ var CalendarView = class extends import_obsidian4.ItemView {
   async reschedule(rowId, dateProp, targetKey) {
     var _a;
     const file = this.app.vault.getAbstractFileByPath(rowId);
-    if (!(file instanceof import_obsidian4.TFile)) return;
+    if (!(file instanceof import_obsidian6.TFile)) return;
     const cache = this.app.metadataCache.getFileCache(file);
     const original = (_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a[dateProp];
-    await writeRowProperty(this.app, rowId, dateProp, rescheduleDateValue(original, targetKey));
+    await writeRowProperty(this.plugin, rowId, dateProp, rescheduleDateValue(original, targetKey));
     await this.render();
   }
   async createOnDay(key, dateProp) {
     try {
       const file = await createSeededNote(
-        this.app,
+        this.plugin,
         this.plugin.settings.calendarQuickAddFolder,
         dateProp,
         key,
         `Note ${key}`
       );
-      new import_obsidian4.Notice(`Created ${file.basename}`);
+      new import_obsidian6.Notice(`Created ${file.basename}`);
     } catch (error) {
-      new import_obsidian4.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
+      new import_obsidian6.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
     }
     await this.render();
-  }
-  renderUpgradeNotice(container) {
-    const box = container.createDiv({ cls: "bpp-upgrade" });
-    box.createEl("h3", { text: "\u{1F4C5} Calendar is a Premium view" });
-    box.createEl("p", {
-      text: "Drag notes to reschedule, click a day to create one, and switch between month, week, and agenda \u2014 unlock it with a Bases Power Pack license."
-    });
-    const btn = box.createEl("button", { text: "Enter license key in settings", cls: "mod-cta" });
-    btn.addEventListener("click", () => {
-      var _a, _b;
-      const setting = this.app.setting;
-      (_a = setting == null ? void 0 : setting.open) == null ? void 0 : _a.call(setting);
-      (_b = setting == null ? void 0 : setting.openTabById) == null ? void 0 : _b.call(setting, this.plugin.manifest.id);
-    });
-  }
-  openRow(row) {
-    const file = this.app.vault.getAbstractFileByPath(row.id);
-    if (file instanceof import_obsidian4.TFile) void this.app.workspace.getLeaf(false).openFile(file);
   }
 };
 
 // src/views/ganttView.ts
-var import_obsidian5 = require("obsidian");
 var VIEW_TYPE_GANTT = "bpp-gantt-view";
 var ZOOM_PRESETS = [
   { label: "Quarter", px: 4 },
@@ -4376,13 +4835,11 @@ var ZOOM_PRESETS = [
 var DEFAULT_ZOOM = 9;
 var MAX_AXIS_DAYS = 730;
 var CLICK_SLOP = 4;
-var GanttView = class extends import_obsidian5.ItemView {
-  constructor(leaf, plugin) {
-    super(leaf);
-    this.renderToken = 0;
+var GanttView = class extends PowerPackView {
+  constructor() {
+    super(...arguments);
     this.zoomPx = DEFAULT_ZOOM;
     this.scrollEl = null;
-    this.plugin = plugin;
   }
   getViewType() {
     return VIEW_TYPE_GANTT;
@@ -4393,13 +4850,9 @@ var GanttView = class extends import_obsidian5.ItemView {
   getIcon() {
     return "gantt-chart";
   }
-  async onOpen() {
-    await this.render();
-    this.registerEvent(this.app.metadataCache.on("changed", () => void this.render()));
-  }
   async onClose() {
     this.scrollEl = null;
-    this.contentEl.empty();
+    await super.onClose();
   }
   async render() {
     const token = ++this.renderToken;
@@ -4407,11 +4860,16 @@ var GanttView = class extends import_obsidian5.ItemView {
     if (!this.plugin.settings.isPro) {
       container.empty();
       container.addClass("bpp-view");
-      this.renderUpgradeNotice(container);
+      this.renderUpgradeNotice(
+        container,
+        "\u{1F4CA}",
+        "Gantt is a Premium view",
+        "Drag bars to reschedule, resize to change duration, zoom the timeline, and track progress \u2014 unlock it with a Bases Power Pack license."
+      );
       return;
     }
     const resolved = await resolveViewRows(this.app, this.plugin);
-    if (token !== this.renderToken) return;
+    if (this.isStale(token)) return;
     container.empty();
     container.addClass("bpp-view");
     const startProp = this.plugin.settings.ganttStartProp || "start";
@@ -4577,9 +5035,9 @@ var GanttView = class extends import_obsidian5.ItemView {
     if (!startIso) return void this.render();
     const endIso = valueToDateString(endRaw);
     const moved = moveBarDates(startIso, endIso, deltaDays);
-    await writeRowProperty(this.app, row.id, startProp, rescheduleDateValue(startRaw, moved.start));
+    await writeRowProperty(this.plugin, row.id, startProp, rescheduleDateValue(startRaw, moved.start));
     if (moved.end !== null) {
-      await writeRowProperty(this.app, row.id, endProp, rescheduleDateValue(endRaw, moved.end));
+      await writeRowProperty(this.plugin, row.id, endProp, rescheduleDateValue(endRaw, moved.end));
     }
     await this.render();
   }
@@ -4590,7 +5048,7 @@ var GanttView = class extends import_obsidian5.ItemView {
     if (!startIso) return void this.render();
     const endIso = valueToDateString(endRaw);
     const nextEnd = resizeBarEnd(startIso, endIso, deltaDays);
-    await writeRowProperty(this.app, row.id, endProp, rescheduleDateValue(endRaw, nextEnd));
+    await writeRowProperty(this.plugin, row.id, endProp, rescheduleDateValue(endRaw, nextEnd));
     await this.render();
   }
   scrollToToday() {
@@ -4623,24 +5081,6 @@ var GanttView = class extends import_obsidian5.ItemView {
     if (Number.isNaN(n)) return null;
     return Math.max(0, Math.min(100, n));
   }
-  renderUpgradeNotice(container) {
-    const box = container.createDiv({ cls: "bpp-upgrade" });
-    box.createEl("h3", { text: "\u{1F4CA} Gantt is a Premium view" });
-    box.createEl("p", {
-      text: "Drag bars to reschedule, resize to change duration, zoom the timeline, and track progress \u2014 unlock it with a Bases Power Pack license."
-    });
-    const btn = box.createEl("button", { text: "Enter license key in settings", cls: "mod-cta" });
-    btn.addEventListener("click", () => {
-      var _a, _b;
-      const setting = this.app.setting;
-      (_a = setting == null ? void 0 : setting.open) == null ? void 0 : _a.call(setting);
-      (_b = setting == null ? void 0 : setting.openTabById) == null ? void 0 : _b.call(setting, this.plugin.manifest.id);
-    });
-  }
-  openRow(row) {
-    const file = this.app.vault.getAbstractFileByPath(row.id);
-    if (file instanceof import_obsidian5.TFile) void this.app.workspace.getLeaf(false).openFile(file);
-  }
 };
 function valueToDateString(value) {
   if (value === void 0 || value === null || value === "") return null;
@@ -4655,11 +5095,13 @@ var VIEW_NAME_TO_TYPE = {
   calendar: VIEW_TYPE_CALENDAR,
   gantt: VIEW_TYPE_GANTT
 };
-var BasesPowerPackPlugin = class extends import_obsidian6.Plugin {
+var BasesPowerPackPlugin = class extends import_obsidian7.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
     this.api = null;
+    /** Cached vault snapshot shared by every view, rebuilt only when notes change. */
+    this.notesSnapshot = null;
     // Serialize writes: overlapping saveData calls (e.g. per-keystroke license
     // verification) could otherwise finish out of order, letting a stale
     // serialization win on disk.
@@ -4668,6 +5110,10 @@ var BasesPowerPackPlugin = class extends import_obsidian6.Plugin {
   async onload() {
     await this.loadSettings();
     await this.refreshLicense();
+    this.registerEvent(this.app.metadataCache.on("changed", () => this.invalidateSnapshot()));
+    this.registerEvent(this.app.vault.on("create", () => this.invalidateSnapshot()));
+    this.registerEvent(this.app.vault.on("delete", () => this.invalidateSnapshot()));
+    this.registerEvent(this.app.vault.on("rename", () => this.invalidateSnapshot()));
     this.registerView(VIEW_TYPE_KANBAN, (leaf) => new KanbanView(leaf, this));
     this.registerView(VIEW_TYPE_CALENDAR, (leaf) => new CalendarView(leaf, this));
     this.registerView(VIEW_TYPE_GANTT, (leaf) => new GanttView(leaf, this));
@@ -4695,7 +5141,7 @@ var BasesPowerPackPlugin = class extends import_obsidian6.Plugin {
       callback: async () => {
         await this.refreshLicense();
         this.refreshViews();
-        new import_obsidian6.Notice(this.settings.isPro ? "Premium active." : "Lite tier (no valid license).");
+        new import_obsidian7.Notice(this.settings.isPro ? "Premium active." : "Lite tier (no valid license).");
       }
     });
     this.addSettingTab(new BasesPowerPackSettingTab(this.app, this));
@@ -4707,26 +5153,35 @@ var BasesPowerPackPlugin = class extends import_obsidian6.Plugin {
     if (this.api && globals.basesPowerPack === this.api) delete globals.basesPowerPack;
     this.api = null;
   }
+  /** The shared vault snapshot, rebuilt lazily after any note change. */
+  getNotesSnapshot() {
+    if (!this.notesSnapshot) this.notesSnapshot = buildRawNotes(this.app);
+    return this.notesSnapshot;
+  }
+  /** Drop the cached snapshot so the next read (and re-render) sees current notes. */
+  invalidateSnapshot() {
+    this.notesSnapshot = null;
+  }
   createApi() {
     return {
       openView: async (view, basePath) => {
         const viewType = VIEW_NAME_TO_TYPE[view];
         if (!viewType) {
-          new import_obsidian6.Notice(`Bases Power Pack: unknown view "${String(view)}".`);
+          new import_obsidian7.Notice(`Bases Power Pack: unknown view "${String(view)}".`);
           return false;
         }
         if (PREMIUM_VIEW_TYPES.includes(viewType) && !this.settings.isPro) {
-          new import_obsidian6.Notice("Bases Power Pack: this view requires a premium license.");
+          new import_obsidian7.Notice("Bases Power Pack: this view requires a premium license.");
           return false;
         }
         if (basePath) {
           if (!this.settings.isPro) {
-            new import_obsidian6.Notice("Bases Power Pack: opening a base as the data source requires premium.");
+            new import_obsidian7.Notice("Bases Power Pack: opening a base as the data source requires premium.");
             return false;
           }
-          const file = this.app.vault.getAbstractFileByPath((0, import_obsidian6.normalizePath)(basePath));
-          if (!(file instanceof import_obsidian6.TFile) || file.extension !== "base") {
-            new import_obsidian6.Notice("Bases Power Pack: base file not found.");
+          const file = this.app.vault.getAbstractFileByPath((0, import_obsidian7.normalizePath)(basePath));
+          if (!(file instanceof import_obsidian7.TFile) || file.extension !== "base") {
+            new import_obsidian7.Notice("Bases Power Pack: base file not found.");
             return false;
           }
           if (this.settings.activeBasePath !== file.path) {
@@ -4804,6 +5259,8 @@ var BasesPowerPackPlugin = class extends import_obsidian6.Plugin {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
     this.settings.savedFilters = sanitizeSavedFilters(this.settings.savedFilters);
     this.settings.rollups = sanitizeRollups(this.settings.rollups);
+    this.settings.automations = sanitizeAutomations(this.settings.automations);
+    this.settings.kanbanColorOverrides = sanitizeColorOverrides(this.settings.kanbanColorOverrides);
     this.settings.kanbanCardFields = sanitizeStringArray(this.settings.kanbanCardFields, DEFAULT_SETTINGS.kanbanCardFields);
     this.settings.kanbanExtraColumns = sanitizeStringMap(this.settings.kanbanExtraColumns);
     this.settings.kanbanColumnOrder = sanitizeStringMap(this.settings.kanbanColumnOrder);
@@ -4834,6 +5291,41 @@ function sanitizeRollups(value) {
   return value.filter(
     (r) => !!r && typeof r === "object" && typeof r.id === "string" && typeof r.label === "string" && typeof r.expression === "string" && AGGREGATIONS.includes(r.aggregation)
   );
+}
+function sanitizeAutomations(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object") continue;
+    const r = raw;
+    if (typeof r.id !== "string" || typeof r.triggerProp !== "string" || typeof r.enterValue !== "string") continue;
+    const actions = [];
+    if (Array.isArray(r.actions)) {
+      for (const rawAction of r.actions) {
+        if (!rawAction || typeof rawAction !== "object") continue;
+        const a = rawAction;
+        if (typeof a.prop !== "string" || !AUTOMATION_ACTION_TYPES.includes(a.type)) continue;
+        actions.push({ prop: a.prop, type: a.type, value: typeof a.value === "string" ? a.value : "" });
+      }
+    }
+    out.push({
+      id: r.id,
+      name: typeof r.name === "string" ? r.name : "Rule",
+      enabled: r.enabled !== false,
+      triggerProp: r.triggerProp,
+      enterValue: r.enterValue,
+      actions
+    });
+  }
+  return out;
+}
+function sanitizeColorOverrides(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out = {};
+  for (const [key, hue] of Object.entries(value)) {
+    if (typeof hue === "string" && /^\d{1,3}$/.test(hue) && Number(hue) <= 359) out[key] = hue;
+  }
+  return out;
 }
 function sanitizeStringArray(value, fallback = []) {
   if (!Array.isArray(value)) return [...fallback];

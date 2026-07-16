@@ -1,4 +1,4 @@
-import { App, TFile, normalizePath, getAllTags, parseYaml } from "obsidian";
+import { App, Notice, TFile, normalizePath, getAllTags, parseYaml } from "obsidian";
 import type BasesPowerPackPlugin from "../main";
 import type { RawNote, Row } from "../model/row";
 import { resolveRows } from "../bases/resolveRows";
@@ -61,19 +61,49 @@ export async function loadBaseDefinition(app: App, path: string): Promise<BaseDe
  * the metadataCache-driven re-render) stays identical.
  */
 export async function writeRowProperty(
-	app: App,
+	plugin: BasesPowerPackPlugin,
 	path: string,
 	key: string,
 	value: unknown,
 	remove = false
-): Promise<void> {
+): Promise<boolean> {
+	return writeRowProperties(plugin, path, [{ key, value, remove }]);
+}
+
+export interface PropertyWrite {
+	key: string;
+	value?: unknown;
+	remove?: boolean;
+}
+
+/**
+ * Apply several frontmatter edits to one note in a single processFrontMatter
+ * pass. A failure surfaces as a Notice rather than an unhandled rejection; a
+ * success invalidates the shared vault snapshot so the caller's immediate
+ * re-render reads the just-written state instead of the stale cache.
+ */
+export async function writeRowProperties(
+	plugin: BasesPowerPackPlugin,
+	path: string,
+	writes: PropertyWrite[]
+): Promise<boolean> {
+	const app = plugin.app;
 	const file = app.vault.getAbstractFileByPath(path);
-	if (!(file instanceof TFile)) return;
-	await app.fileManager.processFrontMatter(file, (frontmatter) => {
-		const target = frontmatter as Record<string, unknown>;
-		if (remove) delete target[key];
-		else target[key] = value;
-	});
+	if (!(file instanceof TFile) || writes.length === 0) return false;
+	try {
+		await app.fileManager.processFrontMatter(file, (frontmatter) => {
+			const target = frontmatter as Record<string, unknown>;
+			for (const write of writes) {
+				if (write.remove) delete target[write.key];
+				else target[write.key] = write.value;
+			}
+		});
+		plugin.invalidateSnapshot();
+		return true;
+	} catch (error) {
+		new Notice(`Bases Power Pack: couldn't update "${file.basename}" (${String(error)}).`);
+		return false;
+	}
 }
 
 /** Ensure every folder in `path`'s parent chain exists. */
@@ -94,12 +124,13 @@ async function ensureParentFolders(app: App, path: string): Promise<void> {
  * day's date), in `folder`, and open it in a new tab. Returns the created file.
  */
 export async function createSeededNote(
-	app: App,
+	plugin: BasesPowerPackPlugin,
 	folder: string,
 	key: string,
 	value: string,
 	titleHint: string
 ): Promise<TFile> {
+	const app = plugin.app;
 	const cleanFolder = folder.trim().replace(/^[/\\]+|[/\\]+$/g, "");
 	const stem = `${cleanFolder ? `${cleanFolder}/` : ""}${titleHint}`;
 	let path = normalizePath(`${stem}.md`);
@@ -109,6 +140,7 @@ export async function createSeededNote(
 	await ensureParentFolders(app, path);
 	const content = `---\n${key}: ${JSON.stringify(value)}\n---\n\n# ${titleHint}\n`;
 	const file = await app.vault.create(path, content);
+	plugin.invalidateSnapshot();
 	await app.workspace.getLeaf("tab").openFile(file);
 	return file;
 }
@@ -131,7 +163,7 @@ export async function resolveViewRows(
 	plugin: BasesPowerPackPlugin
 ): Promise<ResolvedView> {
 	const s = plugin.settings;
-	const notes = buildRawNotes(app);
+	const notes = plugin.getNotesSnapshot();
 
 	if (!s.isPro) {
 		return { rows: resolveRows(notes, emptyBaseDefinition()), def: emptyBaseDefinition(), baseLabel: null, filterLabel: null };

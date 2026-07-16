@@ -8,9 +8,17 @@ import {
 } from "./settings";
 import { LicenseManager } from "./license/LicenseManager";
 import { AGGREGATIONS, type Rollup } from "./query/rollup";
+import {
+	AUTOMATION_ACTION_TYPES,
+	type AutomationAction,
+	type AutomationActionType,
+	type AutomationRule,
+} from "./query/automation";
 import { KanbanView, VIEW_TYPE_KANBAN } from "./views/kanbanView";
 import { CalendarView, VIEW_TYPE_CALENDAR } from "./views/calendarView";
 import { GanttView, VIEW_TYPE_GANTT } from "./views/ganttView";
+import { buildRawNotes } from "./views/viewData";
+import type { RawNote } from "./model/row";
 
 const PREMIUM_VIEW_TYPES = [VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT];
 const ALL_VIEW_TYPES = [VIEW_TYPE_KANBAN, VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT];
@@ -38,10 +46,20 @@ export interface BasesPowerPackApi {
 export default class BasesPowerPackPlugin extends Plugin {
 	settings: BasesPowerPackSettings = DEFAULT_SETTINGS;
 	private api: BasesPowerPackApi | null = null;
+	/** Cached vault snapshot shared by every view, rebuilt only when notes change. */
+	private notesSnapshot: RawNote[] | null = null;
 
 	async onload(): Promise<void> {
 		await this.loadSettings();
 		await this.refreshLicense();
+
+		// A single vault snapshot feeds every view. Without this each render (and
+		// each search keystroke) re-scanned every markdown file; here we scan once
+		// and invalidate only when the vault actually changes.
+		this.registerEvent(this.app.metadataCache.on("changed", () => this.invalidateSnapshot()));
+		this.registerEvent(this.app.vault.on("create", () => this.invalidateSnapshot()));
+		this.registerEvent(this.app.vault.on("delete", () => this.invalidateSnapshot()));
+		this.registerEvent(this.app.vault.on("rename", () => this.invalidateSnapshot()));
 
 		// ---- Views -----------------------------------------------------------
 		this.registerView(VIEW_TYPE_KANBAN, (leaf) => new KanbanView(leaf, this));
@@ -93,6 +111,17 @@ export default class BasesPowerPackPlugin extends Plugin {
 		const globals = window as unknown as Record<string, unknown>;
 		if (this.api && globals.basesPowerPack === this.api) delete globals.basesPowerPack;
 		this.api = null;
+	}
+
+	/** The shared vault snapshot, rebuilt lazily after any note change. */
+	getNotesSnapshot(): RawNote[] {
+		if (!this.notesSnapshot) this.notesSnapshot = buildRawNotes(this.app);
+		return this.notesSnapshot;
+	}
+
+	/** Drop the cached snapshot so the next read (and re-render) sees current notes. */
+	invalidateSnapshot(): void {
+		this.notesSnapshot = null;
 	}
 
 	private createApi(): BasesPowerPackApi {
@@ -198,6 +227,8 @@ export default class BasesPowerPackPlugin extends Plugin {
 
 		this.settings.savedFilters = sanitizeSavedFilters(this.settings.savedFilters);
 		this.settings.rollups = sanitizeRollups(this.settings.rollups);
+		this.settings.automations = sanitizeAutomations(this.settings.automations);
+		this.settings.kanbanColorOverrides = sanitizeColorOverrides(this.settings.kanbanColorOverrides);
 		this.settings.kanbanCardFields = sanitizeStringArray(this.settings.kanbanCardFields, DEFAULT_SETTINGS.kanbanCardFields);
 		this.settings.kanbanExtraColumns = sanitizeStringMap(this.settings.kanbanExtraColumns);
 		this.settings.kanbanColumnOrder = sanitizeStringMap(this.settings.kanbanColumnOrder);
@@ -247,6 +278,43 @@ function sanitizeRollups(value: unknown): Rollup[] {
 			typeof (r as Rollup).expression === "string" &&
 			AGGREGATIONS.includes((r as Rollup).aggregation)
 	);
+}
+
+function sanitizeAutomations(value: unknown): AutomationRule[] {
+	if (!Array.isArray(value)) return [];
+	const out: AutomationRule[] = [];
+	for (const raw of value) {
+		if (!raw || typeof raw !== "object") continue;
+		const r = raw as Record<string, unknown>;
+		if (typeof r.id !== "string" || typeof r.triggerProp !== "string" || typeof r.enterValue !== "string") continue;
+		const actions: AutomationAction[] = [];
+		if (Array.isArray(r.actions)) {
+			for (const rawAction of r.actions) {
+				if (!rawAction || typeof rawAction !== "object") continue;
+				const a = rawAction as Record<string, unknown>;
+				if (typeof a.prop !== "string" || !AUTOMATION_ACTION_TYPES.includes(a.type as AutomationActionType)) continue;
+				actions.push({ prop: a.prop, type: a.type as AutomationActionType, value: typeof a.value === "string" ? a.value : "" });
+			}
+		}
+		out.push({
+			id: r.id,
+			name: typeof r.name === "string" ? r.name : "Rule",
+			enabled: r.enabled !== false,
+			triggerProp: r.triggerProp,
+			enterValue: r.enterValue,
+			actions,
+		});
+	}
+	return out;
+}
+
+function sanitizeColorOverrides(value: unknown): Record<string, string> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const out: Record<string, string> = {};
+	for (const [key, hue] of Object.entries(value as Record<string, unknown>)) {
+		if (typeof hue === "string" && /^\d{1,3}$/.test(hue) && Number(hue) <= 359) out[key] = hue;
+	}
+	return out;
 }
 
 function sanitizeStringArray(value: unknown, fallback: string[] = []): string[] {
