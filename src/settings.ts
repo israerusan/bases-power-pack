@@ -41,6 +41,11 @@ export interface BasesPowerPackSettings {
 	/** Explicit column order per group-by property, set by dragging column headers. */
 	kanbanColumnOrder: Record<string, string[]>;
 	kanbanColorColumns: boolean;
+	/** Persisted board controls, keyed by group-by property — so "sort by due" and
+	 * "hide done" survive a view reopen / Obsidian restart instead of resetting
+	 * (they were session-only view fields before 1.11). */
+	kanbanSortBy: Record<string, string>;
+	kanbanHideDone: Record<string, boolean>;
 	/** Per-column-value WIP (work-in-progress) limits, keyed by column value
 	 * (like kanbanColorOverrides — a limit set for "Doing" applies to a "Doing"
 	 * column under any group-by property). */
@@ -96,6 +101,8 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	kanbanExtraColumns: {},
 	kanbanColumnOrder: {},
 	kanbanColorColumns: true,
+	kanbanSortBy: {},
+	kanbanHideDone: {},
 	kanbanWipLimits: {},
 	kanbanBlockOverWip: false,
 	calendarDateProp: "due",

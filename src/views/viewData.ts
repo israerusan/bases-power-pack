@@ -10,28 +10,30 @@ import {
 import type { FilterNode } from "../query/filter";
 import { invertWrites, type UndoBatch } from "../query/undo";
 
+/** Snapshot ONE markdown file as a RawNote — the unit the incremental snapshot
+ * patches when a single note changes. */
+export function buildRawNote(app: App, file: TFile): RawNote {
+	const cache = app.metadataCache.getFileCache(file);
+	const fm: Record<string, unknown> = { ...(cache?.frontmatter ?? {}) };
+	// Obsidian injects a `position` marker into frontmatter caches — drop it.
+	delete fm.position;
+	const tags = (cache ? getAllTags(cache) ?? [] : []).map((t) => t.replace(/^#/, ""));
+	return {
+		path: file.path,
+		name: file.basename,
+		folder: file.parent?.path ?? "",
+		ext: file.extension,
+		tags,
+		ctime: file.stat.ctime,
+		mtime: file.stat.mtime,
+		size: file.stat.size,
+		frontmatter: fm,
+	};
+}
+
 /** Snapshot every markdown note as a RawNote for the query engine. */
 export function buildRawNotes(app: App): RawNote[] {
-	const notes: RawNote[] = [];
-	for (const file of app.vault.getMarkdownFiles()) {
-		const cache = app.metadataCache.getFileCache(file);
-		const fm: Record<string, unknown> = { ...(cache?.frontmatter ?? {}) };
-		// Obsidian injects a `position` marker into frontmatter caches — drop it.
-		delete fm.position;
-		const tags = (cache ? getAllTags(cache) ?? [] : []).map((t) => t.replace(/^#/, ""));
-		notes.push({
-			path: file.path,
-			name: file.basename,
-			folder: file.parent?.path ?? "",
-			ext: file.extension,
-			tags,
-			ctime: file.stat.ctime,
-			mtime: file.stat.mtime,
-			size: file.stat.size,
-			frontmatter: fm,
-		});
-	}
-	return notes;
+	return app.vault.getMarkdownFiles().map((file) => buildRawNote(app, file));
 }
 
 /** All `.base` files in the vault (for the settings picker). */
@@ -117,7 +119,10 @@ export async function writeRowProperties(
 			}
 		});
 		if (opts?.record !== false) plugin.undo.record(opts?.label ?? "Edit", path, inverse, opts?.batch);
-		plugin.invalidateSnapshot();
+		// Patch just this note (processFrontMatter has already updated its cache)
+		// so the caller's immediate re-render reads the fresh state without the
+		// old full-vault snapshot rebuild on every single write.
+		plugin.patchNote(file);
 		return true;
 	} catch (error) {
 		new Notice(`Bases Power Pack: couldn't update "${file.basename}" (${String(error)}).`);
@@ -165,7 +170,10 @@ export async function createSeededNote(
 	await ensureParentFolders(app, path);
 	const content = `---\n${key}: ${JSON.stringify(value)}\n---\n\n# ${titleHint}\n`;
 	const file = await app.vault.create(path, content);
-	plugin.invalidateSnapshot();
+	// Seed the snapshot with the frontmatter we just wrote — the metadata cache
+	// hasn't indexed the new file yet, so a plain patch would see empty
+	// frontmatter and the note wouldn't appear on its day/column immediately.
+	plugin.seedCreatedNote(file, { [key]: value });
 	await app.workspace.getLeaf("tab").openFile(file);
 	return file;
 }

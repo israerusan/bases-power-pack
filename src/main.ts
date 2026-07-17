@@ -18,8 +18,9 @@ import { KanbanView, VIEW_TYPE_KANBAN } from "./views/kanbanView";
 import { CalendarView, VIEW_TYPE_CALENDAR } from "./views/calendarView";
 import { GanttView, VIEW_TYPE_GANTT } from "./views/ganttView";
 import { HierarchyView, VIEW_TYPE_HIERARCHY } from "./views/hierarchyView";
-import { buildRawNotes, resolveViewRows, writeRowProperties, type ResolvedView } from "./views/viewData";
+import { buildRawNote, buildRawNotes, resolveViewRows, writeRowProperties, type ResolvedView } from "./views/viewData";
 import { UndoManager } from "./query/undo";
+import { KANBAN_SORTS } from "./query/kanban";
 import { sanitizeWipLimit } from "./query/wip";
 import { resolveParentRef } from "./query/hierarchy";
 import type { RawNote } from "./model/row";
@@ -54,8 +55,12 @@ export default class BasesPowerPackPlugin extends Plugin {
 	/** In-memory undo stack for the frontmatter writes every view makes. */
 	readonly undo = new UndoManager();
 	private api: BasesPowerPackApi | null = null;
-	/** Cached vault snapshot shared by every view, rebuilt only when notes change. */
-	private notesSnapshot: RawNote[] | null = null;
+	/** Cached vault snapshot shared by every view, PATCHED per-file as notes change
+	 * (a full rebuild only on first read, or when a change can't be safely
+	 * attributed to one file — e.g. a folder delete). The array is a lazily
+	 * re-derived view over the map so existing callers keep their RawNote[]. */
+	private notesByPath: Map<string, RawNote> | null = null;
+	private notesArray: RawNote[] | null = null;
 	/** Bumped whenever the resolved data could change (vault edit / base file edit). */
 	private dataVersion = 0;
 	/** Memoized resolved view (rows + parsed base) so a re-render doesn't re-read the
@@ -66,13 +71,37 @@ export default class BasesPowerPackPlugin extends Plugin {
 		await this.loadSettings();
 		await this.refreshLicense();
 
-		// A single vault snapshot feeds every view. Without this each render (and
-		// each search keystroke) re-scanned every markdown file; here we scan once
-		// and invalidate only when the vault actually changes.
-		this.registerEvent(this.app.metadataCache.on("changed", () => this.invalidateSnapshot()));
-		this.registerEvent(this.app.vault.on("create", () => this.invalidateSnapshot()));
-		this.registerEvent(this.app.vault.on("delete", () => this.invalidateSnapshot()));
-		this.registerEvent(this.app.vault.on("rename", () => this.invalidateSnapshot()));
+		// A single vault snapshot feeds every view, patched per-file: a metadata
+		// "changed" event (which fires for the plugin's OWN frontmatter writes)
+		// rebuilds only that note's entry. The old full invalidation meant dragging
+		// one card on a 10k-note vault re-scanned all 10k files before repaint.
+		this.registerEvent(this.app.metadataCache.on("changed", (file) => this.patchNote(file)));
+		this.registerEvent(
+			this.app.vault.on("create", (file) => {
+				if (file instanceof TFile) this.patchNote(file);
+				else this.invalidateSnapshot();
+			})
+		);
+		this.registerEvent(
+			this.app.vault.on("delete", (file) => {
+				// A folder delete doesn't fire per-child events — full rebuild.
+				if (file instanceof TFile) this.removeNote(file.path);
+				else this.invalidateSnapshot();
+			})
+		);
+		this.registerEvent(
+			this.app.vault.on("rename", (file, oldPath) => {
+				// A folder rename DOES fire one rename per contained file (see the
+				// hierarchy retarget below), so per-file patching covers it — but the
+				// folder's own event still gets the safe full rebuild.
+				if (file instanceof TFile) {
+					this.removeNote(oldPath);
+					this.patchNote(file);
+				} else {
+					this.invalidateSnapshot();
+				}
+			})
+		);
 		// A .base file edit changes the resolved rows but fires no metadataCache
 		// event (it isn't markdown), so invalidate the resolve cache on its modify.
 		this.registerEvent(
@@ -162,15 +191,59 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.api = null;
 	}
 
-	/** The shared vault snapshot, rebuilt lazily after any note change. */
+	/** The shared vault snapshot, built lazily and then patched per-file. */
 	getNotesSnapshot(): RawNote[] {
-		if (!this.notesSnapshot) this.notesSnapshot = buildRawNotes(this.app);
-		return this.notesSnapshot;
+		if (!this.notesByPath) {
+			this.notesByPath = new Map();
+			for (const note of buildRawNotes(this.app)) this.notesByPath.set(note.path, note);
+			this.notesArray = null;
+		}
+		if (!this.notesArray) this.notesArray = [...this.notesByPath.values()];
+		return this.notesArray;
 	}
 
-	/** Drop the cached snapshot so the next read (and re-render) sees current notes. */
+	/** Drop the cached snapshot so the next read rebuilds from scratch — the
+	 * fallback for changes that can't be attributed to a single file. */
 	invalidateSnapshot(): void {
-		this.notesSnapshot = null;
+		this.notesByPath = null;
+		this.notesArray = null;
+		this.invalidateResolved();
+	}
+
+	/** Rebuild ONE note's snapshot entry from the live metadata cache. Non-markdown
+	 * files aren't in the snapshot, but still invalidate the resolved view (a .base
+	 * rename, say, can change what resolves). */
+	patchNote(file: TFile): void {
+		if (this.notesByPath && file.extension === "md") {
+			this.notesByPath.set(file.path, buildRawNote(this.app, file));
+			this.notesArray = null;
+		}
+		this.invalidateResolved();
+	}
+
+	/** Drop one note from the snapshot (delete, or the old path of a rename). */
+	removeNote(path: string): void {
+		if (this.notesByPath) {
+			this.notesByPath.delete(path);
+			this.notesArray = null;
+		}
+		this.invalidateResolved();
+	}
+
+	/**
+	 * Optimistically register a just-created note with the frontmatter that was
+	 * just written into it. vault.create resolves before the metadata cache
+	 * indexes the file, so a cache-driven patch would snapshot it with EMPTY
+	 * frontmatter — the note wouldn't land in its column/day until the debounced
+	 * re-render. The real cache "changed" event re-patches with the parsed truth.
+	 */
+	seedCreatedNote(file: TFile, frontmatter: Record<string, unknown>): void {
+		if (this.notesByPath) {
+			const note = buildRawNote(this.app, file);
+			if (Object.keys(note.frontmatter).length === 0) note.frontmatter = { ...frontmatter };
+			this.notesByPath.set(file.path, note);
+			this.notesArray = null;
+		}
 		this.invalidateResolved();
 	}
 
@@ -378,6 +451,8 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.settings.kanbanCardFields = sanitizeStringArray(this.settings.kanbanCardFields, DEFAULT_SETTINGS.kanbanCardFields);
 		this.settings.kanbanExtraColumns = sanitizeStringMap(this.settings.kanbanExtraColumns);
 		this.settings.kanbanColumnOrder = sanitizeStringMap(this.settings.kanbanColumnOrder);
+		this.settings.kanbanSortBy = sanitizeSortMap(this.settings.kanbanSortBy);
+		this.settings.kanbanHideDone = sanitizeBoolMap(this.settings.kanbanHideDone);
 		if (typeof this.settings.kanbanColorColumns !== "boolean") this.settings.kanbanColorColumns = DEFAULT_SETTINGS.kanbanColorColumns;
 		// Required non-empty property names that drive a view — a corrupted/hand-edited
 		// data.json with a non-string here would throw on .trim() during a Kanban move
@@ -407,12 +482,14 @@ export default class BasesPowerPackPlugin extends Plugin {
 	// serialization win on disk.
 	private savePromise: Promise<void> = Promise.resolve();
 
-	async saveSettings(): Promise<void> {
+	async saveSettings(opts?: { invalidateResolved?: boolean }): Promise<void> {
 		// Any settings change can alter the resolved rows (active base, saved-filter
 		// expression, license), and those inputs aren't all in the resolve-cache key,
-		// so drop the cache here. Cheap — it keeps the note snapshot and just forces
-		// one re-resolve on the next render.
-		this.invalidateResolved();
+		// so drop the cache here by default. Cheap — it keeps the note snapshot and
+		// just forces one re-resolve on the next render. Purely presentational,
+		// applied-after-resolution controls (Kanban sort / hide-done) opt out so a
+		// toggle doesn't re-parse the .base and rebuild every Row on a big vault.
+		if (opts?.invalidateResolved !== false) this.invalidateResolved();
 		this.savePromise = this.savePromise.then(() => this.saveData(this.settings));
 		return this.savePromise;
 	}
@@ -500,6 +577,25 @@ function sanitizeStringArray(value: unknown, fallback: string[] = []): string[] 
 	const parts = value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean);
 	const deduped = [...new Set(parts)];
 	return deduped.length > 0 ? deduped : [...fallback];
+}
+
+/** Persisted per-group-by sort choices: keep only known sort values. */
+function sanitizeSortMap(value: unknown): Record<string, string> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const out: Record<string, string> = {};
+	for (const [key, sort] of Object.entries(value as Record<string, unknown>)) {
+		if (typeof sort === "string" && (KANBAN_SORTS as string[]).includes(sort)) out[key] = sort;
+	}
+	return out;
+}
+
+function sanitizeBoolMap(value: unknown): Record<string, boolean> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const out: Record<string, boolean> = {};
+	for (const [key, flag] of Object.entries(value as Record<string, unknown>)) {
+		if (typeof flag === "boolean") out[key] = flag;
+	}
+	return out;
 }
 
 function sanitizeStringMap(value: unknown): Record<string, string[]> {

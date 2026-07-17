@@ -2332,7 +2332,11 @@ function tokenize(src) {
     if (isDigit(ch) || ch === "." && isDigit((_a = src[i + 1]) != null ? _a : "")) {
       let j = i;
       while (j < src.length && (isDigit(src[j]) || src[j] === ".")) j++;
-      tokens.push({ type: "num", value: src.slice(i, j), pos: i });
+      const raw = src.slice(i, j);
+      if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(raw)) {
+        throw new ExprError(`Malformed number '${raw}' at ${i}`);
+      }
+      tokens.push({ type: "num", value: raw, pos: i });
       i = j;
       continue;
     }
@@ -2535,6 +2539,30 @@ function numeric(args) {
 function looksDateLike(v) {
   return typeof v === "string" && /^\s*\d{4}-\d{2}-\d{2}/.test(v);
 }
+function isoDayNumber(v) {
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : Math.floor(v.getTime() / 864e5);
+  if (typeof v !== "string") return null;
+  const m = /^\s*(\d{4})-(\d{2})-(\d{2})/.exec(v);
+  if (!m) return null;
+  return Math.floor(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 864e5);
+}
+function isoFromDayNumber(day) {
+  if (!Number.isFinite(day)) return null;
+  const d = new Date(day * 864e5);
+  if (Number.isNaN(d.getTime())) return null;
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  return `${d.getUTCFullYear()}-${mm}-${dd}`;
+}
+function arithNumber(v) {
+  const n = strictNumber(v);
+  if (!Number.isNaN(n)) return n;
+  if (typeof v === "string") {
+    const m = /^\s*(-?(?:\d+(?:\.\d+)?|\.\d+))\s*[a-zA-Z%°]+\.?\s*$/.exec(v);
+    if (m) return Number(m[1]);
+  }
+  return NaN;
+}
 function compare(a, b) {
   if (!looksDateLike(a) && !looksDateLike(b)) {
     const na = toNumber(a);
@@ -2676,20 +2704,28 @@ function evalBinary(node, scope) {
       const na = strictNumber(a);
       const nb = strictNumber(b);
       if (!Number.isNaN(na) && !Number.isNaN(nb)) return na + nb;
+      const da = isoDayNumber(a);
+      if (da !== null && typeof b === "number") return Number.isInteger(b) ? isoFromDayNumber(da + b) : null;
+      const db = isoDayNumber(b);
+      if (db !== null && typeof a === "number") return Number.isInteger(a) ? isoFromDayNumber(db + a) : null;
       return toStr(a) + toStr(b);
     }
-    case "-":
-      return safeArith(toNumber(a) - toNumber(b));
+    case "-": {
+      const da = isoDayNumber(a);
+      if (da !== null) {
+        const db = isoDayNumber(b);
+        if (db !== null) return da - db;
+        if (typeof b === "number") return Number.isInteger(b) ? isoFromDayNumber(da - b) : null;
+        return null;
+      }
+      return strictArith(a, b, (x, y) => x - y);
+    }
     case "*":
-      return safeArith(toNumber(a) * toNumber(b));
-    case "/": {
-      const d = toNumber(b);
-      return d === 0 ? null : safeArith(toNumber(a) / d);
-    }
-    case "%": {
-      const d = toNumber(b);
-      return d === 0 ? null : safeArith(toNumber(a) % d);
-    }
+      return strictArith(a, b, (x, y) => x * y);
+    case "/":
+      return strictArith(a, b, (x, y) => x / y);
+    case "%":
+      return strictArith(a, b, (x, y) => x % y);
   }
   return null;
 }
@@ -2709,6 +2745,12 @@ function evalCall(node, scope) {
 }
 function safeArith(n) {
   return Number.isFinite(n) ? n : null;
+}
+function strictArith(a, b, op) {
+  const na = arithNumber(a);
+  const nb = arithNumber(b);
+  if (Number.isNaN(na) || Number.isNaN(nb)) return null;
+  return safeArith(op(na, nb));
 }
 function normalizeValue(v) {
   if (v === void 0) return null;
@@ -2875,8 +2917,13 @@ function buildGantt(input, defaultSpanDays = 1, maxDays = 120) {
     });
   }
   if (bars.length === 0) return { days: [], bars: [], skipped, offAxis: 0 };
-  const minDay = Math.min(...bars.map((b) => b.startDay));
-  const maxDay = Math.min(Math.max(...bars.map((b) => b.endDay)), minDay + maxDays - 1);
+  let minDay = bars[0].startDay;
+  let maxEnd = bars[0].endDay;
+  for (const b of bars) {
+    if (b.startDay < minDay) minDay = b.startDay;
+    if (b.endDay > maxEnd) maxEnd = b.endDay;
+  }
+  const maxDay = Math.min(maxEnd, minDay + maxDays - 1);
   const days = [];
   for (let d = minDay; d <= maxDay; d++) days.push(dayNumberToIso(d));
   let offAxis = 0;
@@ -3226,27 +3273,26 @@ var UndoManager = class {
 };
 
 // src/views/viewData.ts
-function buildRawNotes(app) {
+function buildRawNote(app, file) {
   var _a, _b, _c, _d;
-  const notes = [];
-  for (const file of app.vault.getMarkdownFiles()) {
-    const cache = app.metadataCache.getFileCache(file);
-    const fm = { ...(_a = cache == null ? void 0 : cache.frontmatter) != null ? _a : {} };
-    delete fm.position;
-    const tags = (cache ? (_b = (0, import_obsidian.getAllTags)(cache)) != null ? _b : [] : []).map((t) => t.replace(/^#/, ""));
-    notes.push({
-      path: file.path,
-      name: file.basename,
-      folder: (_d = (_c = file.parent) == null ? void 0 : _c.path) != null ? _d : "",
-      ext: file.extension,
-      tags,
-      ctime: file.stat.ctime,
-      mtime: file.stat.mtime,
-      size: file.stat.size,
-      frontmatter: fm
-    });
-  }
-  return notes;
+  const cache = app.metadataCache.getFileCache(file);
+  const fm = { ...(_a = cache == null ? void 0 : cache.frontmatter) != null ? _a : {} };
+  delete fm.position;
+  const tags = (cache ? (_b = (0, import_obsidian.getAllTags)(cache)) != null ? _b : [] : []).map((t) => t.replace(/^#/, ""));
+  return {
+    path: file.path,
+    name: file.basename,
+    folder: (_d = (_c = file.parent) == null ? void 0 : _c.path) != null ? _d : "",
+    ext: file.extension,
+    tags,
+    ctime: file.stat.ctime,
+    mtime: file.stat.mtime,
+    size: file.stat.size,
+    frontmatter: fm
+  };
+}
+function buildRawNotes(app) {
+  return app.vault.getMarkdownFiles().map((file) => buildRawNote(app, file));
 }
 function listBaseFiles(app) {
   return app.vault.getFiles().filter((f) => f.extension === "base").sort((a, b) => a.path.localeCompare(b.path));
@@ -3281,7 +3327,7 @@ async function writeRowProperties(plugin, path, writes, opts) {
       }
     });
     if ((opts == null ? void 0 : opts.record) !== false) plugin.undo.record((_a = opts == null ? void 0 : opts.label) != null ? _a : "Edit", path, inverse, opts == null ? void 0 : opts.batch);
-    plugin.invalidateSnapshot();
+    plugin.patchNote(file);
     return true;
   } catch (error) {
     new import_obsidian.Notice(`Bases Power Pack: couldn't update "${file.basename}" (${String(error)}).`);
@@ -3319,7 +3365,7 @@ ${key}: ${JSON.stringify(value)}
 # ${titleHint}
 `;
   const file = await app.vault.create(path, content);
-  plugin.invalidateSnapshot();
+  plugin.seedCreatedNote(file, { [key]: value });
   await app.workspace.getLeaf("tab").openFile(file);
   return file;
 }
@@ -3367,6 +3413,8 @@ var DEFAULT_SETTINGS = {
   kanbanExtraColumns: {},
   kanbanColumnOrder: {},
   kanbanColorColumns: true,
+  kanbanSortBy: {},
+  kanbanHideDone: {},
   kanbanWipLimits: {},
   kanbanBlockOverWip: false,
   calendarDateProp: "due",
@@ -4289,11 +4337,28 @@ var PowerPackView = class extends import_obsidian4.ItemView {
 function normalize(value) {
   return toStr(value).trim().toLocaleLowerCase();
 }
-function rowMatchesText(row, query, extra = []) {
-  const q = normalize(query);
-  if (!q) return true;
+var PROP_TOKEN_RE = /^([A-Za-z_$][\w.$-]*):(.+)$/;
+function tokenMatches(row, token, extra) {
+  const m = PROP_TOKEN_RE.exec(token);
+  if (m) {
+    const key = m[1];
+    const value = normalize(m[2]);
+    if (key.toLocaleLowerCase() === "tag" || key.toLocaleLowerCase() === "tags") {
+      const tagValue = value.replace(/^#/, "");
+      if (tagValue && row.note.tags.some((t) => normalize(t).includes(tagValue))) return true;
+    } else {
+      const got = row.scope.get(key);
+      if (got !== void 0 && got !== null && normalize(got).includes(value)) return true;
+    }
+  }
+  const q = normalize(token);
   const haystacks = [row.name, row.note.path, row.note.folder, ...row.note.tags, ...extra];
-  return haystacks.some((value) => normalize(value).includes(q));
+  return haystacks.some((v) => normalize(v).includes(q));
+}
+function rowMatchesText(row, query, extra = []) {
+  const tokens = query.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  return tokens.every((token) => tokenMatches(row, token, extra));
 }
 function filterRowsByText(rows, query) {
   if (!query.trim()) return rows;
@@ -4301,10 +4366,11 @@ function filterRowsByText(rows, query) {
 }
 
 // src/query/kanban.ts
+var KANBAN_SORTS = ["manual", "name-asc", "name-desc", "due-asc", "priority-desc", "mtime-desc"];
 function buildKanbanColumns(rows, options) {
-  var _a, _b, _c;
+  var _a, _b, _c, _d;
   const groupBy = options.groupBy || "status";
-  const search = normalize2(options.search);
+  const search = toStr((_a = options.search) != null ? _a : "").trim();
   const hidden = normalize2(options.hideColumn);
   const columns = /* @__PURE__ */ new Map();
   for (const row of rows) {
@@ -4313,10 +4379,10 @@ function buildKanbanColumns(rows, options) {
     if (hidden && normalize2(columnName) === hidden) continue;
     if (search && !matchesSearch(row, search, columnName)) continue;
     if (!columns.has(columnName)) columns.set(columnName, []);
-    (_a = columns.get(columnName)) == null ? void 0 : _a.push(row);
+    (_b = columns.get(columnName)) == null ? void 0 : _b.push(row);
   }
   if (!search) {
-    for (const name of (_b = options.extraColumns) != null ? _b : []) {
+    for (const name of (_c = options.extraColumns) != null ? _c : []) {
       const clean = name.trim();
       if (!clean || columns.has(clean)) continue;
       if (hidden && normalize2(clean) === hidden) continue;
@@ -4324,7 +4390,7 @@ function buildKanbanColumns(rows, options) {
     }
   }
   const entries = Array.from(columns.entries());
-  const order = (_c = options.columnOrder) != null ? _c : [];
+  const order = (_d = options.columnOrder) != null ? _d : [];
   if (order.length > 0) {
     const rank = new Map(order.map((name, index) => [name, index]));
     entries.sort((a, b) => {
@@ -4409,6 +4475,29 @@ function numberOrNull(value) {
   const n = toNumber(value);
   return Number.isFinite(n) ? n : null;
 }
+function dueStatus(iso, today, soonDays = 2) {
+  if (!iso) return null;
+  const da = toDayNumber(iso);
+  const db = toDayNumber(today);
+  if (da === null || db === null) return null;
+  const diff = da - db;
+  if (diff < 0) return "overdue";
+  if (diff <= soonDays) return "soon";
+  return null;
+}
+var PRIORITY_LEVELS = [
+  { cls: "is-p-high", values: ["high", "highest", "urgent", "critical", "p0", "p1"] },
+  { cls: "is-p-med", values: ["medium", "med", "normal", "p2"] },
+  { cls: "is-p-low", values: ["low", "lowest", "minor", "p3", "p4"] }
+];
+function priorityClass(value) {
+  const v = toStr(value).trim().toLocaleLowerCase();
+  if (!v) return null;
+  for (const level of PRIORITY_LEVELS) {
+    if (level.values.includes(v)) return level.cls;
+  }
+  return null;
+}
 function formatCardField(row, field) {
   const value = row.scope.get(field);
   if (value === void 0 || value === null || value === "") return null;
@@ -4488,10 +4577,36 @@ var SORT_OPTIONS = [
 var KanbanView = class extends PowerPackView {
   constructor() {
     super(...arguments);
-    this.hideDoneColumn = false;
-    this.sortBy = "manual";
     /** The currently visible (filtered) rows, captured for the bulk-edit action. */
     this.lastVisibleRows = [];
+    /** TRUE column membership — resolved (base/filter-scoped) rows grouped by
+     * value, ignoring the transient quick-search. Drives WIP badges/enforcement,
+     * per-column roll-ups, and the column-rename target set. */
+    this.lastColumnRows = /* @__PURE__ */ new Map();
+  }
+  get groupByProp() {
+    return this.plugin.settings.kanbanGroupBy || "status";
+  }
+  /** Sort + hide-done are persisted per group-by property, so the board reopens
+   * exactly as you left it (they were session-only fields before 1.11). */
+  get sortBy() {
+    const v = this.plugin.settings.kanbanSortBy[this.groupByProp];
+    return SORT_OPTIONS.some((o) => o.value === v) ? v : "manual";
+  }
+  get hideDoneColumn() {
+    return this.plugin.settings.kanbanHideDone[this.groupByProp] === true;
+  }
+  async setSortBy(value) {
+    if (value === "manual") delete this.plugin.settings.kanbanSortBy[this.groupByProp];
+    else this.plugin.settings.kanbanSortBy[this.groupByProp] = value;
+    await this.plugin.saveSettings({ invalidateResolved: false });
+    await this.render();
+  }
+  async setHideDone(value) {
+    if (value) this.plugin.settings.kanbanHideDone[this.groupByProp] = true;
+    else delete this.plugin.settings.kanbanHideDone[this.groupByProp];
+    await this.plugin.saveSettings({ invalidateResolved: false });
+    await this.render();
   }
   getViewType() {
     return VIEW_TYPE_KANBAN;
@@ -4503,7 +4618,7 @@ var KanbanView = class extends PowerPackView {
     return "layout-dashboard";
   }
   async render() {
-    var _a, _b;
+    var _a, _b, _c, _d;
     const token = ++this.renderToken;
     const resolved = await this.plugin.getResolvedView();
     if (this.isStale(token)) return;
@@ -4530,6 +4645,14 @@ var KanbanView = class extends PowerPackView {
       columnOrder: (_b = this.plugin.settings.kanbanColumnOrder[groupBy]) != null ? _b : []
     });
     this.lastVisibleRows = columns.flatMap((column) => column.rows);
+    const columnRows = /* @__PURE__ */ new Map();
+    for (const row of resolved.rows) {
+      const name = toStr(row.scope.get(groupBy));
+      if (!name) continue;
+      if (!columnRows.has(name)) columnRows.set(name, []);
+      columnRows.get(name).push(row);
+    }
+    this.lastColumnRows = columnRows;
     const orderedNames = columns.map((column) => column.name);
     const colored = this.plugin.settings.kanbanColorColumns;
     const board = container.createDiv({ cls: "bpp-kanban-board" });
@@ -4545,10 +4668,19 @@ var KanbanView = class extends PowerPackView {
     }
     const cardFormula = this.plugin.settings.isPro ? this.plugin.settings.cardFormula.trim() : "";
     const metaFields = this.plugin.settings.kanbanCardFields;
+    const today = todayIso();
+    const dueProps = /* @__PURE__ */ new Set(["due", this.plugin.settings.calendarDateProp || "due"]);
+    const doneValue = (this.plugin.settings.kanbanDoneValue || "done").trim().toLocaleLowerCase();
     for (const column of columns) {
       const col = board.createDiv({ cls: "bpp-kanban-column" });
+      const trueCount = ((_c = columnRows.get(column.name)) != null ? _c : []).length;
+      const wipLimit = limitFor(this.plugin.settings.kanbanWipLimits, column.name);
+      const overWip = isOverWip(trueCount, wipLimit);
       col.setAttr("role", "group");
-      col.setAttr("aria-label", `Column ${column.name}, ${column.rows.length} card${column.rows.length === 1 ? "" : "s"}`);
+      col.setAttr(
+        "aria-label",
+        `Column ${column.name}, ${trueCount} card${trueCount === 1 ? "" : "s"}` + (column.rows.length !== trueCount ? `, ${column.rows.length} shown` : "") + (overWip ? ", over WIP limit" : "")
+      );
       if (colored) col.setCssProps({ "--bpp-col-hue": this.columnHueFor(column.name) });
       this.wireColumnDrop(col, column.name, groupBy, rowById, orderedNames);
       const colHead = col.createDiv({ cls: "bpp-kanban-column-head" });
@@ -4558,17 +4690,21 @@ var KanbanView = class extends PowerPackView {
         "contextmenu",
         (evt) => this.openColumnMenu(evt, column.name, groupBy, removable, orderedNames)
       );
-      const wipLimit = limitFor(this.plugin.settings.kanbanWipLimits, column.name);
-      if (isOverWip(column.rows.length, wipLimit)) col.addClass("is-over-wip");
+      if (overWip) col.addClass("is-over-wip");
       const colLabel = colHead.createDiv({ cls: "bpp-kanban-column-label" });
       colLabel.createSpan({ text: column.name });
       const count = colLabel.createSpan({
         cls: "bpp-count",
-        text: formatWipCount(column.rows.length, wipLimit)
+        text: formatWipCount(trueCount, wipLimit)
       });
       if (wipLimit !== null) {
         count.addClass("has-wip");
-        count.setAttr("title", `${column.rows.length} of ${wipLimit} (WIP limit)`);
+        count.setAttr(
+          "title",
+          `${trueCount} of ${wipLimit} (WIP limit)` + (column.rows.length !== trueCount ? ` \xB7 ${column.rows.length} shown` : "")
+        );
+      } else if (column.rows.length !== trueCount) {
+        count.setAttr("title", `${column.rows.length} shown \xB7 ${trueCount} total`);
       }
       const actions = colHead.createDiv({ cls: "bpp-column-actions" });
       const addButton = actions.createEl("button", {
@@ -4590,6 +4726,15 @@ var KanbanView = class extends PowerPackView {
         });
         removeButton.addEventListener("click", () => void this.removeExtraColumn(groupBy, column.name));
       }
+      if (this.plugin.settings.isPro && this.plugin.settings.rollups.length > 0) {
+        const chips = col.createDiv({ cls: "bpp-col-rollups" });
+        for (const rollup of this.plugin.settings.rollups) {
+          chips.createSpan({
+            cls: "bpp-col-rollup",
+            text: `${rollup.label || rollup.aggregation}: ${computeRollup(rollup, (_d = columnRows.get(column.name)) != null ? _d : [])}`
+          });
+        }
+      }
       for (const row of column.rows) {
         const card = col.createDiv({ cls: "bpp-card" });
         card.draggable = true;
@@ -4597,10 +4742,14 @@ var KanbanView = class extends PowerPackView {
         const head = card.createDiv({ cls: "bpp-card-head" });
         head.createDiv({ cls: "bpp-card-title", text: row.name });
         this.addOverflowButton(head, row.name, openMenu);
+        const isDone = column.name.trim().toLocaleLowerCase() === doneValue;
         for (const field of metaFields) {
           const display = formatCardField(row, field);
           if (display === null) continue;
-          this.renderEditableField(card, row, field, display);
+          this.renderEditableField(card, row, field, display, {
+            today,
+            dueState: dueProps.has(field) && !isDone
+          });
         }
         if (cardFormula) {
           const val = evaluateSafe(cardFormula, row.scope);
@@ -4665,16 +4814,57 @@ var KanbanView = class extends PowerPackView {
     await this.plugin.saveSettings();
     await this.render();
   }
-  /** A card metadata line the user can click to edit the underlying frontmatter. */
-  renderEditableField(card, row, field, display) {
+  /**
+   * A card metadata line the user can click to edit the underlying frontmatter.
+   * Known field shapes render as semantic chips — a due pill flagged
+   * overdue/soon, a priority badge, tag pills — so card state is scannable
+   * instead of identical grey "key: value" lines; anything else keeps the plain
+   * line. Every variant shares the same click-to-edit wiring (beginInlineEdit
+   * empties the line and swaps in the input regardless of content).
+   */
+  renderEditableField(card, row, field, display, ctx) {
     const line = card.createDiv({ cls: "bpp-card-meta bpp-card-meta-editable" });
-    line.createSpan({ cls: "bpp-card-meta-key", text: `${field}:` });
-    line.createSpan({ cls: "bpp-card-meta-val", text: display });
+    this.renderFieldContent(line, row, field, display, ctx);
     line.setAttr("title", "Click to edit");
     line.addEventListener("click", (event) => {
       event.stopPropagation();
       this.beginInlineEdit(card, line, row, field);
     });
+  }
+  renderFieldContent(line, row, field, display, ctx) {
+    const value = row.scope.get(field);
+    const isoKey = value instanceof Date || /^\d{4}-\d{2}-\d{2}/.test(toStr(value)) ? toIsoDateKey(value) : null;
+    if (isoKey) {
+      const status = ctx.dueState ? dueStatus(isoKey, ctx.today) : null;
+      const chip = line.createSpan({ cls: "bpp-chip bpp-chip-date" });
+      if (status === "overdue") chip.addClass("is-overdue");
+      else if (status === "soon") chip.addClass("is-soon");
+      chip.createSpan({ cls: "bpp-chip-key", text: field });
+      chip.createSpan({ text: display });
+      if (status) {
+        chip.createSpan({ cls: "bpp-sr-only", text: status === "overdue" ? " (overdue)" : " (due soon)" });
+      }
+      return;
+    }
+    if (field === "priority") {
+      const cls = priorityClass(value);
+      const chip = line.createSpan({ cls: "bpp-chip bpp-chip-priority" });
+      if (cls) chip.addClass(cls);
+      else {
+        chip.addClass("is-hue");
+        chip.setCssProps({ "--bpp-col-hue": String(columnHue(display)) });
+      }
+      chip.createSpan({ cls: "bpp-chip-key", text: field });
+      chip.createSpan({ text: display });
+      return;
+    }
+    if (field === "tags" || field === "tag" || field === "file.tags") {
+      const parts = Array.isArray(value) ? value.map((v) => toStr(v)).filter(Boolean) : display.split(",").map((s) => s.trim()).filter(Boolean);
+      for (const part of parts) line.createSpan({ cls: "bpp-chip bpp-chip-tag", text: part });
+      if (parts.length > 0) return;
+    }
+    line.createSpan({ cls: "bpp-card-meta-key", text: `${field}:` });
+    line.createSpan({ cls: "bpp-card-meta-val", text: display });
   }
   /** Swap a metadata line for an input, committing the parsed value on Enter/blur. */
   beginInlineEdit(card, line, row, field) {
@@ -4823,14 +5013,22 @@ var KanbanView = class extends PowerPackView {
   /** Rewrite the group property from `from` to `to` on every note in that column,
    * confirming first when the rename would touch more than a few notes. */
   applyColumnRename(groupBy, from, to) {
+    var _a;
     if (!to || to === from) return;
     const key = groupBy || "status";
-    const targets = this.plugin.getNotesSnapshot().filter((n) => toStr(n.frontmatter[key]) === from);
+    const boardRows = (_a = this.lastColumnRows.get(from)) != null ? _a : [];
+    const targets = boardRows.map((r) => r.note).filter((n) => toStr(n.frontmatter[key]) === from);
+    if (boardRows.length > 0 && targets.length === 0) {
+      new import_obsidian5.Notice(`"${key}" is a formula or computed field \u2014 rename the value at its source, not from the board.`);
+      return;
+    }
+    const vaultWide = this.plugin.getNotesSnapshot().filter((n) => toStr(n.frontmatter[key]) === from).length;
+    const excluded = Math.max(0, vaultWide - targets.length);
     const run = () => void this.doColumnRename(groupBy, key, from, to, targets);
-    if (targets.length > 5) {
+    if (targets.length > 5 || excluded > 0) {
       new ConfirmModal(this.app, {
         title: "Rename column?",
-        body: `This rewrites "${key}: ${from}" \u2192 "${to}" on ${targets.length} notes.`,
+        body: `This rewrites "${key}: ${from}" \u2192 "${to}" on ${targets.length} note${targets.length === 1 ? "" : "s"} in this board.` + (excluded > 0 ? ` ${excluded} matching note${excluded === 1 ? "" : "s"} outside the current base/filter ${excluded === 1 ? "is" : "are"} left unchanged.` : ""),
         cta: "Rename",
         onConfirm: run
       }).open();
@@ -4913,17 +5111,11 @@ var KanbanView = class extends PowerPackView {
       const el = sortSelect.createEl("option", { text: option.label, value: option.value });
       if (option.value === this.sortBy) el.selected = true;
     }
-    sortSelect.addEventListener("change", () => {
-      this.sortBy = sortSelect.value;
-      void this.render();
-    });
+    sortSelect.addEventListener("change", () => void this.setSortBy(sortSelect.value));
     const toggleWrap = controls.createDiv({ cls: "bpp-lite-control bpp-lite-control-toggle" });
     const toggle = toggleWrap.createEl("input", { type: "checkbox" });
     toggle.checked = this.hideDoneColumn;
-    toggle.addEventListener("change", () => {
-      this.hideDoneColumn = toggle.checked;
-      void this.render();
-    });
+    toggle.addEventListener("change", () => void this.setHideDone(toggle.checked));
     toggleWrap.createSpan({ cls: "bpp-muted", text: "Hide done" });
     const bulkWrap = controls.createDiv({ cls: "bpp-lite-control" });
     const bulkBtn = bulkWrap.createEl("button", { cls: "bpp-lite-btn", text: "Bulk edit" });
@@ -4985,11 +5177,12 @@ var KanbanView = class extends PowerPackView {
    * re-triggers another rule.
    */
   async moveRowToColumn(row, groupBy, columnName) {
+    var _a;
     const key = groupBy || "status";
     if (toStr(row.scope.get(key)) === columnName) return;
     if (this.plugin.settings.kanbanBlockOverWip) {
       const limit = limitFor(this.plugin.settings.kanbanWipLimits, columnName);
-      const targetCount = this.lastVisibleRows.filter((r) => toStr(r.scope.get(key)) === columnName).length;
+      const targetCount = ((_a = this.lastColumnRows.get(columnName)) != null ? _a : []).length;
       if (dropWouldExceed(targetCount, limit)) {
         new import_obsidian5.Notice(`"${columnName}" is at its WIP limit (${limit}). Move blocked.`);
         await this.render();
@@ -5011,12 +5204,16 @@ var KanbanView = class extends PowerPackView {
   async quickAddNote(columnName, groupBy) {
     const title = buildQuickAddTitle(columnName);
     const stem = (0, import_obsidian5.normalizePath)(buildQuickAddPath(this.plugin.settings.kanbanQuickAddFolder, title)).replace(/\.md$/, "");
-    const path = uniqueNotePath(this.app, stem);
-    await ensureParentFolders(this.app, path);
-    const file = await this.app.vault.create(path, buildQuickAddContent(groupBy, columnName, title));
-    this.plugin.invalidateSnapshot();
-    new import_obsidian5.Notice(`Created ${file.basename}`);
-    await this.app.workspace.getLeaf("tab").openFile(file);
+    try {
+      const path = uniqueNotePath(this.app, stem);
+      await ensureParentFolders(this.app, path);
+      const file = await this.app.vault.create(path, buildQuickAddContent(groupBy, columnName, title));
+      this.plugin.seedCreatedNote(file, { [groupBy || "status"]: columnName });
+      new import_obsidian5.Notice(`Created ${file.basename}`);
+      await this.app.workspace.getLeaf("tab").openFile(file);
+    } catch (error) {
+      new import_obsidian5.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
+    }
     await this.render();
   }
 };
@@ -5162,7 +5359,7 @@ var CalendarView = class extends PowerPackView {
       const key = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
       const cell = this.renderDayCell(grid, key, dateProp, byDay.get(key) || [], today);
       cell.createDiv({ cls: "bpp-cal-daynum", text: String(day) });
-      this.renderCellEvents(cell, byDay.get(key) || [], dateProp);
+      this.renderCellEvents(cell, byDay.get(key) || [], dateProp, key < today);
     }
   }
   // ---- week -----------------------------------------------------------------
@@ -5174,7 +5371,7 @@ var CalendarView = class extends PowerPackView {
     }
     for (const key of weekKeys(this.anchor)) {
       const cell = this.renderDayCell(grid, key, dateProp, byDay.get(key) || [], today);
-      this.renderCellEvents(cell, byDay.get(key) || [], dateProp);
+      this.renderCellEvents(cell, byDay.get(key) || [], dateProp, key < today);
     }
   }
   /** A day cell that is a drop target for reschedule and offers a create button. */
@@ -5208,10 +5405,11 @@ var CalendarView = class extends PowerPackView {
     });
     return cell;
   }
-  renderCellEvents(cell, rows, dateProp) {
+  renderCellEvents(cell, rows, dateProp, isPast = false) {
     const colorProp = this.plugin.settings.calendarColorProp.trim();
     for (const row of rows) {
       const ev = cell.createDiv({ cls: "bpp-cal-event" });
+      if (isPast && !this.isDone(row)) ev.addClass("is-overdue");
       ev.createSpan({ cls: "bpp-cal-event-label", text: row.name });
       const openMenu = (a) => this.openEventMenu(a, row, dateProp);
       if (colorProp) {
@@ -5268,31 +5466,58 @@ var CalendarView = class extends PowerPackView {
   }
   // ---- agenda ---------------------------------------------------------------
   renderAgenda(container, byDay, dateProp) {
+    var _a, _b;
     const today = todayIso();
-    const days = [...byDay.keys()].filter((key) => key >= today).sort();
+    const overdueDays = [];
+    let overdueCount = 0;
+    for (const key of [...byDay.keys()].filter((k) => k < today).sort()) {
+      const rows = ((_a = byDay.get(key)) != null ? _a : []).filter((row) => !this.isDone(row));
+      if (rows.length === 0) continue;
+      overdueDays.push({ key, rows });
+      overdueCount += rows.length;
+    }
+    const upcoming = [...byDay.keys()].filter((key) => key >= today).sort();
     const list = container.createDiv({ cls: "bpp-agenda" });
-    if (days.length === 0) {
+    if (overdueDays.length === 0 && upcoming.length === 0) {
       list.createDiv({
         cls: "bpp-empty",
-        text: this.searchQuery ? "No upcoming notes match the current search." : "No upcoming dated notes."
+        text: this.searchQuery ? "No dated notes match the current search." : "No dated notes yet."
       });
       return;
     }
-    for (const key of days) {
-      const group = list.createDiv({ cls: "bpp-agenda-day" });
-      const head = group.createDiv({ cls: "bpp-agenda-date" });
-      head.createSpan({ text: dayLabel(key) });
-      head.createSpan({ cls: "bpp-muted", text: key });
-      if (key === today) head.createSpan({ cls: "bpp-badge bpp-badge-lite", text: "Today" });
-      for (const row of byDay.get(key) || []) {
-        const item = group.createDiv({ cls: "bpp-agenda-item" });
-        item.createSpan({ cls: "bpp-agenda-item-label", text: row.name });
-        const openMenu = (a) => this.openEventMenu(a, row, dateProp);
-        item.addEventListener("click", () => this.openRow(row));
-        this.makeItemAccessible(item, row.name, () => this.openRow(row), openMenu);
-        item.addEventListener("contextmenu", (evt) => openMenu(evt));
-        this.addOverflowButton(item, row.name, openMenu);
+    if (overdueDays.length > 0) {
+      const head = list.createDiv({ cls: "bpp-agenda-section is-overdue" });
+      head.createSpan({ text: "Overdue" });
+      head.createSpan({ cls: "bpp-badge bpp-badge-warn", text: String(overdueCount) });
+      for (const { key, rows } of overdueDays) this.renderAgendaDay(list, key, rows, dateProp, today, true);
+      if (upcoming.length > 0) {
+        list.createDiv({ cls: "bpp-agenda-section" }).createSpan({ text: "Upcoming" });
       }
+    }
+    for (const key of upcoming) this.renderAgendaDay(list, key, (_b = byDay.get(key)) != null ? _b : [], dateProp, today, false);
+  }
+  /** Whether a row's group value marks it done — the same predicate the Kanban
+   * board uses (group value === the configured Done value). */
+  isDone(row) {
+    const groupBy = this.plugin.settings.kanbanGroupBy || "status";
+    const doneValue = (this.plugin.settings.kanbanDoneValue || "done").trim().toLocaleLowerCase();
+    return toStr(row.scope.get(groupBy)).trim().toLocaleLowerCase() === doneValue;
+  }
+  renderAgendaDay(list, key, rows, dateProp, today, isOverdue) {
+    const group = list.createDiv({ cls: "bpp-agenda-day" });
+    if (isOverdue) group.addClass("is-overdue");
+    const head = group.createDiv({ cls: "bpp-agenda-date" });
+    head.createSpan({ text: dayLabel(key) });
+    head.createSpan({ cls: "bpp-muted", text: key });
+    if (key === today) head.createSpan({ cls: "bpp-badge bpp-badge-today", text: "Today" });
+    for (const row of rows) {
+      const item = group.createDiv({ cls: "bpp-agenda-item" });
+      item.createSpan({ cls: "bpp-agenda-item-label", text: row.name });
+      const openMenu = (a) => this.openEventMenu(a, row, dateProp);
+      item.addEventListener("click", () => this.openRow(row));
+      this.makeItemAccessible(item, row.name, () => this.openRow(row), openMenu);
+      item.addEventListener("contextmenu", (evt) => openMenu(evt));
+      this.addOverflowButton(item, row.name, openMenu);
     }
   }
   // ---- mutations ------------------------------------------------------------
@@ -5341,6 +5566,11 @@ var GanttView = class extends PowerPackView {
     super(...arguments);
     this.zoomPx = DEFAULT_ZOOM;
     this.scrollEl = null;
+    /** Bar to re-focus after the next render — set by the keyboard move/resize
+     * path so arrow-key scheduling isn't single-shot (render() empties the
+     * container, which would drop focus to the body). Same pattern as the
+     * Outline's focusRowId. */
+    this.focusBarId = null;
   }
   getViewType() {
     return VIEW_TYPE_GANTT;
@@ -5356,6 +5586,7 @@ var GanttView = class extends PowerPackView {
     await super.onClose();
   }
   async render() {
+    var _a;
     const token = ++this.renderToken;
     const container = this.contentEl;
     if (!this.plugin.settings.isPro) {
@@ -5371,6 +5602,11 @@ var GanttView = class extends PowerPackView {
     }
     const resolved = await this.plugin.getResolvedView();
     if (this.isStale(token)) return;
+    const active = container.ownerDocument.activeElement;
+    if (active instanceof HTMLElement && container.contains(active)) {
+      const id = active.getAttribute("data-bpp-id");
+      if (id) this.focusBarId = id;
+    }
     this.captureSearchState();
     container.empty();
     container.addClass("bpp-view");
@@ -5415,6 +5651,11 @@ var GanttView = class extends PowerPackView {
       return;
     }
     this.renderChart(container, model, rowByPath, startProp, endProp);
+    if (this.focusBarId) {
+      const sel = `[data-bpp-id="${this.focusBarId.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"]`;
+      (_a = container.querySelector(sel)) == null ? void 0 : _a.focus();
+      this.focusBarId = null;
+    }
     if (model.skipped > 0) {
       container.createDiv({
         cls: "bpp-muted bpp-gantt-skipped",
@@ -5477,12 +5718,29 @@ var GanttView = class extends PowerPackView {
       const diamond = track.createDiv({ cls: "bpp-gantt-milestone" });
       diamond.setCssProps({ left: `${bar.startIndex * px}px` });
       diamond.setAttr("title", `${bar.name}: ${bar.startDate}`);
-      if (row) diamond.addEventListener("click", () => this.openRow(row));
+      diamond.setAttr("data-bpp-id", bar.id);
+      if (row && openMenu) {
+        diamond.addEventListener("click", () => this.openRow(row));
+        diamond.tabIndex = 0;
+        diamond.setAttr("role", "button");
+        diamond.setAttr("aria-label", `${bar.name}: milestone on ${bar.startDate}`);
+        diamond.addEventListener("keydown", (evt) => {
+          if (evt.key === "Enter" || evt.key === " ") {
+            evt.preventDefault();
+            this.openRow(row);
+          } else if (evt.key === "ContextMenu" || evt.key === "F10" && evt.shiftKey) {
+            evt.preventDefault();
+            openMenu(diamond);
+          }
+        });
+        diamond.addEventListener("contextmenu", (evt) => openMenu(evt));
+      }
       return;
     }
     const barEl = track.createDiv({ cls: "bpp-gantt-bar" });
     barEl.setCssProps({ left: `${bar.startIndex * px}px`, width: `${Math.max(1, bar.span) * px}px` });
     barEl.setAttr("title", `${bar.name}: ${bar.startDate} \u2192 ${bar.endDate}`);
+    barEl.setAttr("data-bpp-id", bar.id);
     if (row && openMenu) {
       const progress = this.progressPct(row);
       if (progress !== null) {
@@ -5495,12 +5753,13 @@ var GanttView = class extends PowerPackView {
       barEl.setAttr("role", "button");
       barEl.setAttr("aria-label", `${bar.name}: ${bar.startDate} to ${bar.endDate}`);
       barEl.addEventListener("keydown", (evt) => {
-        if (evt.key === "Enter") {
+        if (evt.key === "Enter" || evt.key === " ") {
           evt.preventDefault();
           this.openRow(row);
         } else if (evt.key === "ArrowRight" || evt.key === "ArrowLeft") {
           evt.preventDefault();
           const delta = evt.key === "ArrowRight" ? 1 : -1;
+          this.focusBarId = row.id;
           if (evt.shiftKey) void this.applyResize(row, startProp, endProp, delta);
           else void this.applyMove(row, startProp, endProp, delta);
         } else if (evt.key === "ContextMenu" || evt.key === "F10" && evt.shiftKey) {
@@ -6254,8 +6513,12 @@ var BasesPowerPackPlugin = class extends import_obsidian9.Plugin {
     /** In-memory undo stack for the frontmatter writes every view makes. */
     this.undo = new UndoManager();
     this.api = null;
-    /** Cached vault snapshot shared by every view, rebuilt only when notes change. */
-    this.notesSnapshot = null;
+    /** Cached vault snapshot shared by every view, PATCHED per-file as notes change
+     * (a full rebuild only on first read, or when a change can't be safely
+     * attributed to one file — e.g. a folder delete). The array is a lazily
+     * re-derived view over the map so existing callers keep their RawNote[]. */
+    this.notesByPath = null;
+    this.notesArray = null;
     /** Bumped whenever the resolved data could change (vault edit / base file edit). */
     this.dataVersion = 0;
     /** Memoized resolved view (rows + parsed base) so a re-render doesn't re-read the
@@ -6272,10 +6535,29 @@ var BasesPowerPackPlugin = class extends import_obsidian9.Plugin {
   async onload() {
     await this.loadSettings();
     await this.refreshLicense();
-    this.registerEvent(this.app.metadataCache.on("changed", () => this.invalidateSnapshot()));
-    this.registerEvent(this.app.vault.on("create", () => this.invalidateSnapshot()));
-    this.registerEvent(this.app.vault.on("delete", () => this.invalidateSnapshot()));
-    this.registerEvent(this.app.vault.on("rename", () => this.invalidateSnapshot()));
+    this.registerEvent(this.app.metadataCache.on("changed", (file) => this.patchNote(file)));
+    this.registerEvent(
+      this.app.vault.on("create", (file) => {
+        if (file instanceof import_obsidian9.TFile) this.patchNote(file);
+        else this.invalidateSnapshot();
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on("delete", (file) => {
+        if (file instanceof import_obsidian9.TFile) this.removeNote(file.path);
+        else this.invalidateSnapshot();
+      })
+    );
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) => {
+        if (file instanceof import_obsidian9.TFile) {
+          this.removeNote(oldPath);
+          this.patchNote(file);
+        } else {
+          this.invalidateSnapshot();
+        }
+      })
+    );
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
         if (file instanceof import_obsidian9.TFile && file.extension === "base") this.invalidateResolved();
@@ -6342,14 +6624,55 @@ var BasesPowerPackPlugin = class extends import_obsidian9.Plugin {
     if (this.api && globals.basesPowerPack === this.api) delete globals.basesPowerPack;
     this.api = null;
   }
-  /** The shared vault snapshot, rebuilt lazily after any note change. */
+  /** The shared vault snapshot, built lazily and then patched per-file. */
   getNotesSnapshot() {
-    if (!this.notesSnapshot) this.notesSnapshot = buildRawNotes(this.app);
-    return this.notesSnapshot;
+    if (!this.notesByPath) {
+      this.notesByPath = /* @__PURE__ */ new Map();
+      for (const note of buildRawNotes(this.app)) this.notesByPath.set(note.path, note);
+      this.notesArray = null;
+    }
+    if (!this.notesArray) this.notesArray = [...this.notesByPath.values()];
+    return this.notesArray;
   }
-  /** Drop the cached snapshot so the next read (and re-render) sees current notes. */
+  /** Drop the cached snapshot so the next read rebuilds from scratch — the
+   * fallback for changes that can't be attributed to a single file. */
   invalidateSnapshot() {
-    this.notesSnapshot = null;
+    this.notesByPath = null;
+    this.notesArray = null;
+    this.invalidateResolved();
+  }
+  /** Rebuild ONE note's snapshot entry from the live metadata cache. Non-markdown
+   * files aren't in the snapshot, but still invalidate the resolved view (a .base
+   * rename, say, can change what resolves). */
+  patchNote(file) {
+    if (this.notesByPath && file.extension === "md") {
+      this.notesByPath.set(file.path, buildRawNote(this.app, file));
+      this.notesArray = null;
+    }
+    this.invalidateResolved();
+  }
+  /** Drop one note from the snapshot (delete, or the old path of a rename). */
+  removeNote(path) {
+    if (this.notesByPath) {
+      this.notesByPath.delete(path);
+      this.notesArray = null;
+    }
+    this.invalidateResolved();
+  }
+  /**
+   * Optimistically register a just-created note with the frontmatter that was
+   * just written into it. vault.create resolves before the metadata cache
+   * indexes the file, so a cache-driven patch would snapshot it with EMPTY
+   * frontmatter — the note wouldn't land in its column/day until the debounced
+   * re-render. The real cache "changed" event re-patches with the parsed truth.
+   */
+  seedCreatedNote(file, frontmatter) {
+    if (this.notesByPath) {
+      const note = buildRawNote(this.app, file);
+      if (Object.keys(note.frontmatter).length === 0) note.frontmatter = { ...frontmatter };
+      this.notesByPath.set(file.path, note);
+      this.notesArray = null;
+    }
     this.invalidateResolved();
   }
   /** Drop the resolved-view cache (rows + parsed base) without rebuilding the note
@@ -6535,6 +6858,8 @@ var BasesPowerPackPlugin = class extends import_obsidian9.Plugin {
     this.settings.kanbanCardFields = sanitizeStringArray(this.settings.kanbanCardFields, DEFAULT_SETTINGS.kanbanCardFields);
     this.settings.kanbanExtraColumns = sanitizeStringMap(this.settings.kanbanExtraColumns);
     this.settings.kanbanColumnOrder = sanitizeStringMap(this.settings.kanbanColumnOrder);
+    this.settings.kanbanSortBy = sanitizeSortMap(this.settings.kanbanSortBy);
+    this.settings.kanbanHideDone = sanitizeBoolMap(this.settings.kanbanHideDone);
     if (typeof this.settings.kanbanColorColumns !== "boolean") this.settings.kanbanColorColumns = DEFAULT_SETTINGS.kanbanColorColumns;
     this.settings.kanbanGroupBy = coerceProp(this.settings.kanbanGroupBy, DEFAULT_SETTINGS.kanbanGroupBy);
     this.settings.kanbanDoneValue = coerceProp(this.settings.kanbanDoneValue, DEFAULT_SETTINGS.kanbanDoneValue);
@@ -6555,8 +6880,8 @@ var BasesPowerPackPlugin = class extends import_obsidian9.Plugin {
     if (typeof this.settings.hierarchyOrderProp !== "string") this.settings.hierarchyOrderProp = DEFAULT_SETTINGS.hierarchyOrderProp;
     if (typeof this.settings.hierarchyQuickAddFolder !== "string") this.settings.hierarchyQuickAddFolder = "";
   }
-  async saveSettings() {
-    this.invalidateResolved();
+  async saveSettings(opts) {
+    if ((opts == null ? void 0 : opts.invalidateResolved) !== false) this.invalidateResolved();
     this.savePromise = this.savePromise.then(() => this.saveData(this.settings));
     return this.savePromise;
   }
@@ -6625,6 +6950,22 @@ function sanitizeStringArray(value, fallback = []) {
   const parts = value.filter((item) => typeof item === "string").map((item) => item.trim()).filter(Boolean);
   const deduped = [...new Set(parts)];
   return deduped.length > 0 ? deduped : [...fallback];
+}
+function sanitizeSortMap(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out = {};
+  for (const [key, sort] of Object.entries(value)) {
+    if (typeof sort === "string" && KANBAN_SORTS.includes(sort)) out[key] = sort;
+  }
+  return out;
+}
+function sanitizeBoolMap(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out = {};
+  for (const [key, flag] of Object.entries(value)) {
+    if (typeof flag === "boolean") out[key] = flag;
+  }
+  return out;
 }
 function sanitizeStringMap(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};

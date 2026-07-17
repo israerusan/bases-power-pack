@@ -141,8 +141,15 @@ export function buildGantt(input: GanttInput[], defaultSpanDays = 1, maxDays = 1
 
 	if (bars.length === 0) return { days: [], bars: [], skipped, offAxis: 0 };
 
-	const minDay = Math.min(...bars.map((b) => b.startDay));
-	const maxDay = Math.min(Math.max(...bars.map((b) => b.endDay)), minDay + maxDays - 1);
+	// Single pass, no spread: Math.min(...bars.map(...)) allocates two throwaway
+	// arrays and hits the engine argument-count limit on a very large dated set.
+	let minDay = bars[0].startDay;
+	let maxEnd = bars[0].endDay;
+	for (const b of bars) {
+		if (b.startDay < minDay) minDay = b.startDay;
+		if (b.endDay > maxEnd) maxEnd = b.endDay;
+	}
+	const maxDay = Math.min(maxEnd, minDay + maxDays - 1);
 
 	const days: string[] = [];
 	for (let d = minDay; d <= maxDay; d++) days.push(dayNumberToIso(d));

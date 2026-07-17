@@ -194,7 +194,7 @@ export class CalendarView extends PowerPackView {
 			const key = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 			const cell = this.renderDayCell(grid, key, dateProp, byDay.get(key) || [], today);
 			cell.createDiv({ cls: "bpp-cal-daynum", text: String(day) });
-			this.renderCellEvents(cell, byDay.get(key) || [], dateProp);
+			this.renderCellEvents(cell, byDay.get(key) || [], dateProp, key < today);
 		}
 	}
 
@@ -208,7 +208,7 @@ export class CalendarView extends PowerPackView {
 		}
 		for (const key of weekKeys(this.anchor)) {
 			const cell = this.renderDayCell(grid, key, dateProp, byDay.get(key) || [], today);
-			this.renderCellEvents(cell, byDay.get(key) || [], dateProp);
+			this.renderCellEvents(cell, byDay.get(key) || [], dateProp, key < today);
 		}
 	}
 
@@ -250,10 +250,15 @@ export class CalendarView extends PowerPackView {
 		return cell;
 	}
 
-	private renderCellEvents(cell: HTMLElement, rows: Row[], dateProp: string): void {
+	private renderCellEvents(cell: HTMLElement, rows: Row[], dateProp: string, isPast = false): void {
 		const colorProp = this.plugin.settings.calendarColorProp.trim();
 		for (const row of rows) {
 			const ev = cell.createDiv({ cls: "bpp-cal-event" });
+			// A past scheduled date is overdue — flag it with a subtle red edge, don't
+			// hide it. But a DONE note isn't overdue (it's finished), matching the
+			// Kanban card chip; without this the same note reads red here and neutral
+			// on the board.
+			if (isPast && !this.isDone(row)) ev.addClass("is-overdue");
 			ev.createSpan({ cls: "bpp-cal-event-label", text: row.name });
 			const openMenu = (a: MouseEvent | HTMLElement): void => this.openEventMenu(a, row, dateProp);
 			if (colorProp) {
@@ -314,33 +319,74 @@ export class CalendarView extends PowerPackView {
 	// ---- agenda ---------------------------------------------------------------
 
 	private renderAgenda(container: HTMLElement, byDay: Map<string, Row[]>, dateProp: string): void {
-		// "Upcoming" means upcoming: today and forward. ISO keys sort lexically, so a
-		// string compare against today is a correct date filter.
+		// ISO keys sort lexically, so a string compare against today is a correct
+		// date filter. Past-due notes get their own Overdue section instead of
+		// silently vanishing — they're exactly what a planner must surface.
 		const today = todayIso();
-		const days = [...byDay.keys()].filter((key) => key >= today).sort();
+		// Overdue = past days, but a DONE note isn't overdue (matches the Kanban
+		// card chip and the cell styling), so those are dropped from the section —
+		// leaving only genuinely-slipped work, and never a red-flagged completed
+		// task. Upcoming keeps every dated note today-forward.
+		const overdueDays: Array<{ key: string; rows: Row[] }> = [];
+		let overdueCount = 0;
+		for (const key of [...byDay.keys()].filter((k) => k < today).sort()) {
+			const rows = (byDay.get(key) ?? []).filter((row) => !this.isDone(row));
+			if (rows.length === 0) continue;
+			overdueDays.push({ key, rows });
+			overdueCount += rows.length;
+		}
+		const upcoming = [...byDay.keys()].filter((key) => key >= today).sort();
 		const list = container.createDiv({ cls: "bpp-agenda" });
-		if (days.length === 0) {
+		if (overdueDays.length === 0 && upcoming.length === 0) {
 			list.createDiv({
 				cls: "bpp-empty",
-				text: this.searchQuery ? "No upcoming notes match the current search." : "No upcoming dated notes.",
+				text: this.searchQuery ? "No dated notes match the current search." : "No dated notes yet.",
 			});
 			return;
 		}
-		for (const key of days) {
-			const group = list.createDiv({ cls: "bpp-agenda-day" });
-			const head = group.createDiv({ cls: "bpp-agenda-date" });
-			head.createSpan({ text: dayLabel(key) });
-			head.createSpan({ cls: "bpp-muted", text: key });
-			if (key === today) head.createSpan({ cls: "bpp-badge bpp-badge-lite", text: "Today" });
-			for (const row of byDay.get(key) || []) {
-				const item = group.createDiv({ cls: "bpp-agenda-item" });
-				item.createSpan({ cls: "bpp-agenda-item-label", text: row.name });
-				const openMenu = (a: MouseEvent | HTMLElement): void => this.openEventMenu(a, row, dateProp);
-				item.addEventListener("click", () => this.openRow(row));
-				this.makeItemAccessible(item, row.name, () => this.openRow(row), openMenu);
-				item.addEventListener("contextmenu", (evt) => openMenu(evt));
-				this.addOverflowButton(item, row.name, openMenu);
+		if (overdueDays.length > 0) {
+			const head = list.createDiv({ cls: "bpp-agenda-section is-overdue" });
+			head.createSpan({ text: "Overdue" });
+			head.createSpan({ cls: "bpp-badge bpp-badge-warn", text: String(overdueCount) });
+			for (const { key, rows } of overdueDays) this.renderAgendaDay(list, key, rows, dateProp, today, true);
+			if (upcoming.length > 0) {
+				list.createDiv({ cls: "bpp-agenda-section" }).createSpan({ text: "Upcoming" });
 			}
+		}
+		for (const key of upcoming) this.renderAgendaDay(list, key, byDay.get(key) ?? [], dateProp, today, false);
+	}
+
+	/** Whether a row's group value marks it done — the same predicate the Kanban
+	 * board uses (group value === the configured Done value). */
+	private isDone(row: Row): boolean {
+		const groupBy = this.plugin.settings.kanbanGroupBy || "status";
+		const doneValue = (this.plugin.settings.kanbanDoneValue || "done").trim().toLocaleLowerCase();
+		return toStr(row.scope.get(groupBy)).trim().toLocaleLowerCase() === doneValue;
+	}
+
+	private renderAgendaDay(
+		list: HTMLElement,
+		key: string,
+		rows: Row[],
+		dateProp: string,
+		today: string,
+		isOverdue: boolean
+	): void {
+		const group = list.createDiv({ cls: "bpp-agenda-day" });
+		if (isOverdue) group.addClass("is-overdue");
+		const head = group.createDiv({ cls: "bpp-agenda-date" });
+		head.createSpan({ text: dayLabel(key) });
+		head.createSpan({ cls: "bpp-muted", text: key });
+		// "Today" is a temporal state, not a tier — it must not reuse the Lite badge.
+		if (key === today) head.createSpan({ cls: "bpp-badge bpp-badge-today", text: "Today" });
+		for (const row of rows) {
+			const item = group.createDiv({ cls: "bpp-agenda-item" });
+			item.createSpan({ cls: "bpp-agenda-item-label", text: row.name });
+			const openMenu = (a: MouseEvent | HTMLElement): void => this.openEventMenu(a, row, dateProp);
+			item.addEventListener("click", () => this.openRow(row));
+			this.makeItemAccessible(item, row.name, () => this.openRow(row), openMenu);
+			item.addEventListener("contextmenu", (evt) => openMenu(evt));
+			this.addOverflowButton(item, row.name, openMenu);
 		}
 	}
 

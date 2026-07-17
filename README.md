@@ -17,7 +17,8 @@ Advanced database views and automation on top of Obsidian's native **Bases** fea
 | **Kanban add / remove columns** (create a new status column from the board) | ✅ | ✅ |
 | **Kanban reorder columns** (drag a column header to reposition it) | ✅ | ✅ |
 | **Kanban color-coded columns & cards** (stable color per column value) | ✅ | ✅ |
-| **Kanban card metadata** (raw due / priority / owner / tags lines) | ✅ | ✅ |
+| **Kanban card metadata** (due / priority / owner / tags on the card) | ✅ | ✅ |
+| **Semantic card chips** (overdue/due-soon pill, priority badge, tag pills) | ✅ | ✅ |
 | **Kanban inline card edit** (click a field, write frontmatter in place) | ✅ | ✅ |
 | **Kanban group-by picker** (re-group the board from the toolbar) | ✅ | ✅ |
 | **Right-click menus** (card: open/move/rename/edit/delete · column: color/rename/WIP/add) | ✅ | ✅ |
@@ -25,10 +26,10 @@ Advanced database views and automation on top of Obsidian's native **Bases** fea
 | **WIP limits** (per-column work-in-progress caps; flag or block over-limit) | ✅ | ✅ |
 | **Undo** (reverse the last move, edit, bulk change, or column rename) | ✅ | ✅ |
 | **Move Rules automation** (on entering a column, auto-write frontmatter) | — | ✅ |
-| **Calendar view** (Month / Week / Agenda) | — | ✅ |
+| **Calendar view** (Month / Week / Agenda with an Overdue section) | — | ✅ |
 | **Calendar drag-to-reschedule** (move an event, write the date) | — | ✅ |
 | **Calendar create-on-day** + color-by property | — | ✅ |
-| **Quick search** (filter cards/events/bars by name, path, folder, tags) | ✅ | ✅ |
+| **Quick search** (by name/path/folder/tags, plus `key:value` property tokens) | ✅ | ✅ |
 | **Right-click menus on calendar events & Gantt bars** (reschedule/set-date, open, rename, delete) | — | ✅ |
 | **Gantt timeline view** (bars from start/end dates) | — | ✅ |
 | **Gantt drag-to-move / resize** (reschedule + change duration) | — | ✅ |
@@ -36,7 +37,7 @@ Advanced database views and automation on top of Obsidian's native **Bases** fea
 | **Outline / hierarchy view** (nest notes by a parent property into a tree) | — | ✅ |
 | **Outline drag-to-reparent** + add-child, branch roll-ups (count · done/total · progress) | — | ✅ |
 | **Rename-safe hierarchy** (renaming a parent repoints its children) | — | ✅ |
-| **Roll-ups** (aggregate an expression across rows) | — | ✅ |
+| **Roll-ups** (aggregate an expression across rows, plus per-column chips) | — | ✅ |
 | **Formulas** (computed columns / card values) | — | ✅ |
 | **Saved filters & view presets** | — | ✅ |
 | **`.base` file as data source** (read Bases filters + formulas) | — | ✅ |
@@ -47,10 +48,18 @@ Lite is a genuinely useful kanban layer: create, move, and inline-edit cards, re
 
 All three views run on a shared query engine. In the **Lite** tier they read standard frontmatter across the vault; in **Premium** they can instead take a `.base` file as their data source, applying its filters and formulas.
 
-- **Kanban** — groups rows by a configurable property (default `status`), supports quick search/sort/hide-done controls and a toolbar **group-by picker**, lets you create a note directly from any column, add brand-new status columns from the board (so you can drag a card to a status no note has yet), drag cards between columns to update frontmatter, and drag column headers to reorder the board. Click any card metadata field to **edit it in place** — the parsed value is written straight to frontmatter. Set a **WIP limit** on any column (right-click its header) to cap its cards. Columns and their cards are color-coded by a stable hue per value (toggle in settings). Premium cards can also show a formula value (e.g. `round(done / total * 100, 0) + "%"`). Click a card to open the note.
-- **Calendar** — Month, Week, or Agenda. Places rows onto days using a configurable date property (default `due`), highlights today, and can color events by any property. **Drag an event to another day to reschedule it** (the date property is rewritten, preserving any time-of-day), or hover a day and click **+** to create a note dated to that day. A toolbar **search** filters events; **right-click an event** to reschedule via a prompt, open, rename, or delete without dragging.
+- **Kanban** — groups rows by a configurable property (default `status`), supports quick search/sort/hide-done controls and a toolbar **group-by picker** (sort and hide-done are remembered per group-by across restarts), lets you create a note directly from any column, add brand-new status columns from the board (so you can drag a card to a status no note has yet), drag cards between columns to update frontmatter, and drag column headers to reorder the board. Card fields render as **semantic chips**: a due pill that turns red when overdue (and amber when due within 2 days), a priority badge, and tag pills — click any of them to **edit the value in place**. Set a **WIP limit** on any column (right-click its header) to cap its cards — the count is the column's true membership, so a search can't sneak a move past the cap. Columns and their cards are color-coded by a stable hue per value (toggle in settings). Premium cards can also show a formula value (e.g. `round(done / total * 100, 0) + "%"`), and premium roll-ups also compute **per column** ("Doing 6/8 · 21 pts"). Click a card to open the note.
+- **Calendar** — Month, Week, or Agenda. Places rows onto days using a configurable date property (default `due`), highlights today, and can color events by any property. The Agenda leads with an **Overdue** section so slipped work is impossible to miss, and past-day events carry a red edge in Month/Week. **Drag an event to another day to reschedule it** (the date property is rewritten, preserving any time-of-day), or hover a day and click **+** to create a note dated to that day. A toolbar **search** filters events; **right-click an event** to reschedule via a prompt, open, rename, or delete without dragging.
 - **Gantt** — horizontal timeline; each row becomes a bar from a start date property to an optional end date. **Drag a bar to move it, drag its right edge to resize** (both write frontmatter). Zoom the time scale, scroll to today, fill bars by a `progress` property (accepts a `0–1` fraction or a `0–100` percent), and show `milestone` notes as diamonds. A toolbar **search** filters bars; **right-click a bar** to set its start/end date via a prompt, open, rename, or delete.
 - **Outline** — an indented tree of your notes linked by a `parent` frontmatter property holding the parent note's path. Each branch rolls up a **descendant count** and a **done / total + progress** bar over its leaf tasks. **Drag a row onto another to reparent it**, drop it on the top strip to detach it, or right-click to add a child, set/clear the parent, and open/rename/delete. Cycles and dangling parents are flagged, not crashed; a parent that's filtered out still appears as a faint placeholder so its children stay nested. Renaming or moving a parent note automatically repoints its children.
+
+### Quick search (Free)
+
+Every view's toolbar search matches note **name, path, folder, and tags** — and
+understands **property tokens**: `priority:high`, `owner:sam`, `tag:blocked`, or
+any `key:value` (substring, case-insensitive; premium formulas resolve too).
+Multiple tokens must all match, so `owner:sam urgent` narrows to Sam's urgent
+items. A literal `foo:bar` string in a note name still matches as plain text.
 
 ### WIP limits (Free)
 

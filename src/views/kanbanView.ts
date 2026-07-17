@@ -4,10 +4,14 @@ import { PowerPackView } from "./abstractView";
 import {
 	buildKanbanColumns,
 	columnHue,
+	dueStatus,
 	formatCardField,
+	priorityClass,
 	reorderColumns,
 	type KanbanSort,
 } from "../query/kanban";
+import { toIsoDateKey, todayIso } from "../query/dates";
+import { computeRollup } from "../query/rollup";
 import {
 	buildQuickAddContent,
 	buildQuickAddPath,
@@ -40,10 +44,43 @@ const SORT_OPTIONS: Array<{ value: KanbanSort; label: string }> = [
  * formula line — all driven by the shared query engine.
  */
 export class KanbanView extends PowerPackView {
-	private hideDoneColumn = false;
-	private sortBy: KanbanSort = "manual";
 	/** The currently visible (filtered) rows, captured for the bulk-edit action. */
 	private lastVisibleRows: Row[] = [];
+	/** TRUE column membership — resolved (base/filter-scoped) rows grouped by
+	 * value, ignoring the transient quick-search. Drives WIP badges/enforcement,
+	 * per-column roll-ups, and the column-rename target set. */
+	private lastColumnRows = new Map<string, Row[]>();
+
+	private get groupByProp(): string {
+		return this.plugin.settings.kanbanGroupBy || "status";
+	}
+
+	/** Sort + hide-done are persisted per group-by property, so the board reopens
+	 * exactly as you left it (they were session-only fields before 1.11). */
+	private get sortBy(): KanbanSort {
+		const v = this.plugin.settings.kanbanSortBy[this.groupByProp];
+		return SORT_OPTIONS.some((o) => o.value === v) ? (v as KanbanSort) : "manual";
+	}
+
+	private get hideDoneColumn(): boolean {
+		return this.plugin.settings.kanbanHideDone[this.groupByProp] === true;
+	}
+
+	private async setSortBy(value: KanbanSort): Promise<void> {
+		if (value === "manual") delete this.plugin.settings.kanbanSortBy[this.groupByProp];
+		else this.plugin.settings.kanbanSortBy[this.groupByProp] = value;
+		// Sort is applied AFTER resolution (buildKanbanColumns), so it can't change
+		// the resolved rows — skip the cache drop to keep the toggle O(1).
+		await this.plugin.saveSettings({ invalidateResolved: false });
+		await this.render();
+	}
+
+	private async setHideDone(value: boolean): Promise<void> {
+		if (value) this.plugin.settings.kanbanHideDone[this.groupByProp] = true;
+		else delete this.plugin.settings.kanbanHideDone[this.groupByProp];
+		await this.plugin.saveSettings({ invalidateResolved: false });
+		await this.render();
+	}
 
 	getViewType(): string {
 		return VIEW_TYPE_KANBAN;
@@ -86,6 +123,17 @@ export class KanbanView extends PowerPackView {
 			columnOrder: this.plugin.settings.kanbanColumnOrder[groupBy] ?? [],
 		});
 		this.lastVisibleRows = columns.flatMap((column) => column.rows);
+		// TRUE column membership (see lastColumnRows): without it, hiding cards
+		// with a search let a drop sneak past a WIP cap because the badge and the
+		// enforcement both under-counted the target column.
+		const columnRows = new Map<string, Row[]>();
+		for (const row of resolved.rows) {
+			const name = toStr(row.scope.get(groupBy));
+			if (!name) continue;
+			if (!columnRows.has(name)) columnRows.set(name, []);
+			columnRows.get(name)!.push(row);
+		}
+		this.lastColumnRows = columnRows;
 		// The displayed order — the basis for a header-drag reorder.
 		const orderedNames = columns.map((column) => column.name);
 		const colored = this.plugin.settings.kanbanColorColumns;
@@ -106,11 +154,28 @@ export class KanbanView extends PowerPackView {
 
 		const cardFormula = this.plugin.settings.isPro ? this.plugin.settings.cardFormula.trim() : "";
 		const metaFields = this.plugin.settings.kanbanCardFields;
+		// Chip context: overdue/soon state applies only to due-style props, and is
+		// muted on done cards (a completed task isn't "overdue").
+		const today = todayIso();
+		const dueProps = new Set(["due", this.plugin.settings.calendarDateProp || "due"]);
+		const doneValue = (this.plugin.settings.kanbanDoneValue || "done").trim().toLocaleLowerCase();
 
 		for (const column of columns) {
 			const col = board.createDiv({ cls: "bpp-kanban-column" });
+			// Badge, over-WIP flag, AND the accessible name all count the column's
+			// TRUE membership, not the search-filtered subset — so the announced
+			// count agrees with the visible badge and with move enforcement. When a
+			// search hides cards, the name says so ("N shown").
+			const trueCount = (columnRows.get(column.name) ?? []).length;
+			const wipLimit = limitFor(this.plugin.settings.kanbanWipLimits, column.name);
+			const overWip = isOverWip(trueCount, wipLimit);
 			col.setAttr("role", "group");
-			col.setAttr("aria-label", `Column ${column.name}, ${column.rows.length} card${column.rows.length === 1 ? "" : "s"}`);
+			col.setAttr(
+				"aria-label",
+				`Column ${column.name}, ${trueCount} card${trueCount === 1 ? "" : "s"}` +
+					(column.rows.length !== trueCount ? `, ${column.rows.length} shown` : "") +
+					(overWip ? ", over WIP limit" : "")
+			);
 			if (colored) col.setCssProps({ "--bpp-col-hue": this.columnHueFor(column.name) });
 			this.wireColumnDrop(col, column.name, groupBy, rowById, orderedNames);
 
@@ -120,17 +185,22 @@ export class KanbanView extends PowerPackView {
 			colHead.addEventListener("contextmenu", (evt) =>
 				this.openColumnMenu(evt, column.name, groupBy, removable, orderedNames)
 			);
-			const wipLimit = limitFor(this.plugin.settings.kanbanWipLimits, column.name);
-			if (isOverWip(column.rows.length, wipLimit)) col.addClass("is-over-wip");
+			if (overWip) col.addClass("is-over-wip");
 			const colLabel = colHead.createDiv({ cls: "bpp-kanban-column-label" });
 			colLabel.createSpan({ text: column.name });
 			const count = colLabel.createSpan({
 				cls: "bpp-count",
-				text: formatWipCount(column.rows.length, wipLimit),
+				text: formatWipCount(trueCount, wipLimit),
 			});
 			if (wipLimit !== null) {
 				count.addClass("has-wip");
-				count.setAttr("title", `${column.rows.length} of ${wipLimit} (WIP limit)`);
+				count.setAttr(
+					"title",
+					`${trueCount} of ${wipLimit} (WIP limit)` +
+						(column.rows.length !== trueCount ? ` · ${column.rows.length} shown` : "")
+				);
+			} else if (column.rows.length !== trueCount) {
+				count.setAttr("title", `${column.rows.length} shown · ${trueCount} total`);
 			}
 
 			const actions = colHead.createDiv({ cls: "bpp-column-actions" });
@@ -154,6 +224,19 @@ export class KanbanView extends PowerPackView {
 				removeButton.addEventListener("click", () => void this.removeExtraColumn(groupBy, column.name));
 			}
 
+			// Per-column roll-ups (premium): the same configured aggregations as the
+			// board-wide bar, computed over just this column's true membership — so a
+			// WIP cap can be read by weight ("Doing 6/8 · 21 pts"), not card count.
+			if (this.plugin.settings.isPro && this.plugin.settings.rollups.length > 0) {
+				const chips = col.createDiv({ cls: "bpp-col-rollups" });
+				for (const rollup of this.plugin.settings.rollups) {
+					chips.createSpan({
+						cls: "bpp-col-rollup",
+						text: `${rollup.label || rollup.aggregation}: ${computeRollup(rollup, columnRows.get(column.name) ?? [])}`,
+					});
+				}
+			}
+
 			for (const row of column.rows) {
 				const card = col.createDiv({ cls: "bpp-card" });
 				card.draggable = true;
@@ -161,10 +244,14 @@ export class KanbanView extends PowerPackView {
 				const head = card.createDiv({ cls: "bpp-card-head" });
 				head.createDiv({ cls: "bpp-card-title", text: row.name });
 				this.addOverflowButton(head, row.name, openMenu);
+				const isDone = column.name.trim().toLocaleLowerCase() === doneValue;
 				for (const field of metaFields) {
 					const display = formatCardField(row, field);
 					if (display === null) continue;
-					this.renderEditableField(card, row, field, display);
+					this.renderEditableField(card, row, field, display, {
+						today,
+						dueState: dueProps.has(field) && !isDone,
+					});
 				}
 				if (cardFormula) {
 					const val = evaluateSafe(cardFormula, row.scope);
@@ -232,16 +319,87 @@ export class KanbanView extends PowerPackView {
 		await this.render();
 	}
 
-	/** A card metadata line the user can click to edit the underlying frontmatter. */
-	private renderEditableField(card: HTMLElement, row: Row, field: string, display: string): void {
+	/**
+	 * A card metadata line the user can click to edit the underlying frontmatter.
+	 * Known field shapes render as semantic chips — a due pill flagged
+	 * overdue/soon, a priority badge, tag pills — so card state is scannable
+	 * instead of identical grey "key: value" lines; anything else keeps the plain
+	 * line. Every variant shares the same click-to-edit wiring (beginInlineEdit
+	 * empties the line and swaps in the input regardless of content).
+	 */
+	private renderEditableField(
+		card: HTMLElement,
+		row: Row,
+		field: string,
+		display: string,
+		ctx: { today: string; dueState: boolean }
+	): void {
 		const line = card.createDiv({ cls: "bpp-card-meta bpp-card-meta-editable" });
-		line.createSpan({ cls: "bpp-card-meta-key", text: `${field}:` });
-		line.createSpan({ cls: "bpp-card-meta-val", text: display });
+		this.renderFieldContent(line, row, field, display, ctx);
 		line.setAttr("title", "Click to edit");
 		line.addEventListener("click", (event) => {
 			event.stopPropagation();
 			this.beginInlineEdit(card, line, row, field);
 		});
+	}
+
+	private renderFieldContent(
+		line: HTMLElement,
+		row: Row,
+		field: string,
+		display: string,
+		ctx: { today: string; dueState: boolean }
+	): void {
+		const value = row.scope.get(field);
+
+		// Date-valued field → date chip. Gate on the value actually LOOKING date-
+		// shaped (a real Date, or a leading YYYY-MM-DD) before calling toIsoDateKey:
+		// its lenient `new Date()` fallback parses bare small integers as month
+		// numbers, so `priority: 1` / `sprint: 2025` would otherwise render as a
+		// date chip instead of reaching the priority/plain branches below. Overdue/
+		// soon coloring only applies to due-style props (a past "start" isn't
+		// overdue) and never on a done card.
+		const isoKey =
+			value instanceof Date || /^\d{4}-\d{2}-\d{2}/.test(toStr(value)) ? toIsoDateKey(value) : null;
+		if (isoKey) {
+			const status = ctx.dueState ? dueStatus(isoKey, ctx.today) : null;
+			const chip = line.createSpan({ cls: "bpp-chip bpp-chip-date" });
+			if (status === "overdue") chip.addClass("is-overdue");
+			else if (status === "soon") chip.addClass("is-soon");
+			chip.createSpan({ cls: "bpp-chip-key", text: field });
+			chip.createSpan({ text: display });
+			// Real, visually-hidden text (not just an aria-label on a non-interactive
+			// span, which browse-mode / virtual cursors don't reliably announce).
+			if (status) {
+				chip.createSpan({ cls: "bpp-sr-only", text: status === "overdue" ? " (overdue)" : " (due soon)" });
+			}
+			return;
+		}
+
+		if (field === "priority") {
+			const cls = priorityClass(value);
+			const chip = line.createSpan({ cls: "bpp-chip bpp-chip-priority" });
+			if (cls) chip.addClass(cls);
+			else {
+				// Unrecognized value: fall back to the board's stable hue-per-value.
+				chip.addClass("is-hue");
+				chip.setCssProps({ "--bpp-col-hue": String(columnHue(display)) });
+			}
+			chip.createSpan({ cls: "bpp-chip-key", text: field });
+			chip.createSpan({ text: display });
+			return;
+		}
+
+		if (field === "tags" || field === "tag" || field === "file.tags") {
+			const parts = Array.isArray(value)
+				? value.map((v) => toStr(v)).filter(Boolean)
+				: display.split(",").map((s) => s.trim()).filter(Boolean);
+			for (const part of parts) line.createSpan({ cls: "bpp-chip bpp-chip-tag", text: part });
+			if (parts.length > 0) return;
+		}
+
+		line.createSpan({ cls: "bpp-card-meta-key", text: `${field}:` });
+		line.createSpan({ cls: "bpp-card-meta-val", text: display });
 	}
 
 	/** Swap a metadata line for an input, committing the parsed value on Enter/blur. */
@@ -420,14 +578,37 @@ export class KanbanView extends PowerPackView {
 	private applyColumnRename(groupBy: string, from: string, to: string): void {
 		if (!to || to === from) return;
 		const key = groupBy || "status";
-		const targets = this.plugin.getNotesSnapshot().filter((n) => toStr(n.frontmatter[key]) === from);
+		// Scope the rewrite to THIS board's rows — the resolved base/filter set, the
+		// same membership the column shows. Renaming a column inside a filtered
+		// .base must not silently rewrite matching notes the base excluded.
+		// (Free tier resolves the whole vault, so behavior there is unchanged.)
+		//
+		// Only rows whose RAW frontmatter[key] actually equals `from` are writable:
+		// when the board is grouped by a premium formula or a computed `file.*`
+		// field, the column exists (scope resolves it) but writing frontmatter[key]
+		// would create a shadowing literal key, corrupting the data. Such rows are
+		// filtered out here, so a formula-grouped rename writes nothing — matching
+		// 1.10 — and we tell the user why below.
+		const boardRows = this.lastColumnRows.get(from) ?? [];
+		const targets = boardRows.map((r) => r.note).filter((n) => toStr(n.frontmatter[key]) === from);
+		if (boardRows.length > 0 && targets.length === 0) {
+			new Notice(`"${key}" is a formula or computed field — rename the value at its source, not from the board.`);
+			return;
+		}
+		const vaultWide = this.plugin.getNotesSnapshot().filter((n) => toStr(n.frontmatter[key]) === from).length;
+		const excluded = Math.max(0, vaultWide - targets.length);
 		const run = (): void => void this.doColumnRename(groupBy, key, from, to, targets);
-		// A bulk frontmatter rewrite deserves a heads-up above a small threshold,
-		// consistent with the delete-note confirmation.
-		if (targets.length > 5) {
+		// A bulk frontmatter rewrite deserves a heads-up above a small threshold
+		// (consistent with the delete-note confirmation) — and always when notes
+		// outside the current board match the old value, so the scope is explicit.
+		if (targets.length > 5 || excluded > 0) {
 			new ConfirmModal(this.app, {
 				title: "Rename column?",
-				body: `This rewrites "${key}: ${from}" → "${to}" on ${targets.length} notes.`,
+				body:
+					`This rewrites "${key}: ${from}" → "${to}" on ${targets.length} note${targets.length === 1 ? "" : "s"} in this board.` +
+					(excluded > 0
+						? ` ${excluded} matching note${excluded === 1 ? "" : "s"} outside the current base/filter ${excluded === 1 ? "is" : "are"} left unchanged.`
+						: ""),
 				cta: "Rename",
 				onConfirm: run,
 			}).open();
@@ -531,18 +712,12 @@ export class KanbanView extends PowerPackView {
 			const el = sortSelect.createEl("option", { text: option.label, value: option.value });
 			if (option.value === this.sortBy) el.selected = true;
 		}
-		sortSelect.addEventListener("change", () => {
-			this.sortBy = sortSelect.value as KanbanSort;
-			void this.render();
-		});
+		sortSelect.addEventListener("change", () => void this.setSortBy(sortSelect.value as KanbanSort));
 
 		const toggleWrap = controls.createDiv({ cls: "bpp-lite-control bpp-lite-control-toggle" });
 		const toggle = toggleWrap.createEl("input", { type: "checkbox" });
 		toggle.checked = this.hideDoneColumn;
-		toggle.addEventListener("change", () => {
-			this.hideDoneColumn = toggle.checked;
-			void this.render();
-		});
+		toggle.addEventListener("change", () => void this.setHideDone(toggle.checked));
 		toggleWrap.createSpan({ cls: "bpp-muted", text: "Hide done" });
 
 		const bulkWrap = controls.createDiv({ cls: "bpp-lite-control" });
@@ -626,14 +801,15 @@ export class KanbanView extends PowerPackView {
 		if (toStr(row.scope.get(key)) === columnName) return;
 
 		// WIP enforcement: block a move that would push the target past its limit.
-		// Count the SAME rows the header badge shows — the currently visible board
-		// membership (post search + post base/saved-filter), evaluated through the
-		// row scope like buildKanbanColumns — so the badge and the block never
-		// contradict each other. The moving card sits in another column (guaranteed
-		// by the early return above), so it isn't in this count.
+		// Count the target column's TRUE membership (base/filter-scoped, ignoring
+		// the transient quick-search) — the SAME number the header badge shows — so
+		// the badge and the block never contradict each other, and a search that
+		// hides cards can't sneak a move past the cap. The moving card sits in
+		// another column (guaranteed by the early return above), so it isn't in
+		// this count.
 		if (this.plugin.settings.kanbanBlockOverWip) {
 			const limit = limitFor(this.plugin.settings.kanbanWipLimits, columnName);
-			const targetCount = this.lastVisibleRows.filter((r) => toStr(r.scope.get(key)) === columnName).length;
+			const targetCount = (this.lastColumnRows.get(columnName) ?? []).length;
 			if (dropWouldExceed(targetCount, limit)) {
 				new Notice(`"${columnName}" is at its WIP limit (${limit}). Move blocked.`);
 				await this.render();
@@ -657,14 +833,25 @@ export class KanbanView extends PowerPackView {
 	private async quickAddNote(columnName: string, groupBy: string): Promise<void> {
 		const title = buildQuickAddTitle(columnName);
 		const stem = normalizePath(buildQuickAddPath(this.plugin.settings.kanbanQuickAddFolder, title)).replace(/\.md$/, "");
-		const path = uniqueNotePath(this.app, stem);
-		await ensureParentFolders(this.app, path);
-		const file = await this.app.vault.create(path, buildQuickAddContent(groupBy, columnName, title));
-		this.plugin.invalidateSnapshot();
-		new Notice(`Created ${file.basename}`);
-		// Open in a new tab, not getLeaf(false): the board lives in the active leaf, and
-		// reusing it would replace this view and strand the render() below on a dead contentEl.
-		await this.app.workspace.getLeaf("tab").openFile(file);
+		try {
+			const path = uniqueNotePath(this.app, stem);
+			await ensureParentFolders(this.app, path);
+			const file = await this.app.vault.create(path, buildQuickAddContent(groupBy, columnName, title));
+			// Seed the snapshot with the frontmatter we just wrote: the metadata cache
+			// hasn't indexed the new file yet, so a plain invalidate would snapshot it
+			// with empty frontmatter and the card wouldn't land in its column until
+			// the debounced re-render.
+			this.plugin.seedCreatedNote(file, { [groupBy || "status"]: columnName });
+			new Notice(`Created ${file.basename}`);
+			// Open in a new tab, not getLeaf(false): the board lives in the active leaf, and
+			// reusing it would replace this view and strand the render() below on a dead contentEl.
+			await this.app.workspace.getLeaf("tab").openFile(file);
+		} catch (error) {
+			// Parity with createOnDay/addChildNote: a failed create (illegal title,
+			// collision past uniqueNotePath's cap) surfaces as a Notice, not an
+			// unhandled rejection.
+			new Notice(`Bases Power Pack: could not create note (${String(error)}).`);
+		}
 		await this.render();
 	}
 }

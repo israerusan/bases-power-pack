@@ -3,6 +3,71 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.11.0] - 2026-07-16
+
+A **trust & everyday-speed** release, driven by a six-lens round-table critique
+(product, architecture, design, competitive strategy, accessibility/mobile,
+performance) converged over two rounds and then implemented as one deduplicated
+scope: cheap high-trust correctness fixes plus the most-cited quality lifts.
+
+### Added
+- **Semantic card chips (free).** Known fields render as scannable chips instead
+  of identical grey `key: value` lines: a **due pill** that turns red when
+  overdue and amber when due within 2 days (muted on done cards), a **priority
+  badge** for conventional values (high/medium/low, P1…, urgent — unrecognized
+  values keep the stable per-value hue), and **tag pills**. Every chip keeps the
+  same click-to-edit wiring and carries a meaningful aria-label.
+- **Property-aware quick-search (free).** Search now understands `key:value`
+  tokens — `priority:high`, `owner:sam`, `tag:blocked` — alongside plain words;
+  tokens AND together (`owner:sam urgent`). Works identically in every view. A
+  literal `foo:bar` string still matches as plain text.
+- **Overdue surfacing (premium Calendar).** The Agenda gets an **Overdue**
+  section (past-due notes were silently dropped from "Upcoming"), and events on
+  past days are flagged with a red edge in Month/Week. The agenda "Today" marker
+  no longer reuses the Lite tier badge.
+- **Per-column roll-up chips (premium).** Your configured roll-ups now also
+  compute per Kanban column ("Doing 6/8 · 21 pts"), so a WIP cap can be read by
+  weight, not just card count.
+- **Persistent board controls (free).** "Sort" and "Hide done" are remembered
+  per group-by property across view reopens and restarts (they reset every
+  session before).
+
+### Fixed
+- **Formula arithmetic is date/version-safe.** `due - 7` used to compute
+  `2026 - 7 = 2019` and `"1.4.0" / 2` returned `0.7` (the lenient parse the 1.10
+  comparison fix didn't reach). Now: date − date = whole-day difference,
+  date ± N = a shifted date, and `-`, `*`, `/`, `%` on non-numeric values return
+  null instead of garbage. A malformed number literal (`1.2.3`) is a parse error
+  instead of a silent NaN.
+- **Column rename is scoped to the board.** Renaming a Kanban column inside a
+  filtered `.base` rewrote the group property on every matching note
+  vault-wide — including notes the base excluded. It now targets the board's
+  own rows and says explicitly when matching notes outside the filter are left
+  unchanged.
+- **WIP limits can't be bypassed by searching.** The badge and the block both
+  counted the search-filtered board, so hiding cards with a search let a drop
+  sneak past the cap. Both now count the column's true membership.
+- **Kanban quick-add is guarded and instant.** A failed create surfaces as a
+  Notice (was an unhandled rejection), and the new card appears in its column
+  immediately instead of one debounce later (the metadata cache hadn't indexed
+  the new file yet).
+- **Gantt keyboard scheduling isn't single-shot.** Arrow-moving a bar re-focuses
+  it after the re-render (focus used to drop to the body after the first press),
+  and **milestones are keyboard-operable** (they were mouse-only). A latent
+  argument-limit crash on very large timelines removed.
+
+### Performance
+- **Per-file snapshot patching.** A frontmatter write (drag, inline edit, bulk
+  op) now rebuilds only that note's snapshot entry; previously every write —
+  including the plugin's own — invalidated the whole vault snapshot and
+  re-scanned every markdown file before repaint.
+
+### UI
+- Toolbars wrap instead of clipping in narrow panes; the search box flexes; the
+  calendar period label no longer reserves a fixed 140px.
+- Comfortable touch targets (≥40px) for segmented buttons and calendar
+  navigation on coarse pointers; chip states re-expressed under forced-colors.
+
 ## [1.10.0] - 2026-07-16
 
 A polish release focused on **touch, keyboard access, and correctness**, driven

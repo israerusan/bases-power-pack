@@ -41,6 +41,11 @@ const CLICK_SLOP = 4;
 export class GanttView extends PowerPackView {
 	private zoomPx = DEFAULT_ZOOM;
 	private scrollEl: HTMLElement | null = null;
+	/** Bar to re-focus after the next render — set by the keyboard move/resize
+	 * path so arrow-key scheduling isn't single-shot (render() empties the
+	 * container, which would drop focus to the body). Same pattern as the
+	 * Outline's focusRowId. */
+	private focusBarId: string | null = null;
 
 	getViewType(): string {
 		return VIEW_TYPE_GANTT;
@@ -75,6 +80,17 @@ export class GanttView extends PowerPackView {
 
 		const resolved = await this.plugin.getResolvedView();
 		if (this.isStale(token)) return;
+
+		// Capture the currently-focused bar BEFORE empty() destroys it, so ANY
+		// render re-restores focus — including the plugin's own debounced "changed"
+		// render triggered by the arrow-key write (which would otherwise land after
+		// the explicit render had already consumed focusBarId, dropping focus to
+		// the body). Same pattern as captureSearchState().
+		const active = container.ownerDocument.activeElement;
+		if (active instanceof HTMLElement && container.contains(active)) {
+			const id = active.getAttribute("data-bpp-id");
+			if (id) this.focusBarId = id;
+		}
 
 		this.captureSearchState();
 		container.empty();
@@ -130,6 +146,13 @@ export class GanttView extends PowerPackView {
 		}
 
 		this.renderChart(container, model, rowByPath, startProp, endProp);
+
+		// Restore keyboard focus to the bar being arrow-moved/resized (see focusBarId).
+		if (this.focusBarId) {
+			const sel = `[data-bpp-id="${this.focusBarId.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"]`;
+			container.querySelector<HTMLElement>(sel)?.focus();
+			this.focusBarId = null;
+		}
 
 		if (model.skipped > 0) {
 			container.createDiv({
@@ -218,13 +241,34 @@ export class GanttView extends PowerPackView {
 			const diamond = track.createDiv({ cls: "bpp-gantt-milestone" });
 			diamond.setCssProps({ left: `${bar.startIndex * px}px` });
 			diamond.setAttr("title", `${bar.name}: ${bar.startDate}`);
-			if (row) diamond.addEventListener("click", () => this.openRow(row));
+			diamond.setAttr("data-bpp-id", bar.id);
+			if (row && openMenu) {
+				diamond.addEventListener("click", () => this.openRow(row));
+				// Keyboard parity with bars: this branch used to return before any of
+				// the tabIndex/role/keydown wiring, leaving milestones mouse-only.
+				diamond.tabIndex = 0;
+				diamond.setAttr("role", "button");
+				diamond.setAttr("aria-label", `${bar.name}: milestone on ${bar.startDate}`);
+				diamond.addEventListener("keydown", (evt) => {
+					if (evt.key === "Enter" || evt.key === " ") {
+						// role=button must activate on Space too (and Space would
+						// otherwise scroll the chart).
+						evt.preventDefault();
+						this.openRow(row);
+					} else if (evt.key === "ContextMenu" || (evt.key === "F10" && evt.shiftKey)) {
+						evt.preventDefault();
+						openMenu(diamond);
+					}
+				});
+				diamond.addEventListener("contextmenu", (evt) => openMenu(evt));
+			}
 			return;
 		}
 
 		const barEl = track.createDiv({ cls: "bpp-gantt-bar" });
 		barEl.setCssProps({ left: `${bar.startIndex * px}px`, width: `${Math.max(1, bar.span) * px}px` });
 		barEl.setAttr("title", `${bar.name}: ${bar.startDate} → ${bar.endDate}`);
+		barEl.setAttr("data-bpp-id", bar.id);
 
 		if (row && openMenu) {
 			const progress = this.progressPct(row);
@@ -242,12 +286,15 @@ export class GanttView extends PowerPackView {
 			barEl.setAttr("role", "button");
 			barEl.setAttr("aria-label", `${bar.name}: ${bar.startDate} to ${bar.endDate}`);
 			barEl.addEventListener("keydown", (evt) => {
-				if (evt.key === "Enter") {
+				if (evt.key === "Enter" || evt.key === " ") {
 					evt.preventDefault();
 					this.openRow(row);
 				} else if (evt.key === "ArrowRight" || evt.key === "ArrowLeft") {
 					evt.preventDefault();
 					const delta = evt.key === "ArrowRight" ? 1 : -1;
+					// Re-focus this bar after the write's re-render so a second arrow
+					// press keeps working (the render otherwise drops focus to body).
+					this.focusBarId = row.id;
 					if (evt.shiftKey) void this.applyResize(row, startProp, endProp, delta);
 					else void this.applyMove(row, startProp, endProp, delta);
 				} else if (evt.key === "ContextMenu" || (evt.key === "F10" && evt.shiftKey)) {

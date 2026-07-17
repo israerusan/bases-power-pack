@@ -1,8 +1,12 @@
 import { toNumber, toStr } from "../engine/expression";
 import type { Row } from "../model/row";
+import { toDayNumber } from "./gantt";
 import { rowMatchesText } from "./search";
 
 export type KanbanSort = "manual" | "name-asc" | "name-desc" | "due-asc" | "priority-desc" | "mtime-desc";
+
+/** Every valid sort value — the settings sanitizer's allow-list. */
+export const KANBAN_SORTS: KanbanSort[] = ["manual", "name-asc", "name-desc", "due-asc", "priority-desc", "mtime-desc"];
 export type KanbanMetaField = "due" | "priority" | "owner" | "tags" | "file.folder";
 
 export interface BuildKanbanColumnsOptions {
@@ -25,7 +29,11 @@ export interface KanbanColumn {
 
 export function buildKanbanColumns(rows: Row[], options: BuildKanbanColumnsOptions): KanbanColumn[] {
 	const groupBy = options.groupBy || "status";
-	const search = normalize(options.search);
+	// Keep the raw (trimmed) query — rowMatchesText normalizes values itself, and
+	// pre-lowercasing here would fold a `Owner:Sam` token's KEY to `owner`, so a
+	// capitalized frontmatter property matched in Calendar/Gantt but returned zero
+	// cards on the board. `search` is otherwise only used as a truthiness flag.
+	const search = toStr(options.search ?? "").trim();
 	const hidden = normalize(options.hideColumn);
 	const columns = new Map<string, Row[]>();
 
@@ -154,6 +162,45 @@ function numberOrNull(value: unknown): number | null {
 	if (value === undefined || value === null || value === "") return null;
 	const n = toNumber(value);
 	return Number.isFinite(n) ? n : null;
+}
+
+export type DueStatus = "overdue" | "soon" | null;
+
+/**
+ * Traffic-light status for a due-style date: strictly past = "overdue", today
+ * through the next `soonDays` days = "soon", else null. Inputs are ISO
+ * `YYYY-MM-DD` keys (see toIsoDateKey); anything unparsable is null. Pure, so
+ * the card-chip state is unit-tested rather than eyeballed.
+ */
+export function dueStatus(iso: string | null, today: string, soonDays = 2): DueStatus {
+	if (!iso) return null;
+	const da = toDayNumber(iso);
+	const db = toDayNumber(today);
+	if (da === null || db === null) return null;
+	const diff = da - db;
+	if (diff < 0) return "overdue";
+	if (diff <= soonDays) return "soon";
+	return null;
+}
+
+const PRIORITY_LEVELS: Array<{ cls: string; values: string[] }> = [
+	{ cls: "is-p-high", values: ["high", "highest", "urgent", "critical", "p0", "p1"] },
+	{ cls: "is-p-med", values: ["medium", "med", "normal", "p2"] },
+	{ cls: "is-p-low", values: ["low", "lowest", "minor", "p3", "p4"] },
+];
+
+/**
+ * CSS modifier for a conventional priority value, or null for one we can't
+ * rank (numbers are ambiguous — is 1 highest or lowest? — so they fall back to
+ * the stable-hue chip instead of guessing). Purely presentational.
+ */
+export function priorityClass(value: unknown): string | null {
+	const v = toStr(value).trim().toLocaleLowerCase();
+	if (!v) return null;
+	for (const level of PRIORITY_LEVELS) {
+		if (level.values.includes(v)) return level.cls;
+	}
+	return null;
 }
 
 /** Display string for one card field, or null when the value is empty. */

@@ -9,7 +9,23 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  /* Wrap instead of clipping: the Calendar toolbar alone packs a title, badge,
+     segmented control, nav, label, caption, undo, and search into one row —
+     unwrappable, it overflowed in a docked leaf and on phones. */
+  flex-wrap: wrap;
+  row-gap: 6px;
   margin-bottom: 12px;
+}
+
+/* The toolbar-managed search may shrink and grow into leftover space. */
+.bpp-toolbar .bpp-lite-control {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.bpp-toolbar .bpp-lite-input {
+  min-width: 0;
+  width: 100%;
 }
 
 .bpp-toolbar h3 {
@@ -490,7 +506,8 @@
 }
 
 .bpp-cal-label {
-  min-width: 140px;
+  /* Was a fixed 140px — one more thing forcing the unwrapped toolbar to clip. */
+  min-width: 0;
   text-align: center;
   font-weight: 600;
 }
@@ -934,6 +951,7 @@
 .bpp-cal-event:focus-visible,
 .bpp-agenda-item:focus-visible,
 .bpp-gantt-bar:focus-visible,
+.bpp-gantt-milestone:focus-visible,
 .bpp-tree-row:focus-visible,
 .bpp-seg-btn:focus-visible,
 .bpp-lite-btn:focus-visible,
@@ -1003,10 +1021,158 @@
     min-height: 30px;
   }
 
+  /* Segmented buttons and the calendar prev/Today/next were ~22px tall on
+     touch — well under a usable finger target. */
+  .bpp-seg-btn,
+  .bpp-cal-nav button {
+    min-height: 40px;
+    min-width: 40px;
+  }
+
   .bpp-kanban-column {
     min-width: 78vw;
     max-width: 82vw;
   }
+}
+
+/* Visually-hidden text exposed to assistive tech (chip overdue/soon state). */
+.bpp-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- 1.11 semantic card chips --------------------------------------------
+   Known field shapes (due date / priority / tags) render as chips so card
+   state is scannable at a glance instead of identical grey "key: value" lines. */
+.bpp-card-meta .bpp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 7px;
+  margin-right: 4px;
+  border-radius: 999px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  line-height: 1.7;
+  white-space: nowrap;
+}
+
+.bpp-chip-key {
+  color: var(--text-faint);
+}
+
+.bpp-chip-date.is-soon {
+  border-color: transparent;
+  background: rgba(var(--color-orange-rgb, 245, 159, 26), 0.16);
+  color: var(--color-orange, #e8590c);
+}
+
+.bpp-chip-date.is-overdue {
+  border-color: transparent;
+  background: rgba(var(--color-red-rgb, 224, 49, 49), 0.16);
+  color: var(--color-red, #e03131);
+  font-weight: 600;
+}
+
+.bpp-chip-date.is-soon .bpp-chip-key,
+.bpp-chip-date.is-overdue .bpp-chip-key {
+  color: inherit;
+  opacity: 0.7;
+}
+
+.bpp-chip-priority.is-p-high {
+  border-color: transparent;
+  background: rgba(var(--color-red-rgb, 224, 49, 49), 0.14);
+  color: var(--color-red, #e03131);
+}
+
+.bpp-chip-priority.is-p-med {
+  border-color: transparent;
+  background: rgba(var(--color-orange-rgb, 245, 159, 26), 0.14);
+  color: var(--color-orange, #e8590c);
+}
+
+.bpp-chip-priority.is-p-low {
+  color: var(--text-faint);
+}
+
+.bpp-chip-priority.is-p-high .bpp-chip-key,
+.bpp-chip-priority.is-p-med .bpp-chip-key {
+  color: inherit;
+  opacity: 0.7;
+}
+
+/* Unrecognized priority values reuse the board's stable hue-per-value. */
+.bpp-chip-priority.is-hue {
+  border-color: transparent;
+  background: hsl(var(--bpp-col-hue, 210) 55% 55% / 0.18);
+  color: var(--text-normal);
+}
+
+.bpp-chip-tag {
+  border-style: dashed;
+}
+
+/* ---- 1.11 per-column roll-up chips (premium) ------------------------------ */
+.bpp-col-rollups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: -2px 4px 8px;
+}
+
+.bpp-col-rollup {
+  font-size: 0.72em;
+  color: var(--text-muted);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  padding: 0 7px;
+}
+
+/* ---- 1.11 overdue surfacing ----------------------------------------------- */
+.bpp-agenda-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 0.82em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+
+.bpp-agenda-section.is-overdue {
+  color: var(--color-red, #e03131);
+}
+
+.bpp-agenda-day.is-overdue {
+  border-left-color: var(--color-red, #e03131);
+}
+
+.bpp-agenda-day.is-overdue .bpp-agenda-date {
+  color: var(--color-red, #e03131);
+}
+
+/* A calendar event on a past day: flagged with a red edge, never hidden. */
+.bpp-cal-event.is-overdue {
+  box-shadow: inset 3px 0 0 var(--color-red, #e03131);
+}
+
+/* "Today" is a temporal state, not a tier — its own accent-outline badge. */
+.bpp-badge-today {
+  background: transparent;
+  border: 1px solid var(--interactive-accent);
+  color: var(--interactive-accent);
 }
 
 /* ---- High-contrast / forced-colors --------------------------------------- */
@@ -1045,5 +1211,22 @@
     forced-color-adjust: none;
     background: Highlight;
     border-color: Highlight;
+  }
+
+  /* Chip state conveyed by tinted backgrounds flattens away — re-express it. */
+  .bpp-chip-date.is-overdue,
+  .bpp-chip-priority.is-p-high {
+    outline: 2px solid CanvasText;
+  }
+
+  .bpp-chip-date.is-soon,
+  .bpp-chip-priority.is-p-med {
+    outline: 1px dashed CanvasText;
+  }
+
+  /* Don't let the static overdue outline mask the keyboard focus ring — the
+     :focus-visible rule (forced to a system color) must win while focused. */
+  .bpp-cal-event.is-overdue:not(:focus-visible) {
+    outline: 1px solid CanvasText;
   }
 }

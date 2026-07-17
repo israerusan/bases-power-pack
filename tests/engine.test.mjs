@@ -104,6 +104,39 @@ assert.equal(expr.strictNumber("42"), 42, "strictNumber accepts a wholly-numeric
 assert.equal(expr.strictNumber("  7.5 "), 7.5, "strictNumber trims and parses");
 assert.ok(Number.isNaN(expr.strictNumber("3px")), "strictNumber rejects a trailing-unit string");
 
+// 1.11: -, *, /, % reject dates/semvers (the unfinished half of the 1.10 date
+// fix): the old lenient parseFloat computed `jun - 7` as 2026-7=2019 and
+// `ver / 2` as 0.7. Date arithmetic is explicit; unit strings still coerce.
+assert.equal(ev("jun - 7"), "2026-05-25", "date - N days = the earlier date, not 2019");
+assert.equal(ev("jun + 7"), "2026-06-08", "date + N days = the later date, not concat garbage");
+assert.equal(ev("7 + jun"), "2026-06-08", "N + date also shifts");
+assert.equal(ev("jun - jan"), 151, "date - date = whole-day difference");
+assert.equal(ev("ver / 2"), null, "a semver never divides by its leading number");
+assert.equal(ev("ver - 1"), null, "a semver never subtracts by its leading number");
+assert.equal(ev("jun * 2"), null, "a date is never multiplied");
+assert.equal(ev("jun - 1.5"), null, "date minus a fractional day is rejected, not rounded");
+assert.equal(ev("done - 1"), 2, "genuine numbers still subtract");
+assert.equal(ev("hours * 2"), 5, "genuine numbers still multiply");
+assert.equal(ev('total % 3'), 1, "genuine numbers still take a modulo");
+assert.equal(ev("done % 0"), null, "modulo by zero is null");
+assert.equal(ev('"5" - "2"'), 3, "wholly-numeric strings still subtract");
+// A Date instance from date() is a first-class date operand (regression guard:
+// a Date's getTime() must NOT be misread as a day count → "NaN-NaN-NaN").
+assert.equal(ev("date(jun) - 7"), "2026-05-25", "a date() instance shifts like a date string");
+assert.equal(ev("date(jun) - jan"), 151, "date() instance minus a date string = day diff");
+assert.equal(ev("date(jun) - date(jan)"), 151, "two date() instances = day diff");
+// Numeric-with-unit strings still coerce for arithmetic (parity with compare()
+// and roll-ups) — the plugin's own `…+"%"` outputs must keep working downstream.
+assert.equal(ev("pct * 2"), 100, '"50%" multiplies as 50 (unit tolerated for arithmetic)');
+assert.equal(ev("pct - 10"), 40, '"50%" subtracts as 50');
+// But + still concatenates a numeric STRING onto a date (1.10 composite keys).
+assert.equal(ev('jun + "3"'), "2026-06-013", "date + numeric STRING concatenates, does not shift");
+assert.throws(() => expr.compileExpression("1.2.3"), expr.ExprError, "a multi-dot number literal throws at parse");
+assert.equal(expr.evaluateSafe("1.2.3 + 1", scope), null, "evaluateSafe swallows the malformed-number error");
+// A lone trailing dot was valid in 1.10 (Number("2.")===2) — must not throw.
+assert.equal(ev("hours / 2."), 1.25, "a trailing-dot literal still parses");
+assert.equal(ev("2."), 2, "a bare trailing-dot literal is 2");
+
 // ---- row + formulas --------------------------------------------------------
 const note = {
 	path: "Projects/Alpha.md",
@@ -356,6 +389,23 @@ assert.deepEqual(
 	["active"],
 	"extra columns are suppressed while a search is active"
 );
+// 1.11 regression guard: the board must NOT pre-lowercase the query, or a
+// capitalized property KEY in a key:value token would fold to lowercase and miss
+// (it worked in Calendar/Gantt, which pass the raw query to rowMatchesText).
+const capRow = rowmod.makeRow({
+	path: "P/Cap.md", name: "Cap", folder: "P", ext: "md", tags: [], ctime: 0, mtime: 0, size: 0,
+	frontmatter: { status: "active", Owner: "Sam" },
+});
+assert.equal(
+	kanban.buildKanbanColumns([capRow], { groupBy: "status", search: "Owner:Sam" }).length,
+	1,
+	"a capitalized property key in a search token still matches on the board"
+);
+assert.equal(
+	kanban.buildKanbanColumns([capRow], { groupBy: "status", search: "Owner:Nope" }).length,
+	0,
+	"the capitalized-key token still rejects a non-matching value"
+);
 assert.equal(kanban.columnHue("active"), kanban.columnHue("active"), "columnHue is stable for a value");
 assert.ok(kanban.columnHue("done") >= 0 && kanban.columnHue("done") < 360, "columnHue stays within the hue circle");
 
@@ -367,6 +417,25 @@ assert.deepEqual(
 assert.deepEqual(kanban.reorderColumns(["a", "b", "c"], "c", "a"), ["c", "a", "b"], "reorderColumns moves a column before its target");
 assert.deepEqual(kanban.reorderColumns(["a", "b", "c"], "a", "a"), ["a", "b", "c"], "reorderColumns is a no-op onto itself");
 assert.deepEqual(kanban.reorderColumns(["a", "b", "c"], "a", "z"), ["a", "b", "c"], "reorderColumns leaves order unchanged for an unknown target");
+
+// 1.11: due-chip status — pure so the card state is tested, not eyeballed.
+assert.equal(kanban.dueStatus("2026-01-10", "2026-01-15"), "overdue", "a past date is overdue");
+assert.equal(kanban.dueStatus("2026-01-15", "2026-01-15"), "soon", "today counts as due soon");
+assert.equal(kanban.dueStatus("2026-01-17", "2026-01-15"), "soon", "within the soon window (2 days)");
+assert.equal(kanban.dueStatus("2026-01-18", "2026-01-15"), null, "beyond the soon window is unflagged");
+assert.equal(kanban.dueStatus("2026-02-01", "2026-01-31"), "soon", "soon works across a month boundary (not lexical)");
+assert.equal(kanban.dueStatus(null, "2026-01-15"), null, "no date, no status");
+assert.equal(kanban.dueStatus("not-a-date", "2026-01-15"), null, "unparsable date, no status");
+
+// 1.11: priority badge classes — conventional names map, numbers stay null (ambiguous).
+assert.equal(kanban.priorityClass("High"), "is-p-high", "high maps to the high badge, case-insensitive");
+assert.equal(kanban.priorityClass("urgent"), "is-p-high", "urgent is high");
+assert.equal(kanban.priorityClass("P1"), "is-p-high", "P1 is high");
+assert.equal(kanban.priorityClass("medium"), "is-p-med", "medium maps to the med badge");
+assert.equal(kanban.priorityClass("low"), "is-p-low", "low maps to the low badge");
+assert.equal(kanban.priorityClass(1), null, "a bare number is ambiguous — no badge, hue fallback");
+assert.equal(kanban.priorityClass("Critical Path"), null, "an unrecognized phrase gets no badge");
+assert.equal(kanban.priorityClass(""), null, "empty value gets no badge");
 
 assert.deepEqual(
 	kanban.getCardMeta(rowmod.makeRow({
@@ -505,6 +574,27 @@ assert.equal(search.rowMatchesText(searchRow, "zzz"), false, "no false positive"
 assert.equal(search.filterRowsByText([searchRow], "").length, 1, "blank query returns all rows (identity)");
 assert.equal(search.filterRowsByText([searchRow], "alpha").length, 1, "filter keeps matching rows");
 assert.equal(search.filterRowsByText([searchRow], "zzz").length, 0, "filter drops non-matching rows");
+
+// 1.11: property-aware tokens — `key:value` filters on frontmatter/formulas.
+assert.equal(search.rowMatchesText(searchRow, "owner:ada"), true, "key:value matches a frontmatter property");
+assert.equal(search.rowMatchesText(searchRow, "owner:max"), false, "key:value rejects a non-matching value");
+assert.equal(search.rowMatchesText(searchRow, "status:act"), true, "key:value matches by substring");
+assert.equal(search.rowMatchesText(searchRow, "tag:urgent"), true, "tag: matches the note's tags");
+assert.equal(search.rowMatchesText(searchRow, "tag:#urgent"), true, "tag: tolerates a leading # (tags are #-stripped)");
+assert.equal(search.rowMatchesText(searchRow, "tag:#"), false, "a bare tag:# does not match every tagged note");
+assert.equal(search.rowMatchesText(searchRow, "tags:q3"), true, "tags: is an alias for tag:");
+assert.equal(search.rowMatchesText(searchRow, "owner:ada launch"), true, "tokens AND: property + text both match");
+assert.equal(search.rowMatchesText(searchRow, "owner:ada zzz"), false, "tokens AND: one failing token fails the query");
+assert.equal(search.rowMatchesText(searchRow, "launch alpha"), true, "plain words AND across the same haystacks");
+assert.equal(search.rowMatchesText(searchRow, "missing:x"), false, "unknown property with no text fallback fails");
+// A literal key:value string in the note name still matches as plain text.
+const literalRow = rowmod.makeRow({
+	...searchRow.note,
+	path: "Refs/http notes.md",
+	name: "See http://example.com",
+	frontmatter: {},
+});
+assert.equal(search.rowMatchesText(literalRow, "http://example.com"), true, "a key:value-shaped literal falls back to text matching");
 
 // ---- WIP limits -------------------------------------------------------------
 assert.equal(wip.sanitizeWipLimit("5"), 5, "parses a positive integer string");

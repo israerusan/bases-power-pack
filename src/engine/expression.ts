@@ -110,7 +110,14 @@ function tokenize(src: string): Token[] {
 		if (isDigit(ch) || (ch === "." && isDigit(src[i + 1] ?? ""))) {
 			let j = i;
 			while (j < src.length && (isDigit(src[j]) || src[j] === ".")) j++;
-			tokens.push({ type: "num", value: src.slice(i, j), pos: i });
+			const raw = src.slice(i, j);
+			// A run like `1.2.3` used to become Number("1.2.3") = NaN — a silent NaN
+			// token poisoning the whole expression. Reject a multi-dot run, but still
+			// accept a lone trailing dot (`2.` → 2, valid in 1.10 and in JS).
+			if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(raw)) {
+				throw new ExprError(`Malformed number '${raw}' at ${i}`);
+			}
+			tokens.push({ type: "num", value: raw, pos: i });
 			i = j;
 			continue;
 		}
@@ -353,6 +360,46 @@ function looksDateLike(v: Value): boolean {
 	return typeof v === "string" && /^\s*\d{4}-\d{2}-\d{2}/.test(v);
 }
 
+/** Day number (days since epoch, UTC) of a date value — a `date()` Date instance
+ * or a date-like string's leading ISO date — or null when it isn't a date. Time
+ * suffixes are ignored: arithmetic works in whole days. */
+function isoDayNumber(v: Value): number | null {
+	if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : Math.floor(v.getTime() / 86400000);
+	if (typeof v !== "string") return null;
+	const m = /^\s*(\d{4})-(\d{2})-(\d{2})/.exec(v);
+	if (!m) return null;
+	return Math.floor(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 86400000);
+}
+
+/** ISO `YYYY-MM-DD` for a day number, or null when the day is out of Date's range
+ * (guards against a `date ± huge` producing the literal string "NaN-NaN-NaN"). */
+function isoFromDayNumber(day: number): string | null {
+	if (!Number.isFinite(day)) return null;
+	const d = new Date(day * 86400000);
+	if (Number.isNaN(d.getTime())) return null;
+	const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+	const dd = String(d.getUTCDate()).padStart(2, "0");
+	return `${d.getUTCFullYear()}-${mm}-${dd}`;
+}
+
+/**
+ * Number for the arithmetic operators `-`, `*`, `/`, `%`. Strict first (rejects
+ * ISO dates and semvers so they never do garbage math), but — unlike equality —
+ * a numeric value with a purely non-numeric unit suffix (`"60%"`, `"5 pts"`,
+ * `"2.5h"`) still coerces, matching how `compare()` and roll-up aggregation
+ * treat those values. A suffix containing a digit or dash (a date/semver) stays
+ * rejected.
+ */
+function arithNumber(v: Value): number {
+	const n = strictNumber(v);
+	if (!Number.isNaN(n)) return n;
+	if (typeof v === "string") {
+		const m = /^\s*(-?(?:\d+(?:\.\d+)?|\.\d+))\s*[a-zA-Z%°]+\.?\s*$/.exec(v);
+		if (m) return Number(m[1]);
+	}
+	return NaN;
+}
+
 /**
  * Ordinal comparison for `<`, `>`, `<=`, `>=`. Date-like strings compare
  * lexically (which is chronological for `YYYY-MM-DD`); any other pair that both
@@ -513,20 +560,38 @@ function evalBinary(node: Extract<Node, { t: "bin" }>, scope: EvalScope): Value 
 			const na = strictNumber(a);
 			const nb = strictNumber(b);
 			if (!Number.isNaN(na) && !Number.isNaN(nb)) return na + nb;
+			// Date + whole days = a shifted date (mirrors `-` below). Only a REAL
+			// number operand shifts (typeof number, not just a numeric-looking
+			// value): a numeric STRING still concatenates so 1.10 composite keys
+			// like `due + sprintId` keep their meaning, and a Date operand (whose
+			// getTime() is a huge integer) can't be misread as a day count.
+			const da = isoDayNumber(a);
+			if (da !== null && typeof b === "number") return Number.isInteger(b) ? isoFromDayNumber(da + b) : null;
+			const db = isoDayNumber(b);
+			if (db !== null && typeof a === "number") return Number.isInteger(a) ? isoFromDayNumber(db + a) : null;
 			return toStr(a) + toStr(b);
 		}
-		case "-":
-			return safeArith(toNumber(a) - toNumber(b));
+		case "-": {
+			// Date math first: date − date = whole-day difference, date − N days = the
+			// earlier date (N must be a real integer number). Everything else needs
+			// both sides numeric via arithNumber — the old lenient parseFloat read
+			// `"2026-06-01" - 7` as 2026−7 = 2019 and `"1.4.0" / 2` as 0.7, feeding
+			// silent garbage into formulas and filters.
+			const da = isoDayNumber(a);
+			if (da !== null) {
+				const db = isoDayNumber(b);
+				if (db !== null) return da - db;
+				if (typeof b === "number") return Number.isInteger(b) ? isoFromDayNumber(da - b) : null;
+				return null;
+			}
+			return strictArith(a, b, (x, y) => x - y);
+		}
 		case "*":
-			return safeArith(toNumber(a) * toNumber(b));
-		case "/": {
-			const d = toNumber(b);
-			return d === 0 ? null : safeArith(toNumber(a) / d);
-		}
-		case "%": {
-			const d = toNumber(b);
-			return d === 0 ? null : safeArith(toNumber(a) % d);
-		}
+			return strictArith(a, b, (x, y) => x * y);
+		case "/":
+			return strictArith(a, b, (x, y) => x / y);
+		case "%":
+			return strictArith(a, b, (x, y) => x % y);
 	}
 	return null;
 }
@@ -553,6 +618,16 @@ function evalCall(node: Extract<Node, { t: "call" }>, scope: EvalScope): Value {
 
 function safeArith(n: number): Value {
 	return Number.isFinite(n) ? n : null;
+}
+
+/** Arithmetic coercion: null unless both sides are numeric via arithNumber
+ * (strict, but tolerant of a pure unit suffix like `"60%"`). Division by zero /
+ * NaN / Infinity all collapse to null via safeArith. */
+function strictArith(a: Value, b: Value, op: (x: number, y: number) => number): Value {
+	const na = arithNumber(a);
+	const nb = arithNumber(b);
+	if (Number.isNaN(na) || Number.isNaN(nb)) return null;
+	return safeArith(op(na, nb));
 }
 
 function normalizeValue(v: unknown): Value {
