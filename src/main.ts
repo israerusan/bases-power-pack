@@ -23,6 +23,7 @@ import { UndoManager } from "./query/undo";
 import { KANBAN_SORTS } from "./query/kanban";
 import { sanitizeWipLimit } from "./query/wip";
 import { resolveParentRef } from "./query/hierarchy";
+import { normalizeColorRules } from "./query/colorRules";
 import type { RawNote } from "./model/row";
 
 const PREMIUM_VIEW_TYPES = [VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT, VIEW_TYPE_HIERARCHY];
@@ -200,6 +201,17 @@ export default class BasesPowerPackPlugin extends Plugin {
 		}
 		if (!this.notesArray) this.notesArray = [...this.notesByPath.values()];
 		return this.notesArray;
+	}
+
+	/** Distinct frontmatter property names across the vault, sorted — powers the
+	 * settings property-name autocompletes so a user picks a real key instead of
+	 * typing one that doesn't exist and getting a silently empty view. */
+	getFrontmatterKeys(): string[] {
+		const keys = new Set<string>();
+		for (const note of this.getNotesSnapshot()) {
+			for (const k of Object.keys(note.frontmatter)) keys.add(k);
+		}
+		return Array.from(keys).sort((a, b) => a.localeCompare(b));
 	}
 
 	/** Drop the cached snapshot so the next read rebuilds from scratch — the
@@ -445,6 +457,7 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.settings.savedFilters = sanitizeSavedFilters(this.settings.savedFilters);
 		this.settings.rollups = sanitizeRollups(this.settings.rollups);
 		this.settings.automations = sanitizeAutomations(this.settings.automations);
+		this.settings.colorRules = normalizeColorRules(this.settings.colorRules);
 		this.settings.kanbanColorOverrides = sanitizeColorOverrides(this.settings.kanbanColorOverrides);
 		this.settings.kanbanWipLimits = sanitizeWipLimits(this.settings.kanbanWipLimits);
 		if (typeof this.settings.kanbanBlockOverWip !== "boolean") this.settings.kanbanBlockOverWip = DEFAULT_SETTINGS.kanbanBlockOverWip;

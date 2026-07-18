@@ -24,6 +24,21 @@ export interface Row {
 	scope: EvalScope;
 }
 
+/** The exact set of implicit computed `file.*` accessors. A guard must test
+ * membership here, NOT a `file.` name prefix — a note can legitimately carry a
+ * flat frontmatter key like `file.type` (a dot in an unquoted YAML key is not
+ * nesting), which is a real writable field, not a computed one. */
+export const COMPUTED_FILE_PROPS: ReadonlySet<string> = new Set([
+	"file.name",
+	"file.path",
+	"file.folder",
+	"file.ext",
+	"file.tags",
+	"file.ctime",
+	"file.mtime",
+	"file.size",
+]);
+
 function fileProps(note: RawNote): Record<string, unknown> {
 	return {
 		"file.name": note.name,

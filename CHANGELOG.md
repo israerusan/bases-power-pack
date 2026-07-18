@@ -3,6 +3,72 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.12.0] - 2026-07-18
+
+A **correctness, polish, and premium-feel** release, driven by five rounds of
+ruthless adversarial code review (an independent panel tried to *refute* each
+change; every confirmed finding was fixed before the round closed). It hardens the
+formula engine, makes note-creation frontmatter-safe, adds a new premium
+capability, and gives the whole plugin a designed visual system.
+
+### Added
+- **Rule-based color coding (premium).** Color cards, calendar events, and Gantt
+  bars by *rule*: pair a formula-engine expression with a color (e.g. `due <
+  today()` → red, `priority == "high"` → amber), ordered so the first match wins.
+  Rules render as an accent stripe that composes with — never overrides — your
+  per-column colors. Authored in settings with a color picker and priority arrows.
+- **`today()` formula function.** Returns the current date as `YYYY-MM-DD`, so
+  formulas, saved filters, and color rules can be relative (`due < today()`).
+- **Property & folder autocomplete in settings.** Every property-name and
+  quick-add-folder field now autocompletes from the vault's actual frontmatter
+  keys and folders — removing the classic "typed the wrong property → silently
+  empty board" first-run trap.
+- **Loading & error states.** Views show a shimmer skeleton while the first
+  resolve runs (instead of a blank flash) and a styled error surface with Retry if
+  a load fails — no more silent empty pane.
+
+### Fixed — formula engine correctness
+- **Date arithmetic on `date()` values.** `date(x) + 7` now shifts 7 *days*
+  (it was adding 7 *milliseconds*); `date(x)` compares and equals by its ISO day,
+  so `due == today()` is accurate. Two `date()` instances keep full time precision
+  so same-day different-time values still order correctly.
+- **Unary minus** on an ISO date / semver string is now `null` instead of garbage
+  (`-"2026-06-01"` was `-2026`).
+- **Roll-ups over date/version columns** no longer aggregate by the leading number
+  (summing two ISO dates used to yield ~4052); `min`/`max`/`range` no longer risk a
+  stack overflow on very large sets. Currency-suffixed values (`5€`) still count.
+- **`round()`** no longer returns `NaN` on an absurd digit count or overflow.
+- **String booleans.** `"0"`, `"no"`, `"off"`, `"false"` now read as false, so a
+  frontmatter `done: "0"` is correctly not-done.
+- **Empty `{or: []}` filter** shows every row instead of blanking the whole board.
+
+### Fixed — robustness & correctness
+- **Frontmatter-safe note creation.** New notes are seeded through Obsidian's
+  frontmatter API instead of hand-built YAML, so a property name containing a
+  colon/`#`/quote can't corrupt the note. A failed write no longer flashes a
+  phantom card.
+- **One "done" definition** shared by every view, so the Kanban chip, Calendar
+  overdue styling, and Outline progress can never disagree (a truthy `done` flag
+  now counts everywhere).
+- **Bulk edit** refuses to write a computed `file.*` accessor or a formula field
+  (which would shadow it), matching the column-rename guard.
+- **Gantt** keyboard-focus restore uses `CSS.escape` (unusual paths no longer
+  break it), and horizontal scroll is preserved across re-renders and re-anchored
+  by date across a zoom change.
+- **Drag & drop** columns/zones only accept the plugin's own drags and no longer
+  flicker their highlight while hovering.
+- **Automation `copy`** deep-clones an array/object value instead of aliasing it.
+
+### Changed — premium visual overhaul
+- A **design-token layer** (spacing, radii, type scale, elevation, accent roles)
+  unifies the look; cards gain restrained **elevation** that lifts on hover/drag.
+- The locked-view **upsell** is a real card with a feature list, not a bare line.
+- **Focus rings** now cover the plugin's own form controls; the Undo button has
+  its own style; hover/motion timing is unified and fully reduced-motion aware.
+- The redundant post-purchase **"Premium" badge** is gone, and the Kanban
+  **"Lite"** tag shows only to free users. The author-only "Purchase page URL"
+  setting was removed (it's hardcoded, matching Vault Spotlight).
+
 ## [1.11.0] - 2026-07-16
 
 A **trust & everyday-speed** release, driven by a six-lens round-table critique

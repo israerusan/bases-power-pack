@@ -12,6 +12,7 @@ import type BasesPowerPackPlugin from "../main";
 import type { Row } from "../model/row";
 import { PromptModal, ConfirmModal } from "./modals";
 import { coerceFieldInput, formatFieldForEdit } from "../query/inlineEdit";
+import { resolveRowColor } from "../query/colorRules";
 import { writeRowProperty } from "./viewData";
 import { renderSearchControl } from "./viewChrome";
 
@@ -58,7 +59,18 @@ export abstract class PowerPackView extends ItemView {
 	abstract render(): Promise<void>;
 
 	async onOpen(): Promise<void> {
-		await this.render();
+		// Paint a skeleton immediately so the FIRST resolve (which reads the .base file
+		// and rebuilds rows) shows structured shimmer instead of a blank pane; render()
+		// clears it when the real content lands. A render that throws unexpectedly shows
+		// a styled error surface with Retry rather than a silent blank.
+		this.renderLoadingSkeleton(this.contentEl);
+		try {
+			await this.render();
+		} catch (error) {
+			this.contentEl.empty();
+			this.contentEl.addClass("bpp-view");
+			this.renderErrorState(this.contentEl, String(error));
+		}
 		this.registerEvent(this.app.metadataCache.on("changed", () => this.scheduleRender()));
 	}
 
@@ -315,11 +327,79 @@ export abstract class PowerPackView extends ItemView {
 		btn.addEventListener("click", () => void this.plugin.performUndo());
 	}
 
-	protected renderUpgradeNotice(container: HTMLElement, emoji: string, title: string, body: string): void {
+	/**
+	 * Apply the first matching premium color rule to an item element (card / event /
+	 * bar): tag it `.bpp-rule-colored` and set `--bpp-rule-color`, which the stylesheet
+	 * renders as a left-edge accent stripe. A no-op on the free tier or when no rule
+	 * matches, so it composes with — and never overrides — a per-column color choice.
+	 */
+	protected applyColorRule(el: HTMLElement, row: Row): void {
+		if (!this.plugin.settings.isPro) return;
+		const resolved = resolveRowColor(row, this.plugin.settings.colorRules);
+		if (!resolved) return;
+		el.addClass("bpp-rule-colored");
+		el.style.setProperty("--bpp-rule-color", resolved.color);
+		if (resolved.label && !el.hasAttribute("title")) el.setAttr("title", resolved.label);
+	}
+
+	/**
+	 * True when a `dragleave` genuinely exits `el`, rather than merely crossing onto
+	 * one of the element's own children — the latter fires `dragleave` on the parent
+	 * and would otherwise flicker the drop-target highlight the whole time the pointer
+	 * hovers a populated drop zone. Every view's drop targets route dragleave through
+	 * this so the highlight is steady.
+	 */
+	protected dragTrulyLeft(el: HTMLElement, evt: DragEvent): boolean {
+		const to = evt.relatedTarget;
+		return !(to instanceof Node) || !el.contains(to);
+	}
+
+	/**
+	 * A lightweight loading placeholder shown while the first async resolve runs, so
+	 * the pane shows structured shimmer instead of a blank flash. Purely visual; the
+	 * real render() replaces it (respects prefers-reduced-motion via CSS).
+	 */
+	protected renderLoadingSkeleton(container: HTMLElement, columns = 3): void {
+		container.addClass("bpp-view");
+		const wrap = container.createDiv({ cls: "bpp-skeleton", attr: { "aria-hidden": "true" } });
+		for (let c = 0; c < columns; c++) {
+			const col = wrap.createDiv({ cls: "bpp-skeleton-col" });
+			col.createDiv({ cls: "bpp-skeleton-head" });
+			for (let i = 0; i < 2 + (c % 2); i++) col.createDiv({ cls: "bpp-skeleton-card" });
+		}
+	}
+
+	/** A styled error surface (with Retry) for an unexpected failure to build the
+	 * view — instead of a silent blank pane. */
+	protected renderErrorState(container: HTMLElement, message: string): void {
+		const box = container.createDiv({ cls: "bpp-error", attr: { role: "alert" } });
+		box.createEl("h3", { text: "⚠ Couldn't load this view" });
+		box.createEl("p", { text: message });
+		const btn = box.createEl("button", { text: "Retry", cls: "mod-cta" });
+		btn.addEventListener("click", () => void this.render());
+	}
+
+	/**
+	 * The premium upsell shown on a locked view: emoji, headline, one-line pitch, an
+	 * optional list of what unlocks, and the CTA to the license field. This is the
+	 * product's "money screen" — it earns a real feature list, not a bare sentence.
+	 */
+	protected renderUpgradeNotice(
+		container: HTMLElement,
+		emoji: string,
+		title: string,
+		body: string,
+		features: string[] = []
+	): void {
 		const box = container.createDiv({ cls: "bpp-upgrade" });
-		box.createEl("h3", { text: `${emoji} ${title}` });
-		box.createEl("p", { text: body });
-		const btn = box.createEl("button", { text: "Enter license key in settings", cls: "mod-cta" });
+		box.createDiv({ cls: "bpp-upgrade-emoji", text: emoji, attr: { "aria-hidden": "true" } });
+		box.createEl("h3", { text: title });
+		box.createEl("p", { cls: "bpp-upgrade-body", text: body });
+		if (features.length) {
+			const ul = box.createEl("ul", { cls: "bpp-upgrade-features" });
+			for (const f of features) ul.createEl("li", { text: f });
+		}
+		const btn = box.createEl("button", { text: "Unlock Power Pack — enter your license key", cls: "mod-cta" });
 		btn.addEventListener("click", () => this.openSettings());
 	}
 }

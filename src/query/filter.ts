@@ -31,6 +31,10 @@ export function evaluateFilter(node: FilterNode, scope: EvalScope): boolean {
 		return node.and.every((child) => evaluateFilter(child, scope));
 	}
 	if ("or" in node && Array.isArray(node.or)) {
+		// An empty `or` is treated as "no constraint" (true), not the logically-empty
+		// disjunction (false): a `.base` that emits `{or:[]}` should show every row,
+		// not blank the entire board — the same least-surprise rule as a missing filter.
+		if (node.or.length === 0) return true;
 		return node.or.some((child) => evaluateFilter(child, scope));
 	}
 	if ("not" in node) {

@@ -53,7 +53,7 @@ export function invertWrites(
  * arrays/objects are recursed; a `Date`, a class instance, or any non-plain
  * object is returned as-is (recursing would flatten it to `{}` and lose data).
  */
-function cloneValue(value: unknown): unknown {
+export function cloneValue(value: unknown): unknown {
 	if (value === null || typeof value !== "object") return value;
 	if (Array.isArray(value)) return value.map(cloneValue);
 	const proto = Object.getPrototypeOf(value) as unknown;

@@ -7,6 +7,7 @@
  */
 import { toBool } from "../engine/expression";
 import { todayIso } from "./dates";
+import { cloneValue } from "./undo";
 
 export type AutomationActionType = "set" | "today" | "now" | "clear" | "toggle" | "copy";
 
@@ -101,7 +102,10 @@ export function computeRuleWrites(
 					break;
 				case "copy": {
 					const src = action.value.trim();
-					writes.push({ key, value: src ? frontmatter[src] ?? null : null });
+					// Deep-clone: handing the note's own array/object reference to the
+					// write would alias it — a later mutation of one key would silently
+					// change the other. (Undo already clones on the inverse path.)
+					writes.push({ key, value: src ? cloneValue(frontmatter[src] ?? null) : null });
 					break;
 				}
 			}

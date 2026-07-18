@@ -1,7 +1,21 @@
-import { toNumber, toStr } from "../engine/expression";
+import { toBool, toNumber, toStr } from "../engine/expression";
 import type { Row } from "../model/row";
 import { toDayNumber } from "./gantt";
 import { rowMatchesText } from "./search";
+
+/**
+ * The single "is this row done?" predicate shared by every view, so the Kanban
+ * due-chip muting, the Calendar overdue styling/section, and the Outline branch
+ * progress can never disagree about the same note (they used three divergent
+ * inline copies — only the Outline honored a truthy `done` flag). A row is done
+ * when its status property equals the configured Done value, OR it carries a
+ * truthy `done` frontmatter flag.
+ */
+export function isRowDone(row: Row, statusProp: string, doneValue: string): boolean {
+	const dv = (doneValue || "").trim().toLowerCase();
+	if (dv && toStr(row.scope.get(statusProp)).trim().toLowerCase() === dv) return true;
+	return toBool(row.scope.get("done"));
+}
 
 export type KanbanSort = "manual" | "name-asc" | "name-desc" | "due-asc" | "priority-desc" | "mtime-desc";
 

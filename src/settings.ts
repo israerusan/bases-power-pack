@@ -1,7 +1,9 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, PluginSettingTab, Setting, type TextComponent } from "obsidian";
+import { FolderSuggest, StringSuggest } from "./views/inputSuggest";
 import type BasesPowerPackPlugin from "./main";
 import { AGGREGATIONS, type Aggregation, type Rollup } from "./query/rollup";
 import { AUTOMATION_ACTION_TYPES, type AutomationActionType, type AutomationRule } from "./query/automation";
+import { type ColorRule } from "./query/colorRules";
 
 const ACTION_LABELS: Record<AutomationActionType, string> = {
 	set: "Set to value",
@@ -87,6 +89,10 @@ export interface BasesPowerPackSettings {
 
 	/** Per-column-value color overrides (free), keyed by column value → hue (0–359). */
 	kanbanColorOverrides: Record<string, string>;
+
+	/** Rule-based color coding (premium): ordered expression→color rules applied to
+	 * cards / events / bars across every view. First matching rule wins. */
+	colorRules: ColorRule[];
 }
 
 export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
@@ -123,6 +129,7 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	cardFormula: "",
 	automations: [],
 	kanbanColorOverrides: {},
+	colorRules: [],
 };
 
 export function genId(prefix: string): string {
@@ -182,18 +189,9 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			link.setAttr("target", "_blank");
 		}
 
-		new Setting(containerEl)
-			.setName("Purchase page URL")
-			.setDesc("Link shown for premium upgrades.")
-			.addText((text) =>
-				text
-					.setPlaceholder("https://your-store.com/product")
-					.setValue(this.plugin.settings.purchaseUrl)
-					.onChange((value) => {
-						this.plugin.settings.purchaseUrl = value.trim() || DEFAULT_SETTINGS.purchaseUrl;
-						void this.plugin.saveSettings();
-					})
-			);
+		// (The purchase URL is an author/config concern, not a buyer setting — it's
+		// hardcoded via DEFAULT_SETTINGS.purchaseUrl, matching Vault Spotlight, rather
+		// than exposed as an editable field cluttering the License section.)
 
 		// ---- Kanban (lite) ---------------------------------------------------
 		new Setting(containerEl).setName("Kanban view (Lite)").setHeading();
@@ -204,7 +202,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 				"Frontmatter property (or, with premium, a formula) used to build kanban columns. The Outline view also reads it to decide which notes count as done."
 			)
 			.addText((text) =>
-				text.setValue(this.plugin.settings.kanbanGroupBy).onChange((value) => {
+				this.keySuggest(text).setValue(this.plugin.settings.kanbanGroupBy).onChange((value) => {
 					this.plugin.settings.kanbanGroupBy = value.trim() || "status";
 					void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
 				})
@@ -244,7 +242,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			.setName("Quick add folder")
 			.setDesc("Optional folder for the kanban + button. Leave blank to create notes at the vault root.")
 			.addText((text) =>
-				text.setValue(this.plugin.settings.kanbanQuickAddFolder).onChange((value) => {
+				this.folderSuggest(text).setValue(this.plugin.settings.kanbanQuickAddFolder).onChange((value) => {
 					this.plugin.settings.kanbanQuickAddFolder = value.trim();
 					void this.plugin.saveSettings();
 				})
@@ -315,7 +313,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			"Frontmatter date property used to place notes on the calendar.",
 			(setting) => {
 				setting.addText((text) =>
-					text.setValue(this.plugin.settings.calendarDateProp).onChange((value) => {
+					this.keySuggest(text).setValue(this.plugin.settings.calendarDateProp).onChange((value) => {
 						this.plugin.settings.calendarDateProp = value.trim() || "due";
 						void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
 					})
@@ -328,7 +326,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			"Frontmatter property whose value tints each calendar event with a stable color. Leave blank for no coloring.",
 			(setting) => {
 				setting.addText((text) =>
-					text
+					this.keySuggest(text)
 						.setPlaceholder("status")
 						.setValue(this.plugin.settings.calendarColorProp)
 						.onChange((value) => {
@@ -344,7 +342,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			"Optional folder for notes created by clicking a day (leave blank for the vault root).",
 			(setting) => {
 				setting.addText((text) =>
-					text.setValue(this.plugin.settings.calendarQuickAddFolder).onChange((value) => {
+					this.folderSuggest(text).setValue(this.plugin.settings.calendarQuickAddFolder).onChange((value) => {
 						this.plugin.settings.calendarQuickAddFolder = value.trim();
 						void this.plugin.saveSettings();
 					})
@@ -355,7 +353,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 		subHeading("Gantt");
 		premium("Gantt start property", "Frontmatter date property for the start of each Gantt bar.", (setting) => {
 			setting.addText((text) =>
-				text.setValue(this.plugin.settings.ganttStartProp).onChange((value) => {
+				this.keySuggest(text).setValue(this.plugin.settings.ganttStartProp).onChange((value) => {
 					this.plugin.settings.ganttStartProp = value.trim() || "start";
 					void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
 				})
@@ -364,7 +362,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 
 		premium("Gantt end property", "Frontmatter date property for the end of each Gantt bar (optional).", (setting) => {
 			setting.addText((text) =>
-				text.setValue(this.plugin.settings.ganttEndProp).onChange((value) => {
+				this.keySuggest(text).setValue(this.plugin.settings.ganttEndProp).onChange((value) => {
 					this.plugin.settings.ganttEndProp = value.trim() || "end";
 					void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
 				})
@@ -376,7 +374,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			"Frontmatter number (0–100) that fills each Gantt bar to show completion.",
 			(setting) => {
 				setting.addText((text) =>
-					text
+					this.keySuggest(text)
 						.setPlaceholder("progress")
 						.setValue(this.plugin.settings.ganttProgressProp)
 						.onChange((value) => {
@@ -392,7 +390,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			"Notes where this frontmatter value is truthy render as a diamond milestone instead of a bar.",
 			(setting) => {
 				setting.addText((text) =>
-					text
+					this.keySuggest(text)
 						.setPlaceholder("milestone")
 						.setValue(this.plugin.settings.ganttMilestoneProp)
 						.onChange((value) => {
@@ -409,7 +407,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			"Frontmatter property holding the vault-relative path of a note's parent (builds the Outline tree).",
 			(setting) => {
 				setting.addText((text) =>
-					text
+					this.keySuggest(text)
 						.setPlaceholder("parent")
 						.setValue(this.plugin.settings.hierarchyParentProp)
 						.onChange((value) => {
@@ -425,7 +423,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			"Optional numeric frontmatter property for sibling order in the Outline. Blank falls back to sorting by name.",
 			(setting) => {
 				setting.addText((text) =>
-					text
+					this.keySuggest(text)
 						.setPlaceholder("order")
 						.setValue(this.plugin.settings.hierarchyOrderProp)
 						.onChange((value) => {
@@ -441,7 +439,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			"Optional folder for child notes created from the Outline (leave blank for the vault root).",
 			(setting) => {
 				setting.addText((text) =>
-					text.setValue(this.plugin.settings.hierarchyQuickAddFolder).onChange((value) => {
+					this.folderSuggest(text).setValue(this.plugin.settings.hierarchyQuickAddFolder).onChange((value) => {
 						this.plugin.settings.hierarchyQuickAddFolder = value.trim();
 						void this.plugin.saveSettings();
 					})
@@ -470,7 +468,113 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			this.renderAutomations(containerEl);
 			this.renderRollups(containerEl);
 			this.renderSavedFilters(containerEl);
+			this.renderColorRules(containerEl);
 		}
+	}
+
+	/** Autocomplete a property-name text box from the vault's actual frontmatter keys. */
+	private keySuggest(text: TextComponent): TextComponent {
+		new StringSuggest(this.app, text.inputEl, () => this.plugin.getFrontmatterKeys());
+		return text;
+	}
+
+	/** Autocomplete a folder text box from the vault's folders. */
+	private folderSuggest(text: TextComponent): TextComponent {
+		new FolderSuggest(this.app, text.inputEl);
+		return text;
+	}
+
+	private renderColorRules(containerEl: HTMLElement): void {
+		new Setting(containerEl)
+			.setName("Color rules")
+			.setDesc(
+				'Color cards, calendar events, and Gantt bars by rule. The first matching rule wins — order by priority with the arrows. Expressions use the formula engine, e.g. due < today() or priority == "high".'
+			)
+			.setHeading();
+
+		const rules = this.plugin.settings.colorRules;
+		rules.forEach((rule, index) => {
+			const row = new Setting(containerEl);
+			// A rule with no expression is persisted (so it survives a reload while being
+			// authored) but does nothing yet — say so, rather than leaving a silent no-op row.
+			if (!rule.expression.trim()) row.setDesc("No expression yet — this rule is inactive.");
+			row.addColorPicker((cp) =>
+				// The picker is hex-only; feed it a hex (a stored rgb()/hsl()/keyword color
+				// is left untouched until the user actually picks a new one).
+				cp.setValue(/^#[0-9a-fA-F]{6}$/.test(rule.color) ? rule.color : "#e53935").onChange((v) => {
+					rule.color = v;
+					void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+				})
+			);
+			row.addText((t) =>
+				t
+					.setPlaceholder("Label (optional)")
+					.setValue(rule.label)
+					.onChange((v) => {
+						rule.label = v;
+						void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+					})
+			);
+			row.addText((t) =>
+				t
+					.setPlaceholder('expression, e.g. priority == "high"')
+					.setValue(rule.expression)
+					.onChange((v) => {
+						rule.expression = v;
+						void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+					})
+			);
+			row.addExtraButton((b) =>
+				b
+					.setIcon("arrow-up")
+					.setTooltip("Higher priority")
+					.setDisabled(index === 0)
+					.onClick(() => {
+						if (index === 0) return;
+						[rules[index - 1], rules[index]] = [rules[index], rules[index - 1]];
+						void this.plugin.saveSettings().then(() => {
+							this.plugin.refreshViews();
+							this.display();
+						});
+					})
+			);
+			row.addExtraButton((b) =>
+				b
+					.setIcon("arrow-down")
+					.setTooltip("Lower priority")
+					.setDisabled(index === rules.length - 1)
+					.onClick(() => {
+						if (index === rules.length - 1) return;
+						[rules[index + 1], rules[index]] = [rules[index], rules[index + 1]];
+						void this.plugin.saveSettings().then(() => {
+							this.plugin.refreshViews();
+							this.display();
+						});
+					})
+			);
+			row.addExtraButton((b) =>
+				b
+					.setIcon("trash")
+					.setTooltip("Remove rule")
+					.onClick(() => {
+						this.plugin.settings.colorRules = rules.filter((r) => r.id !== rule.id);
+						void this.plugin.saveSettings().then(() => {
+							this.plugin.refreshViews();
+							this.display();
+						});
+					})
+			);
+		});
+
+		new Setting(containerEl).addButton((b) =>
+			b
+				.setButtonText("Add color rule")
+				.setCta()
+				.onClick(() => {
+					this.plugin.settings.colorRules.push({ id: genId("color"), label: "", expression: "", color: "#e53935" });
+					void this.plugin.saveSettings().then(() => this.display());
+				})
+		);
 	}
 
 	private renderAutomations(containerEl: HTMLElement): void {

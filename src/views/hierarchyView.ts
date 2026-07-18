@@ -1,7 +1,8 @@
 import { Menu, Notice } from "obsidian";
 import type { Row } from "../model/row";
 import { PowerPackView } from "./abstractView";
-import { toBool, toNumber, toStr } from "../engine/expression";
+import { toNumber } from "../engine/expression";
+import { isRowDone } from "../query/kanban";
 import { filterRowsByText } from "../query/search";
 import {
 	buildForest,
@@ -55,7 +56,13 @@ export class HierarchyView extends PowerPackView {
 				container,
 				"🌳",
 				"Outline is a Premium view",
-				"See your notes as a project tree — nest tasks under projects, roll up progress across a branch, and drag to reparent — unlock it with a Bases Power Pack license."
+				"See your notes as a project tree instead of a flat list.",
+				[
+					"Nest tasks under projects, any depth",
+					"Drag a row to reparent it",
+					"Per-branch progress roll-ups",
+					"Collapse, expand, and keyboard-navigate the tree",
+				]
 			);
 			return;
 		}
@@ -125,7 +132,7 @@ export class HierarchyView extends PowerPackView {
 	private renderToolbar(container: HTMLElement, parentProp: string): void {
 		const toolbar = container.createDiv({ cls: "bpp-toolbar" });
 		toolbar.createEl("h3", { text: "Outline" });
-		toolbar.createEl("span", { cls: "bpp-badge bpp-badge-premium", text: "Premium" });
+		// (No "Premium" badge: this view only renders for licensed users.)
 		toolbar.createSpan({ cls: "bpp-muted", text: `nested by "${parentProp}"` });
 
 		const group = toolbar.createDiv({ cls: "bpp-segmented" });
@@ -178,7 +185,9 @@ export class HierarchyView extends PowerPackView {
 			zone.addClass("is-drop-target");
 			if (evt.dataTransfer) evt.dataTransfer.dropEffect = "move";
 		});
-		zone.addEventListener("dragleave", () => zone.removeClass("is-drop-target"));
+		zone.addEventListener("dragleave", (evt) => {
+			if (this.dragTrulyLeft(zone, evt)) zone.removeClass("is-drop-target");
+		});
 		zone.addEventListener("drop", (evt) => {
 			zone.removeClass("is-drop-target");
 			const id = evt.dataTransfer?.getData(DND_TREE);
@@ -266,7 +275,9 @@ export class HierarchyView extends PowerPackView {
 			rowEl.addClass("is-drop-target");
 			if (evt.dataTransfer) evt.dataTransfer.dropEffect = "move";
 		});
-		rowEl.addEventListener("dragleave", () => rowEl.removeClass("is-drop-target"));
+		rowEl.addEventListener("dragleave", (evt) => {
+			if (this.dragTrulyLeft(rowEl, evt)) rowEl.removeClass("is-drop-target");
+		});
 		rowEl.addEventListener("drop", (evt) => {
 			rowEl.removeClass("is-drop-target");
 			const dragged = evt.dataTransfer?.getData(DND_TREE);
@@ -453,11 +464,10 @@ export class HierarchyView extends PowerPackView {
 		return Number.isFinite(n) ? n : null;
 	}
 
-	/** A row is "done" when its group value equals the configured done value (e.g.
-	 * "done"/"Complete") or it has a truthy `done` property. */
+	/** A row is "done" when its status property equals the configured done value
+	 * (e.g. "done"/"Complete") or it has a truthy `done` property — the shared
+	 * predicate every view uses. */
 	private isDone(row: Row, doneProp: string): boolean {
-		const doneValue = this.plugin.settings.kanbanDoneValue.trim().toLowerCase();
-		if (doneValue && toStr(row.scope.get(doneProp)).trim().toLowerCase() === doneValue) return true;
-		return toBool(row.scope.get("done"));
+		return isRowDone(row, doneProp, this.plugin.settings.kanbanDoneValue);
 	}
 }

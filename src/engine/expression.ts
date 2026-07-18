@@ -317,7 +317,10 @@ export function toBool(v: unknown): boolean {
 	if (v === null || v === undefined) return false;
 	if (typeof v === "boolean") return v;
 	if (typeof v === "number") return v !== 0 && !Number.isNaN(v);
-	if (typeof v === "string") return v.length > 0 && v.toLowerCase() !== "false";
+	if (typeof v === "string") {
+		const t = v.trim().toLowerCase();
+		return t.length > 0 && t !== "false" && t !== "no" && t !== "off" && t !== "0";
+	}
 	if (Array.isArray(v)) return v.length > 0;
 	return true;
 }
@@ -351,7 +354,7 @@ function flatten(args: Value[]): Value[] {
 
 function numeric(args: Value[]): number[] {
 	return flatten(args)
-		.map(toNumber)
+		.map(arithNumber)
 		.filter((n) => !Number.isNaN(n));
 }
 
@@ -390,11 +393,19 @@ function isoFromDayNumber(day: number): string | null {
  * treat those values. A suffix containing a digit or dash (a date/semver) stays
  * rejected.
  */
-function arithNumber(v: Value): number {
+export function arithNumber(v: Value): number {
+	// A Date instance is NOT numeric for arithmetic/aggregation — strictNumber
+	// would return its getTime() (epoch ms). Reject it here so `-date(x)`,
+	// `date(x) * 2`, and a roll-up over a date() column all treat it as
+	// non-numeric (the +/- shift and date compare handle Date operands via
+	// isoDayNumber BEFORE reaching here).
+	if (v instanceof Date) return NaN;
 	const n = strictNumber(v);
 	if (!Number.isNaN(n)) return n;
 	if (typeof v === "string") {
-		const m = /^\s*(-?(?:\d+(?:\.\d+)?|\.\d+))\s*[a-zA-Z%°]+\.?\s*$/.exec(v);
+		// Unit suffix: letters, %, °, or a currency symbol (\p{Sc}) — so "50%",
+		// "5 pts", "2.5h", "5€", "10£" coerce, but a digit/dash suffix (date/semver) stays rejected.
+		const m = /^\s*(-?(?:\d+(?:\.\d+)?|\.\d+))\s*[\p{L}%°\p{Sc}]+\.?\s*$/u.exec(v);
 		if (m) return Number(m[1]);
 	}
 	return NaN;
@@ -407,6 +418,20 @@ function arithNumber(v: Value): number {
  * `"5 pts"` via lenient `toNumber` — compare numerically; otherwise lexically.
  */
 function compare(a: Value, b: Value): number {
+	// A date() instance compares by ISO day, never by its toString() form
+	// ("...T00:00:00.000Z"), so date(due) < "2026-06-01" orders correctly.
+	if (a instanceof Date && b instanceof Date) {
+		// Two date() instances keep full ms precision so same-day, different-time
+		// values still order (day-granularity would wrongly call them equal).
+		const ta = a.getTime();
+		const tb = b.getTime();
+		if (!Number.isNaN(ta) && !Number.isNaN(tb)) return ta === tb ? 0 : ta < tb ? -1 : 1;
+	}
+	if (a instanceof Date || b instanceof Date) {
+		const da = isoDayNumber(a);
+		const db = isoDayNumber(b);
+		if (da !== null && db !== null) return da === db ? 0 : da < db ? -1 : 1;
+	}
 	if (!looksDateLike(a) && !looksDateLike(b)) {
 		const na = toNumber(a);
 		const nb = toNumber(b);
@@ -425,6 +450,17 @@ function compare(a: Value, b: Value): number {
  */
 function looseEquals(a: Value, b: Value): boolean {
 	if (a === null || b === null) return a === b || (isEmpty(a) && isEmpty(b));
+	// A date() instance never string-equals a plain ISO date; compare by day.
+	if (a instanceof Date && b instanceof Date) {
+		const ta = a.getTime();
+		const tb = b.getTime();
+		if (!Number.isNaN(ta) && !Number.isNaN(tb)) return ta === tb;
+	}
+	if (a instanceof Date || b instanceof Date) {
+		const da = isoDayNumber(a);
+		const db = isoDayNumber(b);
+		if (da !== null && db !== null) return da === db;
+	}
 	const na = strictNumber(a);
 	const nb = strictNumber(b);
 	if (!Number.isNaN(na) && !Number.isNaN(nb)) return na === nb;
@@ -441,18 +477,21 @@ const BUILTINS: Record<string, BuiltIn> = {
 	},
 	min: (a) => {
 		const nums = numeric(a);
-		return nums.length ? Math.min(...nums) : null;
+		return nums.length ? nums.reduce((m, n) => (n < m ? n : m)) : null;
 	},
 	max: (a) => {
 		const nums = numeric(a);
-		return nums.length ? Math.max(...nums) : null;
+		return nums.length ? nums.reduce((m, n) => (n > m ? n : m)) : null;
 	},
 	count: (a) => flatten(a).filter((v) => !isEmpty(v)).length,
 	round: (a) => {
 		const n = toNumber(a[0]);
-		const digits = a[1] !== undefined ? Math.max(0, Math.floor(toNumber(a[1]))) : 0;
+		const rawDigits = a[1] !== undefined ? Math.floor(toNumber(a[1])) : 0;
+		const digits = Number.isNaN(rawDigits) ? 0 : Math.min(100, Math.max(0, rawDigits));
 		const f = Math.pow(10, digits);
-		return Number.isNaN(n) ? null : Math.round(n * f) / f;
+		if (Number.isNaN(n)) return null;
+		const r = Math.round(n * f) / f;
+		return Number.isFinite(r) ? r : null;
 	},
 	floor: (a) => (Number.isNaN(toNumber(a[0])) ? null : Math.floor(toNumber(a[0]))),
 	ceil: (a) => (Number.isNaN(toNumber(a[0])) ? null : Math.ceil(toNumber(a[0]))),
@@ -497,6 +536,15 @@ const BUILTINS: Record<string, BuiltIn> = {
 		if (Number.isNaN(d1.getTime()) || Number.isNaN(d2.getTime())) return null;
 		return Math.round((d1.getTime() - d2.getTime()) / 86400000);
 	},
+	// today() → the LOCAL calendar date as an ISO `YYYY-MM-DD` string, so relative
+	// filters/formulas/color-rules like `due < today()` work. Evaluated at eval time
+	// (the compiled-expression cache holds the AST, not the value), so it stays current.
+	today: () => {
+		const d = new Date();
+		const mm = String(d.getMonth() + 1).padStart(2, "0");
+		const dd = String(d.getDate()).padStart(2, "0");
+		return `${d.getFullYear()}-${mm}-${dd}`;
+	},
 };
 
 function evalNode(node: Node, scope: EvalScope): Value {
@@ -515,7 +563,11 @@ function evalNode(node: Node, scope: EvalScope): Value {
 		}
 		case "unary": {
 			if (node.op === "!") return !toBool(evalNode(node.x, scope));
-			const n = toNumber(evalNode(node.x, scope));
+			// Strict (unit-tolerant) coercion. The old lenient parseFloat read
+			// `-"2026-06-01"` as -2026 and `-"1.9.0"` as -1.9 — the same garbage the
+			// 1.11 binary-operator rewrite fixed but never applied to unary minus.
+			// arithNumber rejects dates/semvers yet keeps `-"5 pts"` = -5.
+			const n = arithNumber(evalNode(node.x, scope));
 			return Number.isNaN(n) ? null : -n;
 		}
 		case "ternary":
@@ -555,20 +607,22 @@ function evalBinary(node: Extract<Node, { t: "bin" }>, scope: EvalScope): Value 
 		case ">=":
 			return compare(a, b) >= 0;
 		case "+": {
-			// Numeric add only when both sides are genuinely numeric, else string
-			// concat — so `"2026-01-01" + x` concatenates instead of adding 2026.
+			// Date arithmetic FIRST: a Date operand's getTime() must never reach
+			// strictNumber below, or `date(x) + 7` would add 7 milliseconds instead
+			// of shifting 7 days. Only a REAL number operand shifts; a numeric STRING
+			// still concatenates so composite keys like `due + sprintId` keep meaning.
+			const da = isoDayNumber(a);
+			const db = isoDayNumber(b);
+			if (da !== null || db !== null) {
+				if (da !== null && typeof b === "number") return Number.isInteger(b) ? isoFromDayNumber(da + b) : null;
+				if (db !== null && typeof a === "number") return Number.isInteger(a) ? isoFromDayNumber(db + a) : null;
+				// date + date, or date + non-number: no numeric meaning -> concat.
+				return toStr(a) + toStr(b);
+			}
+			// Numeric add only when both sides are genuinely numeric, else concat.
 			const na = strictNumber(a);
 			const nb = strictNumber(b);
 			if (!Number.isNaN(na) && !Number.isNaN(nb)) return na + nb;
-			// Date + whole days = a shifted date (mirrors `-` below). Only a REAL
-			// number operand shifts (typeof number, not just a numeric-looking
-			// value): a numeric STRING still concatenates so 1.10 composite keys
-			// like `due + sprintId` keep their meaning, and a Date operand (whose
-			// getTime() is a huge integer) can't be misread as a day count.
-			const da = isoDayNumber(a);
-			if (da !== null && typeof b === "number") return Number.isInteger(b) ? isoFromDayNumber(da + b) : null;
-			const db = isoDayNumber(b);
-			if (db !== null && typeof a === "number") return Number.isInteger(a) ? isoFromDayNumber(db + a) : null;
 			return toStr(a) + toStr(b);
 		}
 		case "-": {

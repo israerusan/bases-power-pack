@@ -1,5 +1,51 @@
 /* Bases Power Pack styles */
 
+/* ============================================================================
+   Design tokens (1.12). One place for the spacing rhythm, radii, type scale, and
+   semantic color roles the whole plugin draws from — so surfaces read as one
+   designed system instead of ad-hoc literals, and light/dark both stay balanced.
+   Token VALUES match the pre-1.12 literals they replace, so adopting them is a
+   visual no-op; the new premium touches (elevation, states) build on top.
+   ============================================================================ */
+.bpp-view,
+.bpp-upgrade,
+.modal .bpp-view {
+  /* spacing scale */
+  --bpp-space-1: 2px;
+  --bpp-space-2: 4px;
+  --bpp-space-3: 6px;
+  --bpp-space-4: 8px;
+  --bpp-space-5: 12px;
+  --bpp-space-6: 16px;
+  /* radii */
+  --bpp-radius-sm: 4px;
+  --bpp-radius-md: 6px;
+  --bpp-radius-lg: 8px;
+  --bpp-radius-pill: 999px;
+  /* type scale */
+  --bpp-font-xs: 0.7em;
+  --bpp-font-sm: 0.78em;
+  --bpp-font-md: 0.85em;
+  --bpp-font-lg: 0.9em;
+  /* elevation — restrained, theme-aware (softer on dark) */
+  --bpp-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --bpp-shadow-2: 0 2px 8px rgba(0, 0, 0, 0.12);
+  --bpp-shadow-drag: 0 6px 18px rgba(0, 0, 0, 0.22);
+  /* semantic accent roles — brand/premium is distinct from the interaction accent
+     so "this is a Pro affordance" and "this is selected/focused" don't blur together */
+  --bpp-accent-brand: var(--interactive-accent);
+  --bpp-accent-select: var(--interactive-accent);
+  /* motion */
+  --bpp-transition: 130ms ease;
+}
+
+.theme-dark .bpp-view,
+.theme-dark .bpp-upgrade {
+  --bpp-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --bpp-shadow-2: 0 2px 10px rgba(0, 0, 0, 0.45);
+  --bpp-shadow-drag: 0 8px 22px rgba(0, 0, 0, 0.6);
+}
+
 .bpp-view {
   padding: 12px;
   overflow: auto;
@@ -51,10 +97,6 @@
   color: var(--text-muted);
 }
 
-.bpp-badge-premium {
-  background: var(--interactive-accent);
-  color: var(--text-on-accent);
-}
 
 .bpp-badge-warn {
   background: var(--color-red, #e03131);
@@ -244,19 +286,23 @@
 .bpp-card {
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  padding: 8px;
-  margin-bottom: 8px;
+  border-radius: var(--bpp-radius-md);
+  padding: var(--bpp-space-4);
+  margin-bottom: var(--bpp-space-4);
   cursor: pointer;
+  box-shadow: var(--bpp-shadow-1);
 }
 
 .bpp-card.is-dragging {
-  opacity: 0.55;
-  border-color: var(--interactive-accent);
+  opacity: 0.9;
+  border-color: var(--bpp-accent-select);
+  box-shadow: var(--bpp-shadow-drag);
+  transform: scale(1.02);
 }
 
 .bpp-card:hover {
-  border-color: var(--interactive-accent);
+  border-color: var(--bpp-accent-select);
+  box-shadow: var(--bpp-shadow-2);
 }
 
 .bpp-card-head {
@@ -732,17 +778,11 @@
   color: var(--text-normal);
 }
 
-/* Empty + upgrade states */
-.bpp-empty,
-.bpp-upgrade {
+/* Empty state (the upsell card styles itself — see the 1.12 block — and must NOT
+   inherit muted text here, or its headline greys out). */
+.bpp-empty {
   padding: 16px;
   color: var(--text-muted);
-}
-
-.bpp-upgrade {
-  text-align: center;
-  max-width: 420px;
-  margin: 40px auto;
 }
 
 .bpp-license-status {
@@ -828,11 +868,17 @@
   .bpp-kanban-column,
   .bpp-cal-event,
   .bpp-seg-btn,
-  .bpp-gantt-bar {
+  .bpp-gantt-bar,
+  .bpp-column-add,
+  .bpp-lite-btn,
+  .bpp-add-column-btn,
+  .bpp-overflow,
+  .bpp-undo-btn {
     transition: none;
   }
 
-  .bpp-card:active {
+  .bpp-card:active,
+  .bpp-card.is-dragging {
     transform: none;
   }
 
@@ -1228,5 +1274,192 @@
      :focus-visible rule (forced to a system color) must win while focused. */
   .bpp-cal-event.is-overdue:not(:focus-visible) {
     outline: 1px solid CanvasText;
+  }
+}
+
+/* ============================================================================
+   Rule-based color coding (premium). A matching color rule paints a left-edge
+   accent stripe (cards / calendar events) or an outline ring (Gantt bars /
+   milestones) via --bpp-rule-color, composing with — never overriding — the
+   existing per-column hue so both signals stay legible.
+   ============================================================================ */
+/* The rule stripe LAYERS with the card's elevation (they share box-shadow), so a
+   color-coded card keeps its rest/hover/drag shadow instead of going flat. */
+.bpp-card.bpp-rule-colored {
+  box-shadow: inset 4px 0 0 0 var(--bpp-rule-color, transparent), var(--bpp-shadow-1);
+}
+.bpp-card.bpp-rule-colored:hover {
+  box-shadow: inset 4px 0 0 0 var(--bpp-rule-color, transparent), var(--bpp-shadow-2);
+}
+.bpp-card.bpp-rule-colored.is-dragging {
+  box-shadow: inset 4px 0 0 0 var(--bpp-rule-color, transparent), var(--bpp-shadow-drag);
+}
+.bpp-cal-event.bpp-rule-colored {
+  box-shadow: inset 3px 0 0 0 var(--bpp-rule-color, transparent);
+}
+/* An overdue event keeps its red edge AND shows the rule color, layered as two
+   stripes (red 0–3px on top, rule 3–6px behind) instead of the rule box-shadow
+   replacing — and hiding — the overdue one at equal specificity. */
+.bpp-cal-event.is-overdue.bpp-rule-colored {
+  box-shadow: inset 3px 0 0 0 var(--color-red, #e03131), inset 6px 0 0 0 var(--bpp-rule-color, transparent);
+}
+.bpp-gantt-bar.bpp-rule-colored {
+  box-shadow: inset 0 0 0 2px var(--bpp-rule-color, transparent);
+}
+/* A milestone diamond has no border by default (border-style/width unset), so a
+   border-color alone never paints — use an outset ring instead. */
+.bpp-gantt-milestone.bpp-rule-colored {
+  box-shadow: 0 0 0 2px var(--bpp-rule-color, transparent);
+}
+@media (forced-colors: active) {
+  .bpp-card.bpp-rule-colored,
+  .bpp-cal-event.bpp-rule-colored,
+  .bpp-gantt-bar.bpp-rule-colored {
+    outline: 2px solid CanvasText;
+  }
+}
+
+/* ============================================================================
+   1.12 premium states: loading skeleton, error surface, upsell card, and the
+   form-control focus ring + Undo button that the token system now unifies.
+   ============================================================================ */
+
+/* ---- Loading skeleton ----------------------------------------------------- */
+.bpp-skeleton {
+  display: flex;
+  gap: var(--bpp-space-5);
+  padding: var(--bpp-space-1);
+}
+.bpp-skeleton-col {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--bpp-space-4);
+}
+.bpp-skeleton-head {
+  height: 18px;
+  border-radius: var(--bpp-radius-sm);
+  width: 60%;
+}
+.bpp-skeleton-card {
+  height: 46px;
+  border-radius: var(--bpp-radius-md);
+}
+.bpp-skeleton-head,
+.bpp-skeleton-card {
+  background: linear-gradient(
+    100deg,
+    var(--background-secondary) 30%,
+    var(--background-modifier-hover) 50%,
+    var(--background-secondary) 70%
+  );
+  background-size: 220% 100%;
+  animation: bpp-shimmer 1.3s ease-in-out infinite;
+}
+@keyframes bpp-shimmer {
+  from { background-position: 180% 0; }
+  to { background-position: -80% 0; }
+}
+
+/* ---- Error surface -------------------------------------------------------- */
+.bpp-error {
+  max-width: 420px;
+  margin: 40px auto;
+  text-align: center;
+  padding: var(--bpp-space-6);
+  border: 1px solid var(--background-modifier-border);
+  border-left: 3px solid var(--color-red, #e03131);
+  border-radius: var(--bpp-radius-lg);
+  background: var(--background-secondary);
+}
+.bpp-error h3 { margin: 0 0 var(--bpp-space-4); }
+.bpp-error p {
+  color: var(--text-muted);
+  font-size: var(--bpp-font-md);
+  margin: 0 0 var(--bpp-space-5);
+  word-break: break-word;
+}
+
+/* ---- Upsell card (the locked-view "money screen") ------------------------- */
+.bpp-upgrade {
+  max-width: 460px;
+  margin: 44px auto;
+  text-align: center;
+  padding: var(--bpp-space-6) var(--bpp-space-6) calc(var(--bpp-space-6) + 4px);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--bpp-radius-lg);
+  background: var(--background-secondary);
+  box-shadow: var(--bpp-shadow-2);
+}
+.bpp-upgrade-emoji {
+  font-size: 2.4em;
+  line-height: 1;
+  margin-bottom: var(--bpp-space-3);
+}
+.bpp-upgrade h3 {
+  margin: 0 0 var(--bpp-space-3);
+  font-size: 1.15em;
+}
+.bpp-upgrade-body {
+  color: var(--text-muted);
+  margin: 0 auto var(--bpp-space-5);
+  max-width: 34ch;
+}
+.bpp-upgrade-features {
+  list-style: none;
+  margin: 0 auto var(--bpp-space-6);
+  padding: 0;
+  text-align: left;
+  display: inline-block;
+}
+.bpp-upgrade-features li {
+  position: relative;
+  padding: var(--bpp-space-2) 0 var(--bpp-space-2) 24px;
+  font-size: var(--bpp-font-lg);
+}
+.bpp-upgrade-features li::before {
+  content: "✓";
+  position: absolute;
+  left: 2px;
+  color: var(--bpp-accent-brand);
+  font-weight: 700;
+}
+
+/* ---- Focus ring on the plugin's own form controls ------------------------- */
+.bpp-lite-input:focus-visible,
+.bpp-lite-select:focus-visible,
+.bpp-filter-select:focus-visible,
+.bpp-undo-btn:focus-visible,
+.bpp-lite-btn:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 2px;
+}
+
+/* ---- Undo button gets its own identity (was borrowing .bpp-seg-btn) -------- */
+.bpp-undo-btn {
+  border-radius: var(--bpp-radius-sm);
+  transition: background-color var(--bpp-transition), color var(--bpp-transition);
+}
+/* .bpp-seg-btn sets border:none, so hover reads as a background + color shift, not
+   a border-color that would never paint. */
+.bpp-undo-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--bpp-accent-select);
+}
+
+/* ---- Unify the previously-instant button hovers with the shared timing ---- */
+.bpp-column-add,
+.bpp-lite-btn,
+.bpp-add-column-btn,
+.bpp-overflow {
+  transition: border-color var(--bpp-transition), color var(--bpp-transition),
+    background-color var(--bpp-transition);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bpp-skeleton-head,
+  .bpp-skeleton-card {
+    animation: none;
   }
 }

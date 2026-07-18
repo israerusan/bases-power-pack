@@ -1,11 +1,12 @@
-import { Menu, Notice, normalizePath } from "obsidian";
-import type { RawNote, Row } from "../model/row";
+import { Menu, Notice } from "obsidian";
+import { COMPUTED_FILE_PROPS, type RawNote, type Row } from "../model/row";
 import { PowerPackView } from "./abstractView";
 import {
 	buildKanbanColumns,
 	columnHue,
 	dueStatus,
 	formatCardField,
+	isRowDone,
 	priorityClass,
 	reorderColumns,
 	type KanbanSort,
@@ -13,15 +14,13 @@ import {
 import { toIsoDateKey, todayIso } from "../query/dates";
 import { computeRollup } from "../query/rollup";
 import {
-	buildQuickAddContent,
-	buildQuickAddPath,
 	buildQuickAddTitle,
 } from "../query/kanbanActions";
 import { coerceFieldInput, formatFieldForEdit } from "../query/inlineEdit";
 import { coerceLiteral, computeRuleWrites, rulesForTransition } from "../query/automation";
 import { dropWouldExceed, formatWipCount, isOverWip, limitFor, sanitizeWipLimit } from "../query/wip";
 import { evaluateSafe, toBool, toStr } from "../engine/expression";
-import { ensureParentFolders, uniqueNotePath, writeRowProperties, writeRowProperty, type PropertyWrite } from "./viewData";
+import { createSeededNote, writeRowProperties, writeRowProperty, type PropertyWrite } from "./viewData";
 import { renderContextControls, renderRollupBar } from "./viewChrome";
 import { BulkEditModal, ConfirmModal, PromptModal, type BulkOp } from "./modals";
 import { DND_COLUMN, DND_ROW } from "./dnd";
@@ -105,7 +104,9 @@ export class KanbanView extends PowerPackView {
 
 		const header = container.createDiv({ cls: "bpp-toolbar" });
 		header.createEl("h3", { text: "Kanban" });
-		header.createEl("span", { cls: "bpp-badge bpp-badge-lite", text: "Lite" });
+		// The "Lite" tag informs FREE users which board is the free one; to a licensed
+		// user it reads as a permanent downgrade nag, so hide it once Pro.
+		if (!this.plugin.settings.isPro) header.createEl("span", { cls: "bpp-badge bpp-badge-lite", text: "Lite" });
 		header.createEl("span", { cls: "bpp-muted", text: `grouped by "${groupBy}"` });
 		this.renderUndoButton(header);
 
@@ -158,7 +159,6 @@ export class KanbanView extends PowerPackView {
 		// muted on done cards (a completed task isn't "overdue").
 		const today = todayIso();
 		const dueProps = new Set(["due", this.plugin.settings.calendarDateProp || "due"]);
-		const doneValue = (this.plugin.settings.kanbanDoneValue || "done").trim().toLocaleLowerCase();
 
 		for (const column of columns) {
 			const col = board.createDiv({ cls: "bpp-kanban-column" });
@@ -239,12 +239,15 @@ export class KanbanView extends PowerPackView {
 
 			for (const row of column.rows) {
 				const card = col.createDiv({ cls: "bpp-card" });
+				this.applyColorRule(card, row);
 				card.draggable = true;
 				const openMenu = (a: MouseEvent | HTMLElement): void => this.openCardMenu(a, row, groupBy, orderedNames);
 				const head = card.createDiv({ cls: "bpp-card-head" });
 				head.createDiv({ cls: "bpp-card-title", text: row.name });
 				this.addOverflowButton(head, row.name, openMenu);
-				const isDone = column.name.trim().toLocaleLowerCase() === doneValue;
+				// Row-level (not column-level) so a `done: true` card in a non-Done
+				// column mutes its overdue chip too — matching the Calendar's overdue rule.
+				const isDone = isRowDone(row, groupBy, this.plugin.settings.kanbanDoneValue);
 				for (const field of metaFields) {
 					const display = formatCardField(row, field);
 					if (display === null) continue;
@@ -660,6 +663,16 @@ export class KanbanView extends PowerPackView {
 	}
 
 	private async applyBulk(rows: Row[], prop: string, op: BulkOp, value: string): Promise<void> {
+		// Refuse to write a computed field — a `file.*` accessor or a base formula.
+		// applyColumnRename already guards this; bulk edit did not, so a bulk toggle/set
+		// on a formula-named prop wrote a shadowing literal that overrode the formula.
+		const resolved = await this.plugin.getResolvedView();
+		// Exact-match the computed accessors, not a `file.` PREFIX: a note can carry a
+		// legitimate flat frontmatter key like `file.type`, which is a real writable field.
+		if (COMPUTED_FILE_PROPS.has(prop) || Object.prototype.hasOwnProperty.call(resolved.def.formulas ?? {}, prop)) {
+			new Notice(`"${prop}" is a computed/formula field — edit it at its source, not in bulk.`);
+			return;
+		}
 		let ok = 0;
 		const batch = this.plugin.undo.beginBatch(
 			`Bulk ${op} "${prop}" on ${rows.length} note${rows.length === 1 ? "" : "s"}`
@@ -737,12 +750,18 @@ export class KanbanView extends PowerPackView {
 		orderedNames: string[]
 	): void {
 		columnEl.addEventListener("dragover", (event) => {
-			const isColumn = (event.dataTransfer?.types ?? []).includes(DND_COLUMN);
+			const types = event.dataTransfer?.types ?? [];
+			const isColumn = types.includes(DND_COLUMN);
+			const isRow = types.includes(DND_ROW);
+			// Ignore foreign drags (external files, selected text): don't preventDefault
+			// and don't paint a drop highlight the drop handler would only no-op on.
+			if (!isColumn && !isRow) return;
 			event.preventDefault();
 			columnEl.addClass(isColumn ? "is-col-drop-target" : "is-drop-target");
 			if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
 		});
-		columnEl.addEventListener("dragleave", () => {
+		columnEl.addEventListener("dragleave", (event) => {
+			if (!this.dragTrulyLeft(columnEl, event)) return;
 			columnEl.removeClass("is-drop-target");
 			columnEl.removeClass("is-col-drop-target");
 		});
@@ -832,24 +851,21 @@ export class KanbanView extends PowerPackView {
 
 	private async quickAddNote(columnName: string, groupBy: string): Promise<void> {
 		const title = buildQuickAddTitle(columnName);
-		const stem = normalizePath(buildQuickAddPath(this.plugin.settings.kanbanQuickAddFolder, title)).replace(/\.md$/, "");
 		try {
-			const path = uniqueNotePath(this.app, stem);
-			await ensureParentFolders(this.app, path);
-			const file = await this.app.vault.create(path, buildQuickAddContent(groupBy, columnName, title));
-			// Seed the snapshot with the frontmatter we just wrote: the metadata cache
-			// hasn't indexed the new file yet, so a plain invalidate would snapshot it
-			// with empty frontmatter and the card wouldn't land in its column until
-			// the debounced re-render.
-			this.plugin.seedCreatedNote(file, { [groupBy || "status"]: columnName });
+			// Unified onto the shared createSeededNote (seeds via processFrontMatter),
+			// so the Kanban path can't drift from Calendar/Outline and a group-by
+			// property name with YAML-significant characters can't corrupt the note.
+			const file = await createSeededNote(
+				this.plugin,
+				this.plugin.settings.kanbanQuickAddFolder,
+				groupBy || "status",
+				columnName,
+				title
+			);
 			new Notice(`Created ${file.basename}`);
-			// Open in a new tab, not getLeaf(false): the board lives in the active leaf, and
-			// reusing it would replace this view and strand the render() below on a dead contentEl.
-			await this.app.workspace.getLeaf("tab").openFile(file);
 		} catch (error) {
-			// Parity with createOnDay/addChildNote: a failed create (illegal title,
-			// collision past uniqueNotePath's cap) surfaces as a Notice, not an
-			// unhandled rejection.
+			// A failed create (illegal title, collision past uniqueNotePath's cap)
+			// surfaces as a Notice, not an unhandled rejection.
 			new Notice(`Bases Power Pack: could not create note (${String(error)}).`);
 		}
 		await this.render();

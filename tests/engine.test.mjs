@@ -22,6 +22,7 @@ await build({
 			export * as wip from "./src/query/wip.ts";
 			export * as hierarchy from "./src/query/hierarchy.ts";
 			export * as kanban from "./src/query/kanban.ts";
+			export * as colorRules from "./src/query/colorRules.ts";
 			export * as kanbanActions from "./src/query/kanbanActions.ts";
 			export * as base from "./src/bases/baseDefinition.ts";
 			export * as resolve from "./src/bases/resolveRows.ts";
@@ -38,7 +39,7 @@ await build({
 });
 
 const m = await import(`file://${outfile.replace(/\\/g, "/")}`);
-const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, hierarchy, kanban, kanbanActions, base, resolve, rowmod } = m;
+const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, hierarchy, kanban, colorRules, kanbanActions, base, resolve, rowmod } = m;
 
 // ---- expression engine -----------------------------------------------------
 const scope = {
@@ -54,6 +55,8 @@ const scope = {
 				jun: "2026-06-01",
 				ver: "1.9.0",
 				pct: "50%",
+				eur: "5€",
+				big: 1e308,
 		};
 		return name in data ? data[name] : undefined;
 	},
@@ -137,6 +140,73 @@ assert.equal(expr.evaluateSafe("1.2.3 + 1", scope), null, "evaluateSafe swallows
 assert.equal(ev("hours / 2."), 1.25, "a trailing-dot literal still parses");
 assert.equal(ev("2."), 2, "a bare trailing-dot literal is 2");
 
+// 1.12 correctness fixes -----------------------------------------------------
+// A Date instance is a first-class date on BOTH + and - (the + case used to run
+// strictNumber first, so date(x)+7 added 7 milliseconds → a ~1.78e12 epoch number).
+assert.equal(ev("date(jun) + 7"), "2026-06-08", "date() instance + N shifts days, not milliseconds");
+assert.equal(ev("7 + date(jun)"), "2026-06-08", "N + date() instance also shifts days");
+// A date() instance equals / orders against its ISO day, not its toISOString() form
+// ("...T00:00:00.000Z") — so date(due) == today is date-accurate, not always false.
+assert.equal(ev("date(jun) == jun"), true, "a date() instance equals its own ISO date string");
+assert.equal(ev("date(jun) == date(jun)"), true, "two equal date() instances are equal");
+assert.equal(ev("date(jan) == jun"), false, "different date() instance and date are not equal");
+assert.equal(ev("date(jan) < date(jun)"), true, "two date() instances order chronologically");
+assert.equal(ev("date(jan) < jun"), true, "a date() instance orders against a date string");
+// Unary minus now uses strict (unit-tolerant) coercion — the old parseFloat read
+// -"2026-06-01" as -2026 and -"1.9.0" as -1.9.
+assert.equal(ev("-jun"), null, "unary minus on an ISO date is null, not -2026");
+assert.equal(ev("-ver"), null, "unary minus on a semver is null, not -1.9");
+assert.equal(ev("-pct"), -50, "unary minus tolerates a unit suffix: -'50%' = -50");
+// round() no longer overflows to a raw NaN for a huge digit count.
+assert.equal(ev("round(hours, 500)"), 2.5, "round() with an absurd digit count is finite, not NaN");
+assert.equal(ev("round(done / total, 500)"), 0.75, "round() caps digits instead of returning NaN");
+// min/max builtins: reduce (no unbounded spread) + strict coercion excludes dates.
+assert.equal(ev("min(done, total, hours)"), 2.5, "min() builtin");
+assert.equal(ev("max(done, total, hours)"), 4, "max() builtin");
+assert.equal(ev("min(jan, jun)"), null, "min() over ISO-date args excludes them (no year-as-number)");
+assert.equal(ev("avg(done, total)"), 3.5, "avg() builtin");
+assert.equal(ev("floor(hours)"), 2, "floor() builtin");
+assert.equal(ev("ceil(hours)"), 3, "ceil() builtin");
+assert.equal(ev("abs(-hours)"), 2.5, "abs() builtin");
+assert.equal(ev("length(tags)"), 2, "length() over an array");
+assert.equal(ev('upper(status)'), "ACTIVE", "upper() builtin");
+assert.equal(ev('datediff(jun, jan)'), 151, "datediff() builtin = whole-day difference");
+assert.equal(ev('datediff("2026-06-01", "2026-01-01")'), 151, "datediff() over literal ISO strings");
+// toBool: canonical falsy strings so a frontmatter `done: "0"`/"no"/"off" reads false.
+assert.equal(expr.toBool("0"), false, 'toBool("0") is false');
+assert.equal(expr.toBool("no"), false, 'toBool("no") is false');
+assert.equal(expr.toBool(" OFF "), false, 'toBool trims + lowercases before matching "off"');
+assert.equal(expr.toBool("false"), false, 'toBool("false") is false');
+assert.equal(expr.toBool("todo"), true, 'toBool("todo") is true');
+assert.equal(expr.toBool("1"), true, 'toBool("1") is true');
+assert.equal(expr.toBool("   "), false, "a whitespace-only string is falsy after trim");
+assert.equal(expr.toBool(""), false, "an empty string is falsy");
+
+// Round-1 adversarial follow-ups: a Date INSTANCE (not just a date string) must be
+// non-numeric for arithmetic/aggregation — arithNumber/strictNumber used to leak its
+// getTime() (epoch ms) into unary minus, *, and roll-ups.
+assert.equal(ev("-date(jun)"), null, "unary minus on a date() instance is null, not -epoch-ms");
+assert.equal(ev("date(jun) * 2"), null, "a date() instance is never multiplied");
+assert.equal(ev("min(date(jan), date(jun))"), null, "min() excludes date() instances (not epoch ms)");
+assert.equal(ev("sum(date(jan), done)"), 3, "sum() over a mixed date()+number set counts only the number");
+// Two date() instances keep full ms precision so intra-day order survives (a
+// day-granularity collapse wrongly called same-day different-time values equal).
+assert.equal(ev('date("2026-06-01T09:00") < date("2026-06-01T17:00")'), true, "same-day earlier time sorts first");
+assert.equal(ev('date("2026-06-01T17:00") > date("2026-06-01T09:00")'), true, "same-day later time sorts after");
+assert.equal(ev('date("2026-06-01T09:00") == date("2026-06-01T17:00")'), false, "different times on a day are not equal");
+assert.equal(ev('date("2026-06-01T09:00") == date("2026-06-01T09:00")'), true, "identical datetimes are equal");
+// Currency-suffix values still coerce for arithmetic/aggregation (were dropped when
+// numeric() switched from lenient parseFloat to arithNumber).
+assert.equal(ev("eur * 2"), 10, '"5€" coerces to 5 for arithmetic');
+assert.equal(ev("sum(eur, done)"), 8, "sum() includes a currency-suffix value (5 + 3)");
+// round(): a non-numeric digits arg falls back to 0 places; a genuine overflow → null.
+assert.equal(ev('round(hours, "x")'), 3, "round() with a non-numeric digits arg rounds to 0 places, not null");
+assert.equal(ev("round(big, 10)"), null, "round() returns null (not Infinity) on a real overflow");
+// today() builtin (enables relative color-rules/filters like `due < today()`).
+assert.match(ev("today()"), /^\d{4}-\d{2}-\d{2}$/, "today() returns an ISO date string");
+assert.equal(ev('today() > "2000-01-01"'), true, "today() orders as a real date");
+assert.equal(ev("today() == today()"), true, "today() is stable within one evaluation");
+
 // ---- row + formulas --------------------------------------------------------
 const note = {
 	path: "Projects/Alpha.md",
@@ -166,6 +236,9 @@ assert.equal(
 assert.equal(filter.evaluateFilter({ or: ['status == "done"', "progress > 90"] }, r.scope), false, "or filter");
 assert.equal(filter.evaluateFilter({ not: 'status == "done"' }, r.scope), true, "not filter");
 assert.equal(filter.evaluateFilter(['status == "active"', "done < total"], r.scope), true, "implicit-and array");
+// An empty combinator is "no constraint" (true), not a board-blanking false.
+assert.equal(filter.evaluateFilter({ or: [] }, r.scope), true, "empty {or:[]} shows every row, not none");
+assert.equal(filter.evaluateFilter({ and: [] }, r.scope), true, "empty {and:[]} shows every row");
 
 // ---- base definition + resolveRows ----------------------------------------
 const def = base.normalizeBaseDefinition({
@@ -205,6 +278,118 @@ assert.equal(
 	"2",
 	"unique statuses"
 );
+// A roll-up over an ISO-date column must not aggregate by the leading year: summing
+// ["2026-01-01","2026-06-01"] used to yield 4052 (year+year) via lenient toNumber.
+const dateRows = [
+	rowmod.makeRow({ ...note, path: "D1.md", frontmatter: { start: "2026-01-01" } }, {}),
+	rowmod.makeRow({ ...note, path: "D2.md", frontmatter: { start: "2026-06-01" } }, {}),
+];
+assert.equal(
+	rollup.computeRollup({ id: "d1", label: "Sum start", expression: "start", aggregation: "sum" }, dateRows),
+	"0",
+	"sum over a date column excludes the dates (not 4052)"
+);
+assert.equal(
+	rollup.computeRollup({ id: "d2", label: "Min start", expression: "start", aggregation: "min" }, dateRows),
+	"—",
+	"min over a date column has no numeric members"
+);
+assert.equal(
+	rollup.computeRollup({ id: "d3", label: "Range start", expression: "start", aggregation: "range" }, dateRows),
+	"—",
+	"range over a date column has no numeric members"
+);
+// A rollup whose expression yields a Date INSTANCE (via date()) is excluded too,
+// not aggregated as epoch milliseconds.
+assert.equal(
+	rollup.computeRollup({ id: "d4", label: "Sum date()", expression: "date(start)", aggregation: "sum" }, dateRows),
+	"0",
+	"sum over date() instances excludes them (not epoch-ms garbage)"
+);
+assert.equal(
+	rollup.computeRollup({ id: "d5", label: "Max date()", expression: "date(start)", aggregation: "max" }, dateRows),
+	"—",
+	"max over date() instances has no numeric members"
+);
+
+// ---- color rules ------------------------------------------------------------
+const crRows = [
+	rowmod.makeRow({ ...note, path: "CR1.md", frontmatter: { priority: "high", due: "2020-01-01" } }, {}),
+	rowmod.makeRow({ ...note, path: "CR2.md", frontmatter: { priority: "low", due: "2099-01-01" } }, {}),
+];
+const colorRuleSet = [
+	{ id: "a", label: "Overdue", expression: 'due < "2026-07-17"', color: "#ff0000" },
+	{ id: "b", label: "High priority", expression: 'priority == "high"', color: "#ffaa00" },
+];
+// First matching rule wins even when a later rule also matches (ordering = priority).
+assert.deepEqual(
+	colorRules.resolveRowColor(crRows[0], colorRuleSet),
+	{ color: "#ff0000", label: "Overdue", ruleId: "a" },
+	"first matching rule wins (overdue before high-priority)"
+);
+assert.equal(colorRules.resolveRowColor(crRows[1], colorRuleSet), null, "no rule matches → null");
+// An invalid / throwing expression is skipped, never surfaced.
+assert.equal(
+	colorRules.resolveRowColor(crRows[0], [{ id: "x", label: "", expression: "bogusfn(", color: "#fff" }]),
+	null,
+	"an unparseable expression is skipped, not thrown"
+);
+// A rule with an unsafe/empty color is ignored even if its expression matches.
+assert.equal(
+	colorRules.resolveRowColor(crRows[0], [{ id: "x", label: "", expression: "priority == \"high\"", color: "url(evil)" }]),
+	null,
+	"a rule with an unsafe color is skipped"
+);
+// sanitizeColor allow-list.
+assert.equal(colorRules.sanitizeColor("#ff0000"), "#ff0000", "hex passes");
+assert.equal(colorRules.sanitizeColor("#abc"), "#abc", "short hex passes");
+assert.equal(colorRules.sanitizeColor("rgb(1, 2, 3)"), "rgb(1, 2, 3)", "rgb() passes");
+assert.equal(colorRules.sanitizeColor("hsl(200 50% 50%)"), "hsl(200 50% 50%)", "hsl() passes");
+assert.equal(colorRules.sanitizeColor("hsl(120deg, 50%, 50%)"), "hsl(120deg, 50%, 50%)", "hsl() with an angle unit passes");
+assert.equal(colorRules.sanitizeColor("var(--my-accent)"), "var(--my-accent)", "var() passes");
+assert.equal(colorRules.sanitizeColor("tomato"), "tomato", "a real named color passes");
+assert.equal(colorRules.sanitizeColor("reed"), "", "a keyword TYPO (not a real named color) is rejected");
+assert.equal(colorRules.sanitizeColor("url(x)"), "", "url() is rejected");
+assert.equal(colorRules.sanitizeColor("red; background:url()"), "", "a CSS-injection string is rejected");
+assert.equal(colorRules.sanitizeColor(""), "", "empty is rejected");
+assert.equal(colorRules.sanitizeColor(123), "", "a non-string is rejected");
+// normalizeColorRules KEEPS partially-configured rules (mirrors saved filters /
+// roll-ups) so a rule being authored survives a reload; it only drops non-objects
+// and sanitizes each color to "" when unsafe. Every id is made UNIQUE.
+assert.deepEqual(
+	colorRules.normalizeColorRules([
+		{ expression: "a == 1", color: "#fff", label: "L" },
+		{ expression: "", color: "#fff" },
+		{ expression: "b == 2", color: "url(x)" },
+		"garbage",
+		{ expression: "c == 3", color: "#123456" },
+	]),
+	[
+		{ id: "rule-1", label: "L", expression: "a == 1", color: "#fff" },
+		{ id: "rule-2", label: "", expression: "", color: "#fff" },
+		{ id: "rule-3", label: "", expression: "b == 2", color: "" },
+		{ id: "rule-4", label: "", expression: "c == 3", color: "#123456" },
+	],
+	"normalizeColorRules keeps every object entry (inert until completed), sanitizes colors"
+);
+// Ids are de-duplicated so the settings delete-by-id can't remove several at once.
+assert.deepEqual(
+	colorRules.normalizeColorRules([
+		{ id: "rule-1", expression: "a", color: "#fff" },
+		{ expression: "b", color: "#000" },
+	]).map((r) => r.id),
+	["rule-1", "rule-2"],
+	"a back-filled id never collides with an explicit one"
+);
+assert.deepEqual(
+	colorRules.normalizeColorRules([
+		{ id: "dup", expression: "a", color: "#fff" },
+		{ id: "dup", expression: "b", color: "#000" },
+	]).map((r) => r.id),
+	["dup", "rule-1"],
+	"duplicate explicit ids are made unique"
+);
+assert.deepEqual(colorRules.normalizeColorRules("nope"), [], "non-array normalizes to []");
 
 // ---- gantt -----------------------------------------------------------------
 assert.equal(gantt.toDayNumber("2026-01-01"), Math.floor(Date.UTC(2026, 0, 1) / 86400000), "toDayNumber utc");
@@ -341,6 +526,18 @@ assert.deepEqual(
 	[{ key: "closed", value: "2026-02-01" }],
 	"copy reads the source property's current value"
 );
+// `copy` of an array/object value must deep-clone, not alias the note's own reference.
+const copySrcTags = ["a", "b"];
+const copyWrites = automation.computeRuleWrites(
+	[{ id: "cp", name: "cp", enabled: true, triggerProp: "status", enterValue: "Done", actions: [{ prop: "tagsCopy", type: "copy", value: "tags" }] }],
+	{ tags: copySrcTags },
+	clock
+);
+assert.deepEqual(copyWrites[0].value, ["a", "b"], "copy reproduces the array value");
+assert.notStrictEqual(copyWrites[0].value, copySrcTags, "copy does NOT alias the source array reference");
+copySrcTags.push("c");
+assert.deepEqual(copyWrites[0].value, ["a", "b"], "mutating the source afterwards does not change the copied write");
+
 assert.equal(automation.coerceLiteral("42"), 42, "coerceLiteral parses numbers");
 assert.equal(automation.coerceLiteral("false"), false, "coerceLiteral parses booleans");
 assert.equal(automation.coerceLiteral("open"), "open", "coerceLiteral keeps strings");
@@ -363,6 +560,26 @@ const kanbanRows = [
 		frontmatter: { status: "active", due: "2026-01-15", priority: 3, owner: "Ada" },
 	}),
 ];
+// Shared isRowDone predicate (1.12): one definition every view uses so the Kanban
+// chip, Calendar overdue, and Outline progress never disagree.
+assert.equal(kanban.isRowDone(kanbanRows[1], "status", "done"), true, "isRowDone: status == done value");
+assert.equal(kanban.isRowDone(kanbanRows[2], "status", "done"), false, "isRowDone: active is not done");
+assert.equal(
+	kanban.isRowDone(rowmod.makeRow({ ...note, frontmatter: { status: "Done" } }, {}), "status", "done"),
+	true,
+	"isRowDone: case-insensitive status match"
+);
+assert.equal(
+	kanban.isRowDone(rowmod.makeRow({ ...note, frontmatter: { status: "doing", done: true } }, {}), "status", "done"),
+	true,
+	"isRowDone: a truthy `done` flag marks done even off the Done column"
+);
+assert.equal(
+	kanban.isRowDone(rowmod.makeRow({ ...note, frontmatter: { status: "doing", done: "0" } }, {}), "status", "done"),
+	false,
+	'isRowDone: `done: "0"` is not truthy (uses the fixed toBool)'
+);
+
 const board = kanban.buildKanbanColumns(kanbanRows, {
 	groupBy: "status",
 	search: "a",
@@ -453,19 +670,9 @@ assert.deepEqual(
 	"setKanbanGroupValue updates the grouped property for drag/drop moves"
 );
 assert.equal(
-	kanbanActions.buildQuickAddPath("Inbox/Boards", "New done 2026-01-15 09-30"),
-	"Inbox/Boards/New done 2026-01-15 09-30.md",
-	"buildQuickAddPath places quick-add notes in the configured folder"
-);
-assert.equal(
-	kanbanActions.buildQuickAddContent("status", "done", "New done 2026-01-15 09-30"),
-	'---\nstatus: "done"\n---\n\n# New done 2026-01-15 09-30\n',
-	"buildQuickAddContent creates note content with frontmatter and heading"
-);
-assert.equal(
-	kanbanActions.buildQuickAddContent("status", "Blocked: waiting", "New card"),
-	'---\nstatus: "Blocked: waiting"\n---\n\n# New card\n',
-	"buildQuickAddContent quotes YAML-significant column names so frontmatter stays valid"
+	kanbanActions.buildQuickAddTitle("done", new Date(2026, 0, 15, 9, 30)),
+	"New done 2026-01-15 09-30",
+	"buildQuickAddTitle builds a timestamped title"
 );
 
 // ---- gantt progress normalization -------------------------------------------

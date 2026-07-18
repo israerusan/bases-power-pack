@@ -168,12 +168,30 @@ export async function createSeededNote(
 	const stem = `${cleanFolder ? `${cleanFolder}/` : ""}${titleHint}`;
 	const path = uniqueNotePath(app, stem);
 	await ensureParentFolders(app, path);
-	const content = `---\n${key}: ${JSON.stringify(value)}\n---\n\n# ${titleHint}\n`;
-	const file = await app.vault.create(path, content);
+	// Create the body first, then write the seed property through processFrontMatter.
+	// The old hand-built `---\n${key}: ${JSON.stringify(value)}\n---` quoted the VALUE
+	// but not the KEY: a property name the user configured with a colon, "#", quote,
+	// or a leading !/&/* produced malformed YAML and the note loaded with NO
+	// frontmatter (so it never appeared on its day/column). processFrontMatter escapes
+	// both, and is the same write path every other mutation uses.
+	const file = await app.vault.create(path, `# ${titleHint}\n`);
+	let seeded = true;
+	try {
+		await app.fileManager.processFrontMatter(file, (frontmatter) => {
+			(frontmatter as Record<string, unknown>)[key] = value;
+		});
+	} catch (error) {
+		seeded = false;
+		new Notice(`Bases Power Pack: created the note but couldn't set "${key}" (${String(error)}).`);
+	}
 	// Seed the snapshot with the frontmatter we just wrote — the metadata cache
-	// hasn't indexed the new file yet, so a plain patch would see empty
-	// frontmatter and the note wouldn't appear on its day/column immediately.
-	plugin.seedCreatedNote(file, { [key]: value });
+	// hasn't indexed the new file yet, so a plain patch would see empty frontmatter
+	// and the note wouldn't appear on its day/column immediately. But ONLY when the
+	// write actually landed: seeding {key:value} for a failed write would flash a
+	// phantom card in its column that vanishes the moment the real (empty) metadata
+	// event re-snapshots the note.
+	if (seeded) plugin.seedCreatedNote(file, { [key]: value });
+	else plugin.patchNote(file);
 	await app.workspace.getLeaf("tab").openFile(file);
 	return file;
 }

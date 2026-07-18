@@ -26,6 +26,7 @@ Advanced database views and automation on top of Obsidian's native **Bases** fea
 | **WIP limits** (per-column work-in-progress caps; flag or block over-limit) | ✅ | ✅ |
 | **Undo** (reverse the last move, edit, bulk change, or column rename) | ✅ | ✅ |
 | **Move Rules automation** (on entering a column, auto-write frontmatter) | — | ✅ |
+| **Rule-based color coding** (color cards / events / bars by an expression rule) | — | ✅ |
 | **Calendar view** (Month / Week / Agenda with an Overdue section) | — | ✅ |
 | **Calendar drag-to-reschedule** (move an event, write the date) | — | ✅ |
 | **Calendar create-on-day** + color-by property | — | ✅ |

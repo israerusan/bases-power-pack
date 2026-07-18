@@ -3,7 +3,7 @@ import type { Row } from "../model/row";
 import type { CalendarViewMode } from "../settings";
 import { PowerPackView } from "./abstractView";
 import { toStr } from "../engine/expression";
-import { columnHue } from "../query/kanban";
+import { columnHue, isRowDone } from "../query/kanban";
 import { filterRowsByText } from "../query/search";
 import {
 	dayLabel,
@@ -57,7 +57,13 @@ export class CalendarView extends PowerPackView {
 				container,
 				"📅",
 				"Calendar is a Premium view",
-				"Drag notes to reschedule, click a day to create one, and switch between month, week, and agenda — unlock it with a Bases Power Pack license."
+				"See your notes on a real calendar and reschedule them by hand.",
+				[
+					"Drag a note to any day to reschedule it",
+					"Click a day to create a note already dated",
+					"Month, week, and agenda layouts",
+					"Overdue section + colour-by-property",
+				]
 			);
 			return;
 		}
@@ -99,7 +105,8 @@ export class CalendarView extends PowerPackView {
 	private renderToolbar(container: HTMLElement, dateProp: string): void {
 		const toolbar = container.createDiv({ cls: "bpp-toolbar" });
 		toolbar.createEl("h3", { text: "Calendar" });
-		toolbar.createEl("span", { cls: "bpp-badge bpp-badge-premium", text: "Premium" });
+		// (No "Premium" badge: this view only renders for licensed users, so the badge
+		// was pure post-purchase redundancy.)
 
 		const modes = toolbar.createDiv({ cls: "bpp-segmented" });
 		const addMode = (mode: CalendarViewMode, label: string): void => {
@@ -239,7 +246,9 @@ export class CalendarView extends PowerPackView {
 			cell.addClass("is-drop-target");
 			if (evt.dataTransfer) evt.dataTransfer.dropEffect = "move";
 		});
-		cell.addEventListener("dragleave", () => cell.removeClass("is-drop-target"));
+		cell.addEventListener("dragleave", (evt) => {
+			if (this.dragTrulyLeft(cell, evt)) cell.removeClass("is-drop-target");
+		});
 		cell.addEventListener("drop", (evt) => {
 			cell.removeClass("is-drop-target");
 			const rowId = evt.dataTransfer?.getData(DND_ROW) || evt.dataTransfer?.getData("text/plain");
@@ -254,6 +263,7 @@ export class CalendarView extends PowerPackView {
 		const colorProp = this.plugin.settings.calendarColorProp.trim();
 		for (const row of rows) {
 			const ev = cell.createDiv({ cls: "bpp-cal-event" });
+			this.applyColorRule(ev, row);
 			// A past scheduled date is overdue — flag it with a subtle red edge, don't
 			// hide it. But a DONE note isn't overdue (it's finished), matching the
 			// Kanban card chip; without this the same note reads red here and neutral
@@ -356,12 +366,12 @@ export class CalendarView extends PowerPackView {
 		for (const key of upcoming) this.renderAgendaDay(list, key, byDay.get(key) ?? [], dateProp, today, false);
 	}
 
-	/** Whether a row's group value marks it done — the same predicate the Kanban
-	 * board uses (group value === the configured Done value). */
+	/** Whether a row is done — the shared predicate every view uses (status property
+	 * === the configured Done value, OR a truthy `done` flag), so the overdue
+	 * styling can't disagree with the Kanban chip or the Outline progress. */
 	private isDone(row: Row): boolean {
 		const groupBy = this.plugin.settings.kanbanGroupBy || "status";
-		const doneValue = (this.plugin.settings.kanbanDoneValue || "done").trim().toLocaleLowerCase();
-		return toStr(row.scope.get(groupBy)).trim().toLocaleLowerCase() === doneValue;
+		return isRowDone(row, groupBy, this.plugin.settings.kanbanDoneValue);
 	}
 
 	private renderAgendaDay(

@@ -41,6 +41,13 @@ const CLICK_SLOP = 4;
 export class GanttView extends PowerPackView {
 	private zoomPx = DEFAULT_ZOOM;
 	private scrollEl: HTMLElement | null = null;
+	/** The px-per-day the current scroll container was built at, so a scroll captured
+	 * before empty() can be re-anchored correctly even when a zoom change alters the scale. */
+	private lastRenderPx = 0;
+	/** The viewport's CENTER day captured before a re-render's empty(), so a background
+	 * metadata render doesn't snap the timeline back to day 0 AND a zoom change keeps the
+	 * same date centered instead of restoring a now-meaningless pixel offset. */
+	private pendingCenterDay: number | null = null;
 	/** Bar to re-focus after the next render — set by the keyboard move/resize
 	 * path so arrow-key scheduling isn't single-shot (render() empties the
 	 * container, which would drop focus to the body). Same pattern as the
@@ -59,6 +66,8 @@ export class GanttView extends PowerPackView {
 
 	async onClose(): Promise<void> {
 		this.scrollEl = null;
+		this.pendingCenterDay = null;
+		this.lastRenderPx = 0;
 		await super.onClose();
 	}
 
@@ -73,7 +82,13 @@ export class GanttView extends PowerPackView {
 				container,
 				"📊",
 				"Gantt is a Premium view",
-				"Drag bars to reschedule, resize to change duration, zoom the timeline, and track progress — unlock it with a Bases Power Pack license."
+				"Plan work on a timeline and reshape it by dragging.",
+				[
+					"Drag a bar to reschedule, drag its edge to change duration",
+					"Zoom from days to months",
+					"Progress fills and milestone markers",
+					"Keyboard-nudge bars and jump to today",
+				]
 			);
 			return;
 		}
@@ -91,6 +106,13 @@ export class GanttView extends PowerPackView {
 			const id = active.getAttribute("data-bpp-id");
 			if (id) this.focusBarId = id;
 		}
+		// Capture the viewport's center DAY (not raw px) before empty() destroys the
+		// scroll container, so the restore below re-anchors the same date even if the
+		// zoom (px-per-day) changed between renders.
+		this.pendingCenterDay =
+			this.scrollEl && this.lastRenderPx > 0
+				? (this.scrollEl.scrollLeft + this.scrollEl.clientWidth / 2) / this.lastRenderPx
+				: null;
 
 		this.captureSearchState();
 		container.empty();
@@ -101,7 +123,7 @@ export class GanttView extends PowerPackView {
 
 		const toolbar = container.createDiv({ cls: "bpp-toolbar" });
 		toolbar.createEl("h3", { text: "Gantt" });
-		toolbar.createEl("span", { cls: "bpp-badge bpp-badge-premium", text: "Premium" });
+		// (No "Premium" badge: this view only renders for licensed users.)
 		toolbar.createSpan({ cls: "bpp-muted", text: `${startProp} → ${endProp}` });
 
 		const zoom = toolbar.createDiv({ cls: "bpp-segmented" });
@@ -147,9 +169,20 @@ export class GanttView extends PowerPackView {
 
 		this.renderChart(container, model, rowByPath, startProp, endProp);
 
+		// Re-anchor the same center day onto the freshly-built scroll container (at the
+		// current px scale). For a same-scale background render this reproduces the old
+		// scrollLeft exactly; across a zoom change it keeps the viewed date centered.
+		if (this.pendingCenterDay !== null && this.scrollEl) {
+			this.scrollEl.scrollLeft = Math.max(0, this.pendingCenterDay * this.zoomPx - this.scrollEl.clientWidth / 2);
+		}
+		this.pendingCenterDay = null;
+
 		// Restore keyboard focus to the bar being arrow-moved/resized (see focusBarId).
 		if (this.focusBarId) {
-			const sel = `[data-bpp-id="${this.focusBarId.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"]`;
+			// CSS.escape — a file path can contain selector metacharacters the old
+			// two-replacement hand-escaper missed (matching hierarchyView), so focus
+			// restore never throws or silently fails on such paths.
+			const sel = `[data-bpp-id="${CSS.escape(this.focusBarId)}"]`;
 			container.querySelector<HTMLElement>(sel)?.focus();
 			this.focusBarId = null;
 		}
@@ -180,6 +213,7 @@ export class GanttView extends PowerPackView {
 
 		const scroll = container.createDiv({ cls: "bpp-gantt-scroll" });
 		this.scrollEl = scroll;
+		this.lastRenderPx = px;
 		const chart = scroll.createDiv({ cls: "bpp-gantt" });
 		chart.setCssProps({ "--bpp-track-width": `${total * px}px` });
 
@@ -242,6 +276,7 @@ export class GanttView extends PowerPackView {
 			diamond.setCssProps({ left: `${bar.startIndex * px}px` });
 			diamond.setAttr("title", `${bar.name}: ${bar.startDate}`);
 			diamond.setAttr("data-bpp-id", bar.id);
+			if (row) this.applyColorRule(diamond, row);
 			if (row && openMenu) {
 				diamond.addEventListener("click", () => this.openRow(row));
 				// Keyboard parity with bars: this branch used to return before any of
@@ -269,6 +304,7 @@ export class GanttView extends PowerPackView {
 		barEl.setCssProps({ left: `${bar.startIndex * px}px`, width: `${Math.max(1, bar.span) * px}px` });
 		barEl.setAttr("title", `${bar.name}: ${bar.startDate} → ${bar.endDate}`);
 		barEl.setAttr("data-bpp-id", bar.id);
+		if (row) this.applyColorRule(barEl, row);
 
 		if (row && openMenu) {
 			const progress = this.progressPct(row);

@@ -1,4 +1,4 @@
-import { evaluateSafe, toNumber, toStr, type Value } from "../engine/expression";
+import { arithNumber, evaluateSafe, toStr, type Value } from "../engine/expression";
 import type { Row } from "../model/row";
 
 export type Aggregation =
@@ -60,21 +60,33 @@ export function computeRollup(rollup: Rollup, rows: Row[]): string {
 		}
 		case "min": {
 			const nums = numeric(values);
-			return nums.length ? formatNumber(Math.min(...nums)) : "—";
+			return nums.length ? formatNumber(arrMin(nums)) : "—";
 		}
 		case "max": {
 			const nums = numeric(values);
-			return nums.length ? formatNumber(Math.max(...nums)) : "—";
+			return nums.length ? formatNumber(arrMax(nums)) : "—";
 		}
 		case "range": {
 			const nums = numeric(values);
-			return nums.length ? `${formatNumber(Math.min(...nums))}–${formatNumber(Math.max(...nums))}` : "—";
+			return nums.length ? `${formatNumber(arrMin(nums))}–${formatNumber(arrMax(nums))}` : "—";
 		}
 	}
 }
 
 function numeric(values: Value[]): number[] {
-	return values.map(toNumber).filter((n) => !Number.isNaN(n));
+	// arithNumber (not lenient toNumber): an ISO-date or semver column must not
+	// aggregate by its leading number — summing ["2026-01-01","2026-06-01"] used
+	// to yield 4052 (year+year). Numeric-with-unit strings ("50%") still coerce.
+	return values.map(arithNumber).filter((n) => !Number.isNaN(n));
+}
+
+/** min/max over an array WITHOUT the spread operator — Math.min(...nums) throws a
+ * RangeError on a very large set (the same limit the Gantt code deliberately avoids). */
+function arrMin(nums: number[]): number {
+	return nums.reduce((m, n) => (n < m ? n : m));
+}
+function arrMax(nums: number[]): number {
+	return nums.reduce((m, n) => (n > m ? n : m));
 }
 
 function formatNumber(n: number): string {
