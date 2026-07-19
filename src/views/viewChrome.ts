@@ -25,6 +25,50 @@ export function renderSearchControl(
 	return input;
 }
 
+/**
+ * A labelled `<select>` for a view toolbar (chart type, aggregation, group-by).
+ * Mirrors the search control's chrome so the toolbar reads as one control group.
+ */
+export function renderSelect(
+	container: HTMLElement,
+	label: string,
+	options: Array<{ value: string; label: string }>,
+	current: string,
+	onChange: (value: string) => void
+): HTMLSelectElement {
+	const wrap = container.createDiv({ cls: "bpp-lite-control" });
+	wrap.createSpan({ cls: "bpp-muted", text: label });
+	const select = wrap.createEl("select", { cls: "bpp-lite-select" });
+	for (const opt of options) {
+		const optionEl = select.createEl("option", { text: opt.label, value: opt.value });
+		if (opt.value === current) optionEl.selected = true;
+	}
+	select.addEventListener("change", () => onChange(select.value));
+	return select;
+}
+
+/**
+ * A property-name `<select>` built from the vault's frontmatter keys, guaranteeing
+ * the current value is selectable even when no note carries it yet (e.g. a default
+ * `status` on an empty vault) so the toolbar never silently loses the setting.
+ */
+export function renderPropertySelect(
+	container: HTMLElement,
+	label: string,
+	keys: string[],
+	current: string,
+	onChange: (value: string) => void
+): HTMLSelectElement {
+	const values = keys.includes(current) ? keys : [current, ...keys];
+	return renderSelect(
+		container,
+		label,
+		values.map((k) => ({ value: k, label: k })),
+		current,
+		onChange
+	);
+}
+
 /** Render the base + active-filter indicators and a saved-filter switcher. */
 export function renderContextControls(
 	container: HTMLElement,

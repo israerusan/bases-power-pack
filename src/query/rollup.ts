@@ -43,34 +43,62 @@ function isEmpty(v: Value): boolean {
 export function computeRollup(rollup: Rollup, rows: Row[]): string {
 	const values: Value[] = rows.map((r) => evaluateSafe(rollup.expression, r.scope));
 
-	switch (rollup.aggregation) {
+	// `range` is the one aggregation whose display isn't a single number (it's a
+	// "min–max" span), so it's formatted here; every other case shares the numeric
+	// path so a KPI card and a chart built on the same aggregation never disagree.
+	if (rollup.aggregation === "range") {
+		const nums = numeric(values);
+		return nums.length ? `${formatNumber(arrMin(nums))}–${formatNumber(arrMax(nums))}` : "—";
+	}
+	const n = aggregateNumber(rollup.aggregation, values);
+	return n === null ? "—" : formatNumber(n);
+}
+
+/**
+ * The single numeric result of an aggregation over pre-evaluated values, or null
+ * when there's no meaningful number (an average / min / max of no numeric values).
+ * `range` collapses to its span (max − min) so a chart has a single height; the
+ * roll-up display keeps the richer "min–max" form. Shared by the roll-up bar, the
+ * pivot cells, and the dashboard charts.
+ */
+export function aggregateNumber(aggregation: Aggregation, values: Value[]): number | null {
+	switch (aggregation) {
 		case "count":
-			return String(rows.length);
+			return values.length;
 		case "filled":
-			return String(values.filter((v) => !isEmpty(v)).length);
+			return values.filter((v) => !isEmpty(v)).length;
 		case "empty":
-			return String(values.filter(isEmpty).length);
+			return values.filter(isEmpty).length;
 		case "unique":
-			return String(new Set(values.filter((v) => !isEmpty(v)).map(toStr)).size);
+			return new Set(values.filter((v) => !isEmpty(v)).map(toStr)).size;
 		case "sum":
-			return formatNumber(numeric(values).reduce((s, n) => s + n, 0));
+			return numeric(values).reduce((s, n) => s + n, 0);
 		case "avg": {
 			const nums = numeric(values);
-			return nums.length ? formatNumber(nums.reduce((s, n) => s + n, 0) / nums.length) : "—";
+			return nums.length ? nums.reduce((s, n) => s + n, 0) / nums.length : null;
 		}
 		case "min": {
 			const nums = numeric(values);
-			return nums.length ? formatNumber(arrMin(nums)) : "—";
+			return nums.length ? arrMin(nums) : null;
 		}
 		case "max": {
 			const nums = numeric(values);
-			return nums.length ? formatNumber(arrMax(nums)) : "—";
+			return nums.length ? arrMax(nums) : null;
 		}
 		case "range": {
 			const nums = numeric(values);
-			return nums.length ? `${formatNumber(arrMin(nums))}–${formatNumber(arrMax(nums))}` : "—";
+			return nums.length ? arrMax(nums) - arrMin(nums) : null;
 		}
 	}
+}
+
+/**
+ * Aggregate `expression` across `rows` to a single number (evaluating the
+ * expression per row first). The numeric counterpart to computeRollup, used by
+ * the dashboard charts where a bar height / slice size needs a real number.
+ */
+export function aggregateRows(aggregation: Aggregation, rows: Row[], expression: string): number | null {
+	return aggregateNumber(aggregation, rows.map((r) => evaluateSafe(expression, r.scope)));
 }
 
 function numeric(values: Value[]): number[] {

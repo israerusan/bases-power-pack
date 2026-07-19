@@ -23,6 +23,9 @@ await build({
 			export * as hierarchy from "./src/query/hierarchy.ts";
 			export * as kanban from "./src/query/kanban.ts";
 			export * as colorRules from "./src/query/colorRules.ts";
+			export * as pivot from "./src/query/pivot.ts";
+			export * as dashboard from "./src/query/dashboard.ts";
+			export * as gallery from "./src/query/gallery.ts";
 			export * as kanbanActions from "./src/query/kanbanActions.ts";
 			export * as base from "./src/bases/baseDefinition.ts";
 			export * as resolve from "./src/bases/resolveRows.ts";
@@ -39,7 +42,7 @@ await build({
 });
 
 const m = await import(`file://${outfile.replace(/\\/g, "/")}`);
-const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, hierarchy, kanban, colorRules, kanbanActions, base, resolve, rowmod } = m;
+const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, hierarchy, kanban, colorRules, pivot, dashboard, gallery, kanbanActions, base, resolve, rowmod } = m;
 
 // ---- expression engine -----------------------------------------------------
 const scope = {
@@ -915,6 +918,121 @@ assert.deepEqual(
 	"retarget selects exactly the children of the renamed note"
 );
 assert.deepEqual(H.childrenToRetarget("p.md", "p.md", [node("x.md", "p.md")]), [], "no-op rename retargets nothing");
+
+// ---- rollup numeric aggregation (dashboard/pivot share this) ---------------
+assert.equal(rollup.aggregateNumber("count", [1, 2, 3]), 3, "aggregateNumber count");
+assert.equal(rollup.aggregateNumber("sum", [1, 2, 3]), 6, "aggregateNumber sum");
+assert.equal(rollup.aggregateNumber("avg", [2, 4]), 3, "aggregateNumber avg");
+assert.equal(rollup.aggregateNumber("avg", []), null, "aggregateNumber avg of nothing is null");
+assert.equal(rollup.aggregateNumber("max", ["2026-01-01"]), null, "ISO date is not a number to max");
+assert.equal(rollup.aggregateNumber("range", [1, 5, 3]), 4, "aggregateNumber range is the span");
+assert.equal(rollup.aggregateNumber("unique", ["a", "a", "b", ""]), 2, "aggregateNumber unique ignores empty");
+
+// ---- pivot / matrix engine -------------------------------------------------
+const pdRow = (path, fm) =>
+	rowmod.makeRow({ path, name: path.replace(/\.md$/, ""), folder: "", ext: "md", tags: [], ctime: 0, mtime: 0, size: 0, frontmatter: fm }, {});
+const pdRows = [
+	pdRow("A.md", { status: "active", priority: "high", hours: 2 }),
+	pdRow("B.md", { status: "active", priority: "low", hours: 3 }),
+	pdRow("C.md", { status: "done", priority: "high", hours: 5 }),
+	pdRow("D.md", { status: "done", priority: "high" }),
+	pdRow("E.md", { priority: "low" }),
+];
+
+const pv = pivot.buildPivot(pdRows, { rowProp: "status", colProp: "priority", aggregation: "count", valueExpr: "" });
+assert.deepEqual(pv.rowKeys, ["active", "done", pivot.PIVOT_EMPTY_KEY], "pivot row keys sorted, empty last");
+assert.deepEqual(pv.colKeys, ["high", "low"], "pivot column keys sorted");
+assert.equal(pv.counts[1][0], 2, "done×high has 2 notes");
+assert.equal(pv.cells[1][0], "2", "done×high count cell");
+assert.equal(pv.counts[2][0], 0, "empty×high has no notes");
+assert.equal(pv.rowTotals[1], "2", "done row total");
+assert.equal(pv.colTotals[0], "3", "high column total");
+assert.equal(pv.grandTotal, "5", "pivot grand total");
+
+const pvSum = pivot.buildPivot(pdRows, { rowProp: "status", colProp: "priority", aggregation: "sum", valueExpr: "hours" });
+assert.equal(pvSum.grandTotal, "10", "sum of hours across all rows");
+assert.equal(pvSum.cells[1][0], "5", "done×high sums hours (missing hours ignored)");
+
+const many = [];
+for (let i = 0; i < 60; i++) many.push(pdRow(`m${i}.md`, { status: `s${i}`, priority: "high" }));
+const pvBig = pivot.buildPivot(many, { rowProp: "status", colProp: "priority", aggregation: "count", valueExpr: "" });
+assert.equal(pvBig.truncatedRows, true, "60 distinct row values trips truncation");
+assert.equal(pvBig.rowKeys.length, 50, "pivot caps at 50 row keys");
+
+// ---- dashboard engine ------------------------------------------------------
+const distCount = dashboard.buildDistribution(pdRows, { groupBy: "status", aggregation: "count", valueExpr: "" });
+assert.equal(distCount.slices.length, 3, "distribution has a slice per status incl. empty");
+assert.equal(distCount.total, 5, "distribution count total");
+assert.equal(distCount.max, 2, "largest slice is 2");
+assert.equal(distCount.slices[0].value, 2, "slices sorted value-desc");
+
+const distSum = dashboard.buildDistribution(pdRows, { groupBy: "status", aggregation: "sum", valueExpr: "hours" });
+assert.equal(distSum.total, 10, "distribution sum total");
+const negRows = [pdRow("N.md", { g: "x", n: -5 }), pdRow("P.md", { g: "y", n: 4 })];
+const distNeg = dashboard.buildDistribution(negRows, { groupBy: "g", aggregation: "sum", valueExpr: "n" });
+assert.equal(distNeg.slices.find((s) => s.key === "x").value, 0, "negative aggregate clamps to 0 for charting");
+
+const distTrunc = dashboard.buildDistribution(many, { groupBy: "status", aggregation: "count", valueExpr: "", maxSlices: 5 });
+assert.equal(distTrunc.truncated, true, "distribution folds the long tail");
+assert.equal(distTrunc.slices.length, 5, "distribution respects maxSlices");
+assert.ok(distTrunc.slices[distTrunc.slices.length - 1].key.startsWith("Other"), "tail becomes an Other slice");
+
+// "Other" must RE-AGGREGATE the merged tail rows, not sum per-category values —
+// otherwise a non-additive aggregation (avg/min/max) gets a nonsense "Other".
+const avgRows = [
+	pdRow("av.md", { g: "a", n: 30 }),
+	pdRow("bv.md", { g: "b", n: 10 }),
+	pdRow("cv.md", { g: "c", n: 20 }),
+];
+const distAvg = dashboard.buildDistribution(avgRows, { groupBy: "g", aggregation: "avg", valueExpr: "n", maxSlices: 2 });
+const otherSlice = distAvg.slices.find((s) => s.key.startsWith("Other"));
+assert.equal(otherSlice.value, 15, "Other avg is the mean of the merged tail (10,20 → 15), not the sum of averages (30)");
+assert.equal(otherSlice.count, 2, "Other count sums the tail memberships");
+
+// ---- gallery markdown edge cases (roundtable findings) ---------------------
+assert.deepEqual(
+	gallery.parseImageRef('![alt](cover.png "My title")'),
+	{ kind: "vault", ref: "cover.png" },
+	"markdown image title is stripped"
+);
+assert.deepEqual(
+	gallery.parseImageRef("![](covers/img(1).png)"),
+	{ kind: "vault", ref: "covers/img(1).png" },
+	"parentheses in a markdown image path survive"
+);
+assert.deepEqual(
+	gallery.parseImageRef('![](https://x.com/a(1).png "t")'),
+	{ kind: "url", ref: "https://x.com/a(1).png" },
+	"markdown image url with parens + title"
+);
+
+const kpis = dashboard.buildDefaultKpis(pdRows, "status", "done");
+assert.deepEqual(kpis.map((k) => k.value), ["5", "2", "3"], "default KPIs: total, done, remaining");
+assert.equal(kpis[1].sub, "40%", "done KPI shows percent");
+const rollKpis = dashboard.buildRollupKpis(pdRows, [{ id: "x", label: "Count", expression: "1", aggregation: "count" }]);
+assert.equal(rollKpis[0].value, "5", "rollup KPI value");
+
+const segs = dashboard.buildDonutSegments(distCount.slices);
+assert.equal(segs.length, 3, "donut segment per positive slice");
+assert.ok(Math.abs(segs[segs.length - 1].endAngle - (-Math.PI / 2 + Math.PI * 2)) < 1e-9, "donut segments span a full turn");
+assert.equal(dashboard.buildDonutSegments([{ key: "x", value: 0, count: 0 }]).length, 0, "no positive value → no segments");
+const oneSeg = dashboard.buildDonutSegments([{ key: "x", value: 5, count: 1 }]);
+assert.equal(oneSeg.length, 1, "single slice → one full-circle segment");
+assert.ok(dashboard.annularSectorPath(100, 100, 90, 50, 0, 1).startsWith("M "), "annular sector path is an SVG path");
+
+// ---- gallery image-ref parsing ---------------------------------------------
+assert.deepEqual(gallery.parseImageRef("cover.png"), { kind: "vault", ref: "cover.png" }, "bare path");
+assert.deepEqual(gallery.parseImageRef("[[img/pic.png]]"), { kind: "vault", ref: "img/pic.png" }, "wikilink");
+assert.deepEqual(gallery.parseImageRef("![[pic.png|200]]"), { kind: "vault", ref: "pic.png" }, "embed with size");
+assert.deepEqual(gallery.parseImageRef("![alt](images/a.jpg)"), { kind: "vault", ref: "images/a.jpg" }, "markdown image");
+assert.deepEqual(gallery.parseImageRef("https://x.com/a.png"), { kind: "url", ref: "https://x.com/a.png" }, "url");
+assert.deepEqual(gallery.parseImageRef("![](https://x.com/b.png)"), { kind: "url", ref: "https://x.com/b.png" }, "markdown image url");
+assert.deepEqual(gallery.parseImageRef("<https://x.com/c.png>"), { kind: "url", ref: "https://x.com/c.png" }, "angle-bracketed url");
+assert.equal(gallery.parseImageRef(""), null, "empty string → null");
+assert.equal(gallery.parseImageRef("   "), null, "whitespace → null");
+assert.equal(gallery.parseImageRef(42), null, "non-string → null");
+assert.equal(gallery.parseImageRef("data:image/png;base64,AAAA"), null, "data: uri rejected");
+assert.deepEqual(gallery.parseImageRef(["", "cover.png"]), { kind: "vault", ref: "cover.png" }, "first usable list entry");
 
 fs.unlinkSync(outfile);
 console.log("engine tests passed");

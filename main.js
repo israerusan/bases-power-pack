@@ -2271,7 +2271,7 @@ __export(main_exports, {
   default: () => BasesPowerPackPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian10 = require("obsidian");
+var import_obsidian11 = require("obsidian");
 
 // src/settings.ts
 var import_obsidian3 = require("obsidian");
@@ -2894,34 +2894,45 @@ function isEmpty2(v) {
 }
 function computeRollup(rollup, rows) {
   const values = rows.map((r) => evaluateSafe(rollup.expression, r.scope));
-  switch (rollup.aggregation) {
+  if (rollup.aggregation === "range") {
+    const nums = numeric2(values);
+    return nums.length ? `${formatNumber(arrMin(nums))}\u2013${formatNumber(arrMax(nums))}` : "\u2014";
+  }
+  const n = aggregateNumber(rollup.aggregation, values);
+  return n === null ? "\u2014" : formatNumber(n);
+}
+function aggregateNumber(aggregation, values) {
+  switch (aggregation) {
     case "count":
-      return String(rows.length);
+      return values.length;
     case "filled":
-      return String(values.filter((v) => !isEmpty2(v)).length);
+      return values.filter((v) => !isEmpty2(v)).length;
     case "empty":
-      return String(values.filter(isEmpty2).length);
+      return values.filter(isEmpty2).length;
     case "unique":
-      return String(new Set(values.filter((v) => !isEmpty2(v)).map(toStr)).size);
+      return new Set(values.filter((v) => !isEmpty2(v)).map(toStr)).size;
     case "sum":
-      return formatNumber(numeric2(values).reduce((s, n) => s + n, 0));
+      return numeric2(values).reduce((s, n) => s + n, 0);
     case "avg": {
       const nums = numeric2(values);
-      return nums.length ? formatNumber(nums.reduce((s, n) => s + n, 0) / nums.length) : "\u2014";
+      return nums.length ? nums.reduce((s, n) => s + n, 0) / nums.length : null;
     }
     case "min": {
       const nums = numeric2(values);
-      return nums.length ? formatNumber(arrMin(nums)) : "\u2014";
+      return nums.length ? arrMin(nums) : null;
     }
     case "max": {
       const nums = numeric2(values);
-      return nums.length ? formatNumber(arrMax(nums)) : "\u2014";
+      return nums.length ? arrMax(nums) : null;
     }
     case "range": {
       const nums = numeric2(values);
-      return nums.length ? `${formatNumber(arrMin(nums))}\u2013${formatNumber(arrMax(nums))}` : "\u2014";
+      return nums.length ? arrMax(nums) - arrMin(nums) : null;
     }
   }
+}
+function aggregateRows(aggregation, rows, expression) {
+  return aggregateNumber(aggregation, rows.map((r) => evaluateSafe(expression, r.scope)));
 }
 function numeric2(values) {
   return values.map(arithNumber).filter((n) => !Number.isNaN(n));
@@ -3239,6 +3250,279 @@ var AUTOMATION_ACTION_TYPES = [
   "copy"
 ];
 
+// src/query/search.ts
+function normalize(value) {
+  return toStr(value).trim().toLocaleLowerCase();
+}
+var PROP_TOKEN_RE = /^([A-Za-z_$][\w.$-]*):(.+)$/;
+function tokenMatches(row, token, extra) {
+  const m = PROP_TOKEN_RE.exec(token);
+  if (m) {
+    const key = m[1];
+    const value = normalize(m[2]);
+    if (key.toLocaleLowerCase() === "tag" || key.toLocaleLowerCase() === "tags") {
+      const tagValue = value.replace(/^#/, "");
+      if (tagValue && row.note.tags.some((t) => normalize(t).includes(tagValue))) return true;
+    } else {
+      const got = row.scope.get(key);
+      if (got !== void 0 && got !== null && normalize(got).includes(value)) return true;
+    }
+  }
+  const q = normalize(token);
+  const haystacks = [row.name, row.note.path, row.note.folder, ...row.note.tags, ...extra];
+  return haystacks.some((v) => normalize(v).includes(q));
+}
+function rowMatchesText(row, query, extra = []) {
+  const tokens = query.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return true;
+  return tokens.every((token) => tokenMatches(row, token, extra));
+}
+function filterRowsByText(rows, query) {
+  if (!query.trim()) return rows;
+  return rows.filter((row) => rowMatchesText(row, query));
+}
+
+// src/query/kanban.ts
+function isRowDone(row, statusProp, doneValue) {
+  const dv = (doneValue || "").trim().toLowerCase();
+  if (dv && toStr(row.scope.get(statusProp)).trim().toLowerCase() === dv) return true;
+  return toBool(row.scope.get("done"));
+}
+var KANBAN_SORTS = ["manual", "name-asc", "name-desc", "due-asc", "priority-desc", "mtime-desc"];
+function buildKanbanColumns(rows, options) {
+  var _a, _b, _c, _d;
+  const groupBy = options.groupBy || "status";
+  const search = toStr((_a = options.search) != null ? _a : "").trim();
+  const hidden = normalize2(options.hideColumn);
+  const columns = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const columnName = toStr(row.scope.get(groupBy));
+    if (!columnName) continue;
+    if (hidden && normalize2(columnName) === hidden) continue;
+    if (search && !matchesSearch(row, search, columnName)) continue;
+    if (!columns.has(columnName)) columns.set(columnName, []);
+    (_b = columns.get(columnName)) == null ? void 0 : _b.push(row);
+  }
+  if (!search) {
+    for (const name of (_c = options.extraColumns) != null ? _c : []) {
+      const clean = name.trim();
+      if (!clean || columns.has(clean)) continue;
+      if (hidden && normalize2(clean) === hidden) continue;
+      columns.set(clean, []);
+    }
+  }
+  const entries = Array.from(columns.entries());
+  const order = (_d = options.columnOrder) != null ? _d : [];
+  if (order.length > 0) {
+    const rank = new Map(order.map((name, index) => [name, index]));
+    entries.sort((a, b) => {
+      var _a2, _b2;
+      return ((_a2 = rank.get(a[0])) != null ? _a2 : Infinity) - ((_b2 = rank.get(b[0])) != null ? _b2 : Infinity);
+    });
+  }
+  return entries.map(([name, items]) => {
+    var _a2;
+    return {
+      name,
+      rows: sortRows(items, (_a2 = options.sortBy) != null ? _a2 : "manual")
+    };
+  });
+}
+function reorderColumns(order, moved, target) {
+  if (moved === target) return [...order];
+  const without = order.filter((name) => name !== moved);
+  const targetIndex = without.indexOf(target);
+  if (targetIndex === -1) return [...order];
+  without.splice(targetIndex, 0, moved);
+  return without;
+}
+function columnHue(name) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = hash * 31 + name.charCodeAt(i) >>> 0;
+  }
+  return hash % 360;
+}
+function matchesSearch(row, search, columnName) {
+  return rowMatchesText(row, search, [columnName]);
+}
+function sortRows(rows, sortBy) {
+  const copy = [...rows];
+  if (sortBy === "manual") return copy;
+  copy.sort((a, b) => compareRows(a, b, sortBy));
+  return copy;
+}
+function compareRows(a, b, sortBy) {
+  switch (sortBy) {
+    case "name-asc":
+      return compareText(a.name, b.name);
+    case "name-desc":
+      return compareText(b.name, a.name);
+    case "due-asc":
+      return compareDateValue(a.scope.get("due"), b.scope.get("due")) || compareText(a.name, b.name);
+    case "priority-desc":
+      return compareNumberValue(b.scope.get("priority"), a.scope.get("priority")) || compareText(a.name, b.name);
+    case "mtime-desc":
+      return compareNumberValue(b.scope.get("file.mtime"), a.scope.get("file.mtime")) || compareText(a.name, b.name);
+    default:
+      return 0;
+  }
+}
+function compareText(a, b) {
+  return a.localeCompare(b, void 0, { sensitivity: "base" });
+}
+function compareNumberValue(a, b) {
+  const av = numberOrNull(a);
+  const bv = numberOrNull(b);
+  if (av === null && bv === null) return 0;
+  if (av === null) return 1;
+  if (bv === null) return -1;
+  return av - bv;
+}
+function compareDateValue(a, b) {
+  const av = timeOrNull(a);
+  const bv = timeOrNull(b);
+  if (av === null && bv === null) return 0;
+  if (av === null) return 1;
+  if (bv === null) return -1;
+  return av - bv;
+}
+function timeOrNull(value) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : null;
+}
+function numberOrNull(value) {
+  if (value === void 0 || value === null || value === "") return null;
+  const n = toNumber(value);
+  return Number.isFinite(n) ? n : null;
+}
+function dueStatus(iso, today, soonDays = 2) {
+  if (!iso) return null;
+  const da = toDayNumber(iso);
+  const db = toDayNumber(today);
+  if (da === null || db === null) return null;
+  const diff = da - db;
+  if (diff < 0) return "overdue";
+  if (diff <= soonDays) return "soon";
+  return null;
+}
+var PRIORITY_LEVELS = [
+  { cls: "is-p-high", values: ["high", "highest", "urgent", "critical", "p0", "p1"] },
+  { cls: "is-p-med", values: ["medium", "med", "normal", "p2"] },
+  { cls: "is-p-low", values: ["low", "lowest", "minor", "p3", "p4"] }
+];
+function priorityClass(value) {
+  const v = toStr(value).trim().toLocaleLowerCase();
+  if (!v) return null;
+  for (const level of PRIORITY_LEVELS) {
+    if (level.values.includes(v)) return level.cls;
+  }
+  return null;
+}
+function formatCardField(row, field) {
+  const value = row.scope.get(field);
+  if (value === void 0 || value === null || value === "") return null;
+  if (Array.isArray(value)) {
+    const parts = value.map((item) => toStr(item)).filter(Boolean);
+    return parts.length > 0 ? parts.join(", ") : null;
+  }
+  return toStr(value) || null;
+}
+function normalize2(value) {
+  return toStr(value).trim().toLocaleLowerCase();
+}
+
+// src/query/dashboard.ts
+var DASHBOARD_CHART_TYPES = ["bar", "donut"];
+var DASHBOARD_EMPTY_KEY = "(empty)";
+var DEFAULT_MAX_SLICES = 12;
+function buildDistribution(rows, options) {
+  var _a;
+  const maxSlices = Math.max(1, (_a = options.maxSlices) != null ? _a : DEFAULT_MAX_SLICES);
+  const expression = options.valueExpr.trim() || "1";
+  const buckets = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const key = toStr(row.scope.get(options.groupBy)).trim() || DASHBOARD_EMPTY_KEY;
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = [];
+      buckets.set(key, bucket);
+    }
+    bucket.push(row);
+  }
+  const valueOf = (bucketRows) => {
+    var _a2;
+    return Math.max(0, (_a2 = aggregateRows(options.aggregation, bucketRows, expression)) != null ? _a2 : 0);
+  };
+  const scored = Array.from(buckets.entries()).map(([key, rows2]) => ({ key, rows: rows2, count: rows2.length, value: valueOf(rows2) }));
+  scored.sort((a, b) => b.value - a.value || a.key.localeCompare(b.key));
+  const truncated = scored.length > maxSlices;
+  let folded = scored;
+  if (truncated) {
+    const head = scored.slice(0, maxSlices - 1);
+    const tail = scored.slice(maxSlices - 1);
+    const tailRows = tail.flatMap((b) => b.rows);
+    folded = [...head, { key: `Other (${tail.length})`, rows: tailRows, count: tailRows.length, value: valueOf(tailRows) }];
+  }
+  const slices = folded.map((b) => ({ key: b.key, value: b.value, count: b.count }));
+  const total = slices.reduce((s, x) => s + x.value, 0);
+  const max = slices.reduce((m, x) => x.value > m ? x.value : m, 0);
+  return { slices, total, max, truncated };
+}
+function buildDefaultKpis(rows, statusProp, doneValue) {
+  const total = rows.length;
+  const done = rows.reduce((n, r) => n + (isRowDone(r, statusProp, doneValue) ? 1 : 0), 0);
+  const pct = total > 0 ? Math.round(done / total * 100) : 0;
+  return [
+    { label: "Notes", value: String(total) },
+    { label: "Done", value: String(done), sub: `${pct}%` },
+    { label: "Remaining", value: String(total - done) }
+  ];
+}
+function buildRollupKpis(rows, rollups) {
+  return rollups.map((rollup) => ({
+    label: rollup.label || rollup.aggregation,
+    value: computeRollup(rollup, rows)
+  }));
+}
+function buildDonutSegments(slices) {
+  const total = slices.reduce((s, x) => s + Math.max(0, x.value), 0);
+  if (total <= 0) return [];
+  const segments = [];
+  let angle = -Math.PI / 2;
+  for (const slice of slices) {
+    const value = Math.max(0, slice.value);
+    if (value <= 0) continue;
+    const start = angle;
+    const end = angle + value / total * Math.PI * 2;
+    segments.push({ key: slice.key, value, startAngle: start, endAngle: end });
+    angle = end;
+  }
+  return segments;
+}
+function annularSectorPath(cx, cy, rOuter, rInner, startAngle, endAngle) {
+  const largeArc = endAngle - startAngle > Math.PI ? 1 : 0;
+  const p = (radius, angle) => [
+    cx + radius * Math.cos(angle),
+    cy + radius * Math.sin(angle)
+  ];
+  const [ox0, oy0] = p(rOuter, startAngle);
+  const [ox1, oy1] = p(rOuter, endAngle);
+  const [ix1, iy1] = p(rInner, endAngle);
+  const [ix0, iy0] = p(rInner, startAngle);
+  return [
+    `M ${round(ox0)} ${round(oy0)}`,
+    `A ${rOuter} ${rOuter} 0 ${largeArc} 1 ${round(ox1)} ${round(oy1)}`,
+    `L ${round(ix1)} ${round(iy1)}`,
+    `A ${rInner} ${rInner} 0 ${largeArc} 0 ${round(ix0)} ${round(iy0)}`,
+    "Z"
+  ].join(" ");
+}
+function round(n) {
+  return Math.round(n * 100) / 100;
+}
+
 // src/views/viewData.ts
 var import_obsidian2 = require("obsidian");
 
@@ -3540,6 +3824,15 @@ var DEFAULT_SETTINGS = {
   hierarchyParentProp: "parent",
   hierarchyOrderProp: "order",
   hierarchyQuickAddFolder: "",
+  pivotRowProp: "status",
+  pivotColProp: "priority",
+  pivotAggregation: "count",
+  pivotValueExpr: "",
+  dashboardGroupBy: "status",
+  dashboardAggregation: "count",
+  dashboardValueExpr: "",
+  dashboardChartType: "bar",
+  galleryImageProp: "cover",
   activeBasePath: "",
   savedFilters: [],
   activeFilterId: "",
@@ -3773,6 +4066,119 @@ var BasesPowerPackSettingTab = class extends import_obsidian3.PluginSettingTab {
           (text) => this.folderSuggest(text).setValue(this.plugin.settings.hierarchyQuickAddFolder).onChange((value) => {
             this.plugin.settings.hierarchyQuickAddFolder = value.trim();
             void this.plugin.saveSettings();
+          })
+        );
+      }
+    );
+    subHeading("Pivot");
+    premium(
+      "Pivot row property",
+      "Frontmatter property (or formula) that groups the pivot table's rows.",
+      (setting) => {
+        setting.addText(
+          (text) => this.keySuggest(text).setPlaceholder("status").setValue(this.plugin.settings.pivotRowProp).onChange((value) => {
+            this.plugin.settings.pivotRowProp = value.trim() || "status";
+            void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+          })
+        );
+      }
+    );
+    premium(
+      "Pivot column property",
+      "Frontmatter property (or formula) that groups the pivot table's columns.",
+      (setting) => {
+        setting.addText(
+          (text) => this.keySuggest(text).setPlaceholder("priority").setValue(this.plugin.settings.pivotColProp).onChange((value) => {
+            this.plugin.settings.pivotColProp = value.trim() || "priority";
+            void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+          })
+        );
+      }
+    );
+    premium(
+      "Pivot aggregation",
+      "How each cell aggregates its notes. count tallies notes; the others aggregate the value expression below.",
+      (setting) => {
+        setting.addDropdown((dd) => {
+          for (const agg of AGGREGATIONS) dd.addOption(agg, agg);
+          dd.setValue(this.plugin.settings.pivotAggregation);
+          dd.onChange((value) => {
+            this.plugin.settings.pivotAggregation = value;
+            void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+          });
+        });
+      }
+    );
+    premium(
+      "Pivot value expression",
+      "Expression aggregated in each cell for non-count aggregations, e.g. hours or done / total. Ignored for count.",
+      (setting) => {
+        setting.addText(
+          (text) => this.keySuggest(text).setPlaceholder("hours").setValue(this.plugin.settings.pivotValueExpr).onChange((value) => {
+            this.plugin.settings.pivotValueExpr = value.trim();
+            void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+          })
+        );
+      }
+    );
+    subHeading("Dashboard");
+    premium(
+      "Dashboard group-by property",
+      "Frontmatter property (or formula) the distribution chart groups notes by.",
+      (setting) => {
+        setting.addText(
+          (text) => this.keySuggest(text).setPlaceholder("status").setValue(this.plugin.settings.dashboardGroupBy).onChange((value) => {
+            this.plugin.settings.dashboardGroupBy = value.trim() || "status";
+            void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+          })
+        );
+      }
+    );
+    premium(
+      "Dashboard aggregation",
+      "How the chart aggregates each category. count tallies notes; the others aggregate the value expression below.",
+      (setting) => {
+        setting.addDropdown((dd) => {
+          for (const agg of AGGREGATIONS) dd.addOption(agg, agg);
+          dd.setValue(this.plugin.settings.dashboardAggregation);
+          dd.onChange((value) => {
+            this.plugin.settings.dashboardAggregation = value;
+            void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+          });
+        });
+      }
+    );
+    premium(
+      "Dashboard value expression",
+      "Expression aggregated per category for non-count aggregations, e.g. hours. Ignored for count.",
+      (setting) => {
+        setting.addText(
+          (text) => this.keySuggest(text).setPlaceholder("hours").setValue(this.plugin.settings.dashboardValueExpr).onChange((value) => {
+            this.plugin.settings.dashboardValueExpr = value.trim();
+            void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+          })
+        );
+      }
+    );
+    premium("Dashboard chart type", "Default chart style for the distribution \u2014 you can also flip it from the toolbar.", (setting) => {
+      setting.addDropdown((dd) => {
+        for (const type of DASHBOARD_CHART_TYPES) dd.addOption(type, type === "bar" ? "Bars" : "Donut");
+        dd.setValue(this.plugin.settings.dashboardChartType);
+        dd.onChange((value) => {
+          this.plugin.settings.dashboardChartType = value;
+          void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+        });
+      });
+    });
+    subHeading("Gallery");
+    premium(
+      "Gallery cover property",
+      "Frontmatter property holding each card's cover image \u2014 a vault path, wikilink, markdown image, or URL.",
+      (setting) => {
+        setting.addText(
+          (text) => this.keySuggest(text).setPlaceholder("cover").setValue(this.plugin.settings.galleryImageProp).onChange((value) => {
+            this.plugin.settings.galleryImageProp = value.trim() || "cover";
+            void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
           })
         );
       }
@@ -4431,6 +4837,27 @@ function renderSearchControl(container, current, onInput) {
   input.addEventListener("input", () => onInput(input.value));
   return input;
 }
+function renderSelect(container, label, options, current, onChange) {
+  const wrap = container.createDiv({ cls: "bpp-lite-control" });
+  wrap.createSpan({ cls: "bpp-muted", text: label });
+  const select = wrap.createEl("select", { cls: "bpp-lite-select" });
+  for (const opt of options) {
+    const optionEl = select.createEl("option", { text: opt.label, value: opt.value });
+    if (opt.value === current) optionEl.selected = true;
+  }
+  select.addEventListener("change", () => onChange(select.value));
+  return select;
+}
+function renderPropertySelect(container, label, keys, current, onChange) {
+  const values = keys.includes(current) ? keys : [current, ...keys];
+  return renderSelect(
+    container,
+    label,
+    values.map((k) => ({ value: k, label: k })),
+    current,
+    onChange
+  );
+}
 function renderContextControls(container, plugin, resolved, onChange) {
   const bar = container.createDiv({ cls: "bpp-context" });
   bar.createSpan({
@@ -4782,189 +5209,6 @@ var PowerPackView = class extends import_obsidian5.ItemView {
     btn.addEventListener("click", () => this.openSettings());
   }
 };
-
-// src/query/search.ts
-function normalize(value) {
-  return toStr(value).trim().toLocaleLowerCase();
-}
-var PROP_TOKEN_RE = /^([A-Za-z_$][\w.$-]*):(.+)$/;
-function tokenMatches(row, token, extra) {
-  const m = PROP_TOKEN_RE.exec(token);
-  if (m) {
-    const key = m[1];
-    const value = normalize(m[2]);
-    if (key.toLocaleLowerCase() === "tag" || key.toLocaleLowerCase() === "tags") {
-      const tagValue = value.replace(/^#/, "");
-      if (tagValue && row.note.tags.some((t) => normalize(t).includes(tagValue))) return true;
-    } else {
-      const got = row.scope.get(key);
-      if (got !== void 0 && got !== null && normalize(got).includes(value)) return true;
-    }
-  }
-  const q = normalize(token);
-  const haystacks = [row.name, row.note.path, row.note.folder, ...row.note.tags, ...extra];
-  return haystacks.some((v) => normalize(v).includes(q));
-}
-function rowMatchesText(row, query, extra = []) {
-  const tokens = query.trim().split(/\s+/).filter(Boolean);
-  if (tokens.length === 0) return true;
-  return tokens.every((token) => tokenMatches(row, token, extra));
-}
-function filterRowsByText(rows, query) {
-  if (!query.trim()) return rows;
-  return rows.filter((row) => rowMatchesText(row, query));
-}
-
-// src/query/kanban.ts
-function isRowDone(row, statusProp, doneValue) {
-  const dv = (doneValue || "").trim().toLowerCase();
-  if (dv && toStr(row.scope.get(statusProp)).trim().toLowerCase() === dv) return true;
-  return toBool(row.scope.get("done"));
-}
-var KANBAN_SORTS = ["manual", "name-asc", "name-desc", "due-asc", "priority-desc", "mtime-desc"];
-function buildKanbanColumns(rows, options) {
-  var _a, _b, _c, _d;
-  const groupBy = options.groupBy || "status";
-  const search = toStr((_a = options.search) != null ? _a : "").trim();
-  const hidden = normalize2(options.hideColumn);
-  const columns = /* @__PURE__ */ new Map();
-  for (const row of rows) {
-    const columnName = toStr(row.scope.get(groupBy));
-    if (!columnName) continue;
-    if (hidden && normalize2(columnName) === hidden) continue;
-    if (search && !matchesSearch(row, search, columnName)) continue;
-    if (!columns.has(columnName)) columns.set(columnName, []);
-    (_b = columns.get(columnName)) == null ? void 0 : _b.push(row);
-  }
-  if (!search) {
-    for (const name of (_c = options.extraColumns) != null ? _c : []) {
-      const clean = name.trim();
-      if (!clean || columns.has(clean)) continue;
-      if (hidden && normalize2(clean) === hidden) continue;
-      columns.set(clean, []);
-    }
-  }
-  const entries = Array.from(columns.entries());
-  const order = (_d = options.columnOrder) != null ? _d : [];
-  if (order.length > 0) {
-    const rank = new Map(order.map((name, index) => [name, index]));
-    entries.sort((a, b) => {
-      var _a2, _b2;
-      return ((_a2 = rank.get(a[0])) != null ? _a2 : Infinity) - ((_b2 = rank.get(b[0])) != null ? _b2 : Infinity);
-    });
-  }
-  return entries.map(([name, items]) => {
-    var _a2;
-    return {
-      name,
-      rows: sortRows(items, (_a2 = options.sortBy) != null ? _a2 : "manual")
-    };
-  });
-}
-function reorderColumns(order, moved, target) {
-  if (moved === target) return [...order];
-  const without = order.filter((name) => name !== moved);
-  const targetIndex = without.indexOf(target);
-  if (targetIndex === -1) return [...order];
-  without.splice(targetIndex, 0, moved);
-  return without;
-}
-function columnHue(name) {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) {
-    hash = hash * 31 + name.charCodeAt(i) >>> 0;
-  }
-  return hash % 360;
-}
-function matchesSearch(row, search, columnName) {
-  return rowMatchesText(row, search, [columnName]);
-}
-function sortRows(rows, sortBy) {
-  const copy = [...rows];
-  if (sortBy === "manual") return copy;
-  copy.sort((a, b) => compareRows(a, b, sortBy));
-  return copy;
-}
-function compareRows(a, b, sortBy) {
-  switch (sortBy) {
-    case "name-asc":
-      return compareText(a.name, b.name);
-    case "name-desc":
-      return compareText(b.name, a.name);
-    case "due-asc":
-      return compareDateValue(a.scope.get("due"), b.scope.get("due")) || compareText(a.name, b.name);
-    case "priority-desc":
-      return compareNumberValue(b.scope.get("priority"), a.scope.get("priority")) || compareText(a.name, b.name);
-    case "mtime-desc":
-      return compareNumberValue(b.scope.get("file.mtime"), a.scope.get("file.mtime")) || compareText(a.name, b.name);
-    default:
-      return 0;
-  }
-}
-function compareText(a, b) {
-  return a.localeCompare(b, void 0, { sensitivity: "base" });
-}
-function compareNumberValue(a, b) {
-  const av = numberOrNull(a);
-  const bv = numberOrNull(b);
-  if (av === null && bv === null) return 0;
-  if (av === null) return 1;
-  if (bv === null) return -1;
-  return av - bv;
-}
-function compareDateValue(a, b) {
-  const av = timeOrNull(a);
-  const bv = timeOrNull(b);
-  if (av === null && bv === null) return 0;
-  if (av === null) return 1;
-  if (bv === null) return -1;
-  return av - bv;
-}
-function timeOrNull(value) {
-  if (typeof value !== "string" || !value.trim()) return null;
-  const time = Date.parse(value);
-  return Number.isFinite(time) ? time : null;
-}
-function numberOrNull(value) {
-  if (value === void 0 || value === null || value === "") return null;
-  const n = toNumber(value);
-  return Number.isFinite(n) ? n : null;
-}
-function dueStatus(iso, today, soonDays = 2) {
-  if (!iso) return null;
-  const da = toDayNumber(iso);
-  const db = toDayNumber(today);
-  if (da === null || db === null) return null;
-  const diff = da - db;
-  if (diff < 0) return "overdue";
-  if (diff <= soonDays) return "soon";
-  return null;
-}
-var PRIORITY_LEVELS = [
-  { cls: "is-p-high", values: ["high", "highest", "urgent", "critical", "p0", "p1"] },
-  { cls: "is-p-med", values: ["medium", "med", "normal", "p2"] },
-  { cls: "is-p-low", values: ["low", "lowest", "minor", "p3", "p4"] }
-];
-function priorityClass(value) {
-  const v = toStr(value).trim().toLocaleLowerCase();
-  if (!v) return null;
-  for (const level of PRIORITY_LEVELS) {
-    if (level.values.includes(v)) return level.cls;
-  }
-  return null;
-}
-function formatCardField(row, field) {
-  const value = row.scope.get(field);
-  if (value === void 0 || value === null || value === "") return null;
-  if (Array.isArray(value)) {
-    const parts = value.map((item) => toStr(item)).filter(Boolean);
-    return parts.length > 0 ? parts.join(", ") : null;
-  }
-  return toStr(value) || null;
-}
-function normalize2(value) {
-  return toStr(value).trim().toLocaleLowerCase();
-}
 
 // src/query/kanbanActions.ts
 function buildQuickAddTitle(columnName, now = /* @__PURE__ */ new Date()) {
@@ -6982,17 +7226,593 @@ var HierarchyView = class extends PowerPackView {
   }
 };
 
+// src/query/pivot.ts
+var PIVOT_EMPTY_KEY = "(empty)";
+var DEFAULT_MAX_KEYS = 50;
+function keyOf(row, prop) {
+  const raw = toStr(row.scope.get(prop)).trim();
+  return raw || PIVOT_EMPTY_KEY;
+}
+function sortedKeys(keys) {
+  return Array.from(keys).sort((a, b) => {
+    if (a === PIVOT_EMPTY_KEY) return 1;
+    if (b === PIVOT_EMPTY_KEY) return -1;
+    return a.localeCompare(b, void 0, { numeric: true, sensitivity: "base" });
+  });
+}
+function buildPivot(rows, options) {
+  var _a, _b;
+  const { rowProp, colProp } = options;
+  const maxRowKeys = (_a = options.maxRowKeys) != null ? _a : DEFAULT_MAX_KEYS;
+  const maxColKeys = (_b = options.maxColKeys) != null ? _b : DEFAULT_MAX_KEYS;
+  const aggregation = options.aggregation;
+  const expression = options.valueExpr.trim() || "1";
+  const allRowKeys = /* @__PURE__ */ new Set();
+  const allColKeys = /* @__PURE__ */ new Set();
+  for (const row of rows) {
+    allRowKeys.add(keyOf(row, rowProp));
+    allColKeys.add(keyOf(row, colProp));
+  }
+  const sortedRowKeys = sortedKeys(allRowKeys);
+  const sortedColKeys = sortedKeys(allColKeys);
+  const truncatedRows = sortedRowKeys.length > maxRowKeys;
+  const truncatedCols = sortedColKeys.length > maxColKeys;
+  const rowKeys = truncatedRows ? sortedRowKeys.slice(0, maxRowKeys) : sortedRowKeys;
+  const colKeys = truncatedCols ? sortedColKeys.slice(0, maxColKeys) : sortedColKeys;
+  const rowKeySet = new Set(rowKeys);
+  const colKeySet = new Set(colKeys);
+  const rowIndex = new Map(rowKeys.map((k, i) => [k, i]));
+  const colIndex = new Map(colKeys.map((k, i) => [k, i]));
+  const buckets = rowKeys.map(() => colKeys.map(() => []));
+  const rowBuckets = rowKeys.map(() => []);
+  const colBuckets = colKeys.map(() => []);
+  const all = [];
+  for (const row of rows) {
+    const rk = keyOf(row, rowProp);
+    const ck = keyOf(row, colProp);
+    if (!rowKeySet.has(rk) || !colKeySet.has(ck)) continue;
+    const ri = rowIndex.get(rk);
+    const ci = colIndex.get(ck);
+    buckets[ri][ci].push(row);
+    rowBuckets[ri].push(row);
+    colBuckets[ci].push(row);
+    all.push(row);
+  }
+  const rollup = { id: "pivot", label: "", expression, aggregation };
+  const cells = buckets.map((r) => r.map((cell) => computeRollup(rollup, cell)));
+  const counts = buckets.map((r) => r.map((cell) => cell.length));
+  const rowTotals = rowBuckets.map((r) => computeRollup(rollup, r));
+  const colTotals = colBuckets.map((c) => computeRollup(rollup, c));
+  const grandTotal = computeRollup(rollup, all);
+  return {
+    rowKeys,
+    colKeys,
+    cells,
+    counts,
+    rowTotals,
+    colTotals,
+    grandTotal,
+    truncatedRows,
+    truncatedCols,
+    total: all.length
+  };
+}
+
+// src/views/pivotView.ts
+var VIEW_TYPE_PIVOT = "bpp-pivot-view";
+var PivotView = class extends PowerPackView {
+  getViewType() {
+    return VIEW_TYPE_PIVOT;
+  }
+  getDisplayText() {
+    return "Power Pack: Pivot";
+  }
+  getIcon() {
+    return "table";
+  }
+  async render() {
+    const token = ++this.renderToken;
+    const container = this.contentEl;
+    if (!this.plugin.settings.isPro) {
+      container.empty();
+      container.addClass("bpp-view");
+      this.renderUpgradeNotice(
+        container,
+        "\u{1F4CA}",
+        "Pivot is a Premium view",
+        "Cross-tabulate your notes like a spreadsheet pivot table.",
+        [
+          "Group by two properties at once \u2014 rows \xD7 columns",
+          "Aggregate with count, sum, average, min/max, and more",
+          "Per-row, per-column, and grand totals",
+          "Feed it a formula for weighted or computed cells"
+        ]
+      );
+      return;
+    }
+    const resolved = await this.plugin.getResolvedView();
+    if (this.isStale(token)) return;
+    this.captureSearchState();
+    container.empty();
+    container.addClass("bpp-view");
+    this.renderToolbar(container);
+    renderContextControls(container, this.plugin, resolved, () => void this.render());
+    const rows = filterRowsByText(resolved.rows, this.searchQuery);
+    if (rows.length === 0) {
+      container.createDiv({
+        cls: "bpp-empty",
+        text: this.searchQuery ? "No notes match the current search." : "No notes to pivot yet."
+      });
+      return;
+    }
+    this.renderMatrix(container, rows);
+  }
+  renderToolbar(container) {
+    const toolbar = container.createDiv({ cls: "bpp-toolbar" });
+    toolbar.createEl("h3", { text: "Pivot" });
+    const s = this.plugin.settings;
+    const keys = this.plugin.getFrontmatterKeys();
+    const controls = toolbar.createDiv({ cls: "bpp-lite-controls" });
+    renderPropertySelect(controls, "Rows", keys, s.pivotRowProp, (value) => {
+      s.pivotRowProp = value || "status";
+      this.persist();
+    });
+    renderPropertySelect(controls, "Columns", keys, s.pivotColProp, (value) => {
+      s.pivotColProp = value || "priority";
+      this.persist();
+    });
+    renderSelect(
+      controls,
+      "Aggregate",
+      AGGREGATIONS.map((a) => ({ value: a, label: a })),
+      s.pivotAggregation,
+      (value) => {
+        s.pivotAggregation = value;
+        this.persist();
+      }
+    );
+    if (s.pivotAggregation !== "count") {
+      const wrap = controls.createDiv({ cls: "bpp-lite-control" });
+      wrap.createSpan({ cls: "bpp-muted", text: "Value" });
+      const input = wrap.createEl("input", {
+        type: "text",
+        cls: "bpp-lite-input",
+        placeholder: "expression, e.g. hours"
+      });
+      input.value = s.pivotValueExpr;
+      input.addEventListener("change", () => {
+        s.pivotValueExpr = input.value.trim();
+        this.persist();
+      });
+    }
+    this.renderManagedSearch(toolbar);
+  }
+  /** Persist a toolbar choice without dropping the resolved-view cache — these are
+   * presentation-only (they re-bucket already-resolved rows), so re-resolving the
+   * base and rebuilding every Row would be wasted work. */
+  persist() {
+    void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
+  }
+  renderMatrix(container, rows) {
+    const s = this.plugin.settings;
+    const model = buildPivot(rows, {
+      rowProp: s.pivotRowProp,
+      colProp: s.pivotColProp,
+      aggregation: s.pivotAggregation,
+      valueExpr: s.pivotValueExpr
+    });
+    if (model.truncatedRows || model.truncatedCols) {
+      const axes = [model.truncatedRows ? "rows" : null, model.truncatedCols ? "columns" : null].filter(Boolean).join(" and ");
+      container.createDiv({
+        cls: "bpp-pivot-note",
+        text: `Too many distinct values \u2014 showing the first 50 ${axes}. Pick a lower-cardinality property or add a filter.`
+      });
+    }
+    const scroll = container.createDiv({ cls: "bpp-pivot-scroll" });
+    const table = scroll.createEl("table", { cls: "bpp-pivot" });
+    const thead = table.createEl("thead");
+    const headRow = thead.createEl("tr");
+    headRow.createEl("th", { cls: "bpp-pivot-corner", text: `${s.pivotRowProp} \\ ${s.pivotColProp}` });
+    for (const colKey of model.colKeys) headRow.createEl("th", { cls: "bpp-pivot-colhead", text: colKey });
+    headRow.createEl("th", { cls: "bpp-pivot-total-head", text: "Total" });
+    const tbody = table.createEl("tbody");
+    model.rowKeys.forEach((rowKey, ri) => {
+      const tr = tbody.createEl("tr");
+      tr.createEl("th", { cls: "bpp-pivot-rowhead", text: rowKey, attr: { scope: "row" } });
+      model.colKeys.forEach((_colKey, ci) => {
+        const count = model.counts[ri][ci];
+        const cell = tr.createEl("td", { cls: "bpp-pivot-cell" });
+        if (count === 0) {
+          cell.addClass("is-empty");
+          cell.setText("\xB7");
+        } else {
+          cell.setText(model.cells[ri][ci]);
+          cell.setAttr("title", `${count} note${count === 1 ? "" : "s"}`);
+        }
+      });
+      tr.createEl("td", { cls: "bpp-pivot-cell bpp-pivot-total", text: model.rowTotals[ri] });
+    });
+    const tfoot = table.createEl("tfoot");
+    const totalRow = tfoot.createEl("tr");
+    totalRow.createEl("th", { cls: "bpp-pivot-rowhead bpp-pivot-total", text: "Total", attr: { scope: "row" } });
+    model.colKeys.forEach((_colKey, ci) => {
+      totalRow.createEl("td", { cls: "bpp-pivot-cell bpp-pivot-total", text: model.colTotals[ci] });
+    });
+    totalRow.createEl("td", { cls: "bpp-pivot-cell bpp-pivot-total bpp-pivot-grand", text: model.grandTotal });
+  }
+};
+
+// src/views/dashboardView.ts
+var VIEW_TYPE_DASHBOARD = "bpp-dashboard-view";
+var DONUT_SIZE = 200;
+var DONUT_OUTER = 92;
+var DONUT_INNER = 56;
+var DashboardView = class extends PowerPackView {
+  getViewType() {
+    return VIEW_TYPE_DASHBOARD;
+  }
+  getDisplayText() {
+    return "Power Pack: Dashboard";
+  }
+  getIcon() {
+    return "bar-chart-3";
+  }
+  async render() {
+    const token = ++this.renderToken;
+    const container = this.contentEl;
+    if (!this.plugin.settings.isPro) {
+      container.empty();
+      container.addClass("bpp-view");
+      this.renderUpgradeNotice(
+        container,
+        "\u{1F4C8}",
+        "Dashboard is a Premium view",
+        "Turn any base into a live reporting surface.",
+        [
+          "KPI cards from your roll-ups and formulas",
+          "Distribution charts \u2014 horizontal bars or a donut",
+          "Aggregate by count, sum, or average",
+          "Respects your active base and saved filters"
+        ]
+      );
+      return;
+    }
+    const resolved = await this.plugin.getResolvedView();
+    if (this.isStale(token)) return;
+    this.captureSearchState();
+    container.empty();
+    container.addClass("bpp-view");
+    this.renderToolbar(container);
+    renderContextControls(container, this.plugin, resolved, () => void this.render());
+    const rows = filterRowsByText(resolved.rows, this.searchQuery);
+    if (rows.length === 0) {
+      container.createDiv({
+        cls: "bpp-empty",
+        text: this.searchQuery ? "No notes match the current search." : "No notes to summarize yet."
+      });
+      return;
+    }
+    this.renderKpis(container, rows);
+    this.renderChart(container, rows);
+  }
+  renderToolbar(container) {
+    const toolbar = container.createDiv({ cls: "bpp-toolbar" });
+    toolbar.createEl("h3", { text: "Dashboard" });
+    const s = this.plugin.settings;
+    const keys = this.plugin.getFrontmatterKeys();
+    const controls = toolbar.createDiv({ cls: "bpp-lite-controls" });
+    renderPropertySelect(controls, "Group by", keys, s.dashboardGroupBy, (value) => {
+      s.dashboardGroupBy = value || "status";
+      this.persist();
+    });
+    renderSelect(
+      controls,
+      "Aggregate",
+      AGGREGATIONS.map((a) => ({ value: a, label: a })),
+      s.dashboardAggregation,
+      (value) => {
+        s.dashboardAggregation = value;
+        this.persist();
+      }
+    );
+    if (s.dashboardAggregation !== "count") {
+      const wrap = controls.createDiv({ cls: "bpp-lite-control" });
+      wrap.createSpan({ cls: "bpp-muted", text: "Value" });
+      const input = wrap.createEl("input", {
+        type: "text",
+        cls: "bpp-lite-input",
+        placeholder: "expression, e.g. hours"
+      });
+      input.value = s.dashboardValueExpr;
+      input.addEventListener("change", () => {
+        s.dashboardValueExpr = input.value.trim();
+        this.persist();
+      });
+    }
+    const seg = toolbar.createDiv({ cls: "bpp-segmented" });
+    for (const type of DASHBOARD_CHART_TYPES) {
+      const btn = seg.createEl("button", { text: type === "bar" ? "Bars" : "Donut", cls: "bpp-seg-btn" });
+      if (s.dashboardChartType === type) btn.addClass("is-active");
+      btn.setAttr("aria-pressed", String(s.dashboardChartType === type));
+      btn.addEventListener("click", () => {
+        if (s.dashboardChartType === type) return;
+        s.dashboardChartType = type;
+        this.persist();
+      });
+    }
+    this.renderManagedSearch(toolbar);
+  }
+  persist() {
+    void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
+  }
+  renderKpis(container, rows) {
+    const s = this.plugin.settings;
+    const kpis = s.rollups.length > 0 ? buildRollupKpis(rows, s.rollups) : buildDefaultKpis(rows, s.kanbanGroupBy || "status", s.kanbanDoneValue);
+    const grid = container.createDiv({ cls: "bpp-kpi-grid" });
+    for (const kpi of kpis) {
+      const card = grid.createDiv({ cls: "bpp-kpi" });
+      card.createDiv({ cls: "bpp-kpi-value", text: kpi.value });
+      card.createDiv({ cls: "bpp-kpi-label", text: kpi.label });
+      if (kpi.sub) card.createDiv({ cls: "bpp-kpi-sub", text: kpi.sub });
+    }
+  }
+  renderChart(container, rows) {
+    const s = this.plugin.settings;
+    const distribution = buildDistribution(rows, {
+      groupBy: s.dashboardGroupBy,
+      aggregation: s.dashboardAggregation,
+      valueExpr: s.dashboardValueExpr
+    });
+    const section = container.createDiv({ cls: "bpp-chart-section" });
+    const heading = s.dashboardAggregation === "count" ? "count" : `${s.dashboardAggregation} of ${s.dashboardValueExpr || "1"}`;
+    section.createEl("h4", { cls: "bpp-chart-title", text: `${heading} by ${s.dashboardGroupBy}` });
+    if (distribution.slices.length === 0 || distribution.total <= 0) {
+      section.createDiv({ cls: "bpp-empty", text: "No values to chart for the current aggregation." });
+      return;
+    }
+    if (s.dashboardChartType === "donut") this.renderDonut(section, distribution);
+    else this.renderBars(section, distribution);
+    if (distribution.truncated) {
+      section.createDiv({ cls: "bpp-muted bpp-chart-note", text: "Smaller categories are folded into \u201COther\u201D." });
+    }
+  }
+  renderBars(section, distribution) {
+    const list = section.createDiv({ cls: "bpp-bars" });
+    for (const slice of distribution.slices) {
+      const row = list.createDiv({ cls: "bpp-bar-row" });
+      row.createSpan({ cls: "bpp-bar-label", text: slice.key, attr: { title: slice.key } });
+      const track = row.createDiv({ cls: "bpp-bar-track" });
+      const fill = track.createDiv({ cls: "bpp-bar-fill" });
+      const pct = distribution.max > 0 ? slice.value / distribution.max * 100 : 0;
+      fill.setCssProps({ width: `${pct}%` });
+      fill.setCssProps({ "--bpp-bar-hue": String(columnHue(slice.key)) });
+      row.createSpan({ cls: "bpp-bar-value", text: formatValue(slice.value) });
+    }
+  }
+  renderDonut(section, distribution) {
+    const wrap = section.createDiv({ cls: "bpp-donut-wrap" });
+    const segments = buildDonutSegments(distribution.slices);
+    const svg = wrap.createSvg("svg", {
+      cls: "bpp-donut",
+      attr: {
+        viewBox: `0 0 ${DONUT_SIZE} ${DONUT_SIZE}`,
+        width: String(DONUT_SIZE),
+        height: String(DONUT_SIZE),
+        role: "img",
+        "aria-label": `Distribution donut, ${segments.length} categor${segments.length === 1 ? "y" : "ies"}`
+      }
+    });
+    const cx = DONUT_SIZE / 2;
+    const cy = DONUT_SIZE / 2;
+    if (segments.length === 1) {
+      const seg = segments[0];
+      svg.createSvg("circle", {
+        attr: { cx: String(cx), cy: String(cy), r: String(DONUT_OUTER), fill: sliceColor(seg.key) }
+      });
+      svg.createSvg("circle", {
+        cls: "bpp-donut-hole",
+        attr: { cx: String(cx), cy: String(cy), r: String(DONUT_INNER) }
+      });
+    } else {
+      for (const seg of segments) {
+        svg.createSvg("path", {
+          attr: {
+            d: annularSectorPath(cx, cy, DONUT_OUTER, DONUT_INNER, seg.startAngle, seg.endAngle),
+            fill: sliceColor(seg.key)
+          }
+        });
+      }
+    }
+    this.renderLegend(wrap, distribution);
+  }
+  renderLegend(wrap, distribution) {
+    const legend = wrap.createDiv({ cls: "bpp-legend" });
+    for (const slice of distribution.slices) {
+      if (slice.value <= 0) continue;
+      const item = legend.createDiv({ cls: "bpp-legend-item" });
+      item.createSpan({ cls: "bpp-legend-swatch" }).setCssProps({ "--bpp-bar-hue": String(columnHue(slice.key)) });
+      item.createSpan({ cls: "bpp-legend-label", text: slice.key });
+      const pct = distribution.total > 0 ? Math.round(slice.value / distribution.total * 100) : 0;
+      item.createSpan({ cls: "bpp-muted bpp-legend-value", text: `${formatValue(slice.value)} \xB7 ${pct}%` });
+    }
+  }
+};
+function sliceColor(key) {
+  return `hsl(${columnHue(key)}, 60%, 55%)`;
+}
+function formatValue(n) {
+  return String(Math.round(n * 100) / 100);
+}
+
+// src/views/galleryView.ts
+var import_obsidian10 = require("obsidian");
+
+// src/query/gallery.ts
+function parseString(input) {
+  let s = input.trim();
+  if (!s) return null;
+  const wiki = s.match(/^!?\[\[([^\]|]+)(?:\|[^\]]*)?\]\]$/);
+  if (wiki) s = wiki[1].trim();
+  const md = s.match(/^!?\[[^\]]*\]\((.+)\)$/);
+  if (md) {
+    s = md[1].trim();
+    const titled = s.match(/^(.*\S)\s+["'][^"']*["']$/);
+    if (titled) s = titled[1].trim();
+  }
+  s = s.replace(/^<([^>]*)>$/, "$1").trim();
+  s = s.replace(/^["']|["']$/g, "").trim();
+  if (!s) return null;
+  if (/^https?:\/\//i.test(s)) return { kind: "url", ref: s };
+  if (/^[a-z][a-z0-9+.-]*:/i.test(s) || s.startsWith("//")) return null;
+  return { kind: "vault", ref: s };
+}
+function parseImageRef(value) {
+  if (typeof value === "string") return parseString(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const ref = typeof item === "string" ? parseString(item) : null;
+      if (ref) return ref;
+    }
+  }
+  return null;
+}
+
+// src/views/galleryView.ts
+var VIEW_TYPE_GALLERY = "bpp-gallery-view";
+var GalleryView = class extends PowerPackView {
+  getViewType() {
+    return VIEW_TYPE_GALLERY;
+  }
+  getDisplayText() {
+    return "Power Pack: Gallery";
+  }
+  getIcon() {
+    return "image";
+  }
+  async render() {
+    const token = ++this.renderToken;
+    const container = this.contentEl;
+    if (!this.plugin.settings.isPro) {
+      container.empty();
+      container.addClass("bpp-view");
+      this.renderUpgradeNotice(
+        container,
+        "\u{1F5BC}\uFE0F",
+        "Gallery is a Premium view",
+        "See your notes as a visual grid of cover images.",
+        [
+          "Cover image from any frontmatter property",
+          "Wikilinks, markdown images, or URLs all work",
+          "Title and detail fields as clean pills",
+          "Open, edit, rename, and delete from every card"
+        ]
+      );
+      return;
+    }
+    const resolved = await this.plugin.getResolvedView();
+    if (this.isStale(token)) return;
+    this.captureSearchState();
+    container.empty();
+    container.addClass("bpp-view");
+    this.renderToolbar(container);
+    renderContextControls(container, this.plugin, resolved, () => void this.render());
+    const rows = filterRowsByText(resolved.rows, this.searchQuery);
+    if (rows.length === 0) {
+      container.createDiv({
+        cls: "bpp-empty",
+        text: this.searchQuery ? "No notes match the current search." : "No notes to show yet."
+      });
+      return;
+    }
+    const grid = container.createDiv({ cls: "bpp-gallery" });
+    for (const row of rows) this.renderCard(grid, row);
+  }
+  renderToolbar(container) {
+    const toolbar = container.createDiv({ cls: "bpp-toolbar" });
+    toolbar.createEl("h3", { text: "Gallery" });
+    toolbar.createSpan({ cls: "bpp-muted", text: `cover: "${this.plugin.settings.galleryImageProp}"` });
+    this.renderUndoButton(toolbar);
+    this.renderManagedSearch(toolbar);
+  }
+  renderCard(grid, row) {
+    const card = grid.createDiv({ cls: "bpp-gallery-card" });
+    this.applyColorRule(card, row);
+    const src = this.imageSrc(row);
+    const media = card.createDiv({ cls: "bpp-gallery-media" });
+    if (src) {
+      media.createEl("img", {
+        cls: "bpp-gallery-img",
+        attr: { src, alt: row.name, loading: "lazy", draggable: "false" }
+      });
+    } else {
+      media.addClass("is-placeholder");
+      media.createSpan({ cls: "bpp-gallery-monogram", text: (row.name[0] || "\u2022").toUpperCase() });
+    }
+    const body = card.createDiv({ cls: "bpp-gallery-body" });
+    body.createDiv({ cls: "bpp-gallery-title", text: row.name });
+    const fields = this.plugin.settings.kanbanCardFields;
+    const pills = fields.map((field) => ({ field, value: formatCardField(row, field) })).filter((f) => f.value !== null);
+    if (pills.length > 0) {
+      const pillRow = body.createDiv({ cls: "bpp-gallery-pills" });
+      for (const pill of pills) {
+        pillRow.createSpan({ cls: "bpp-pill", text: pill.value, attr: { title: `${pill.field}: ${pill.value}` } });
+      }
+    }
+    const openMenu = (anchor) => this.openCardMenu(anchor, row);
+    card.addEventListener("click", () => this.openRow(row));
+    card.addEventListener("contextmenu", (evt) => {
+      evt.preventDefault();
+      openMenu(evt);
+    });
+    this.makeItemAccessible(card, row.name, () => this.openRow(row), (anchor) => openMenu(anchor));
+    this.addOverflowButton(card, row.name, openMenu);
+  }
+  openCardMenu(anchor, row) {
+    if (anchor instanceof MouseEvent) anchor.preventDefault();
+    const menu = new import_obsidian10.Menu();
+    this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, () => void this.render());
+    this.showMenuAtAnchor(menu, anchor);
+  }
+  /** Resolve the card's cover image to a loadable URL, or null when there's none.
+   * A vault link is resolved relative to the note; an http(s) URL is used as-is. */
+  imageSrc(row) {
+    const ref = parseImageRef(row.scope.get(this.plugin.settings.galleryImageProp));
+    if (!ref) return null;
+    if (ref.kind === "url") return ref.ref;
+    const file = this.app.metadataCache.getFirstLinkpathDest(ref.ref, row.id);
+    return file ? this.app.vault.getResourcePath(file) : null;
+  }
+};
+
 // src/main.ts
-var PREMIUM_VIEW_TYPES = [VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT, VIEW_TYPE_HIERARCHY];
-var ALL_VIEW_TYPES = [VIEW_TYPE_KANBAN, VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT, VIEW_TYPE_HIERARCHY];
+var PREMIUM_VIEW_TYPES = [
+  VIEW_TYPE_CALENDAR,
+  VIEW_TYPE_GANTT,
+  VIEW_TYPE_HIERARCHY,
+  VIEW_TYPE_PIVOT,
+  VIEW_TYPE_DASHBOARD,
+  VIEW_TYPE_GALLERY
+];
+var ALL_VIEW_TYPES = [
+  VIEW_TYPE_KANBAN,
+  VIEW_TYPE_CALENDAR,
+  VIEW_TYPE_GANTT,
+  VIEW_TYPE_HIERARCHY,
+  VIEW_TYPE_PIVOT,
+  VIEW_TYPE_DASHBOARD,
+  VIEW_TYPE_GALLERY
+];
 var VIEW_NAME_TO_TYPE = {
   kanban: VIEW_TYPE_KANBAN,
   calendar: VIEW_TYPE_CALENDAR,
   gantt: VIEW_TYPE_GANTT,
   outline: VIEW_TYPE_HIERARCHY,
-  hierarchy: VIEW_TYPE_HIERARCHY
+  hierarchy: VIEW_TYPE_HIERARCHY,
+  pivot: VIEW_TYPE_PIVOT,
+  dashboard: VIEW_TYPE_DASHBOARD,
+  gallery: VIEW_TYPE_GALLERY
 };
-var BasesPowerPackPlugin = class extends import_obsidian10.Plugin {
+var BasesPowerPackPlugin = class extends import_obsidian11.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -7024,19 +7844,19 @@ var BasesPowerPackPlugin = class extends import_obsidian10.Plugin {
     this.registerEvent(this.app.metadataCache.on("changed", (file) => this.patchNote(file)));
     this.registerEvent(
       this.app.vault.on("create", (file) => {
-        if (file instanceof import_obsidian10.TFile) this.patchNote(file);
+        if (file instanceof import_obsidian11.TFile) this.patchNote(file);
         else this.invalidateSnapshot();
       })
     );
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
-        if (file instanceof import_obsidian10.TFile) this.removeNote(file.path);
+        if (file instanceof import_obsidian11.TFile) this.removeNote(file.path);
         else this.invalidateSnapshot();
       })
     );
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
-        if (file instanceof import_obsidian10.TFile) {
+        if (file instanceof import_obsidian11.TFile) {
           this.removeNote(oldPath);
           this.patchNote(file);
         } else {
@@ -7046,13 +7866,16 @@ var BasesPowerPackPlugin = class extends import_obsidian10.Plugin {
     );
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof import_obsidian10.TFile && file.extension === "base") this.invalidateResolved();
+        if (file instanceof import_obsidian11.TFile && file.extension === "base") this.invalidateResolved();
       })
     );
     this.registerView(VIEW_TYPE_KANBAN, (leaf) => new KanbanView(leaf, this));
     this.registerView(VIEW_TYPE_CALENDAR, (leaf) => new CalendarView(leaf, this));
     this.registerView(VIEW_TYPE_GANTT, (leaf) => new GanttView(leaf, this));
     this.registerView(VIEW_TYPE_HIERARCHY, (leaf) => new HierarchyView(leaf, this));
+    this.registerView(VIEW_TYPE_PIVOT, (leaf) => new PivotView(leaf, this));
+    this.registerView(VIEW_TYPE_DASHBOARD, (leaf) => new DashboardView(leaf, this));
+    this.registerView(VIEW_TYPE_GALLERY, (leaf) => new GalleryView(leaf, this));
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => this.queueHierarchyRetarget(file.path, oldPath))
     );
@@ -7080,6 +7903,21 @@ var BasesPowerPackPlugin = class extends import_obsidian10.Plugin {
       checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_HIERARCHY)
     });
     this.addCommand({
+      id: "open-pivot-view",
+      name: "Open Pivot view (Premium)",
+      checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_PIVOT)
+    });
+    this.addCommand({
+      id: "open-dashboard-view",
+      name: "Open Dashboard view (Premium)",
+      checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_DASHBOARD)
+    });
+    this.addCommand({
+      id: "open-gallery-view",
+      name: "Open Gallery view (Premium)",
+      checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_GALLERY)
+    });
+    this.addCommand({
       id: "undo-last-change",
       name: "Undo last change",
       checkCallback: (checking) => {
@@ -7094,7 +7932,7 @@ var BasesPowerPackPlugin = class extends import_obsidian10.Plugin {
       callback: async () => {
         await this.refreshLicense();
         this.refreshViews();
-        new import_obsidian10.Notice(this.settings.isPro ? "Premium active." : "Lite tier (no valid license).");
+        new import_obsidian11.Notice(this.settings.isPro ? "Premium active." : "Lite tier (no valid license).");
       }
     });
     this.addSettingTab(new BasesPowerPackSettingTab(this.app, this));
@@ -7205,7 +8043,7 @@ var BasesPowerPackPlugin = class extends import_obsidian10.Plugin {
     }
     const missed = entry.notes.length - ok;
     const detail = missed > 0 ? ` (${missed} no longer at ${missed === 1 ? "its" : "their"} original path)` : "";
-    new import_obsidian10.Notice(`Undid "${entry.label}" \u2014 restored ${ok} note${ok === 1 ? "" : "s"}${detail}.`);
+    new import_obsidian11.Notice(`Undid "${entry.label}" \u2014 restored ${ok} note${ok === 1 ? "" : "s"}${detail}.`);
     this.refreshViews();
   }
   queueHierarchyRetarget(newPath, oldPath) {
@@ -7246,7 +8084,7 @@ var BasesPowerPackPlugin = class extends import_obsidian10.Plugin {
     }
     this.undo.commitBatch(batch);
     if (ok > 0) {
-      new import_obsidian10.Notice(`Bases Power Pack: repointed ${ok} child note${ok === 1 ? "" : "s"} after rename.`);
+      new import_obsidian11.Notice(`Bases Power Pack: repointed ${ok} child note${ok === 1 ? "" : "s"} after rename.`);
       this.refreshViews();
     }
   }
@@ -7255,21 +8093,21 @@ var BasesPowerPackPlugin = class extends import_obsidian10.Plugin {
       openView: async (view, basePath) => {
         const viewType = VIEW_NAME_TO_TYPE[view];
         if (!viewType) {
-          new import_obsidian10.Notice(`Bases Power Pack: unknown view "${String(view)}".`);
+          new import_obsidian11.Notice(`Bases Power Pack: unknown view "${String(view)}".`);
           return false;
         }
         if (PREMIUM_VIEW_TYPES.includes(viewType) && !this.settings.isPro) {
-          new import_obsidian10.Notice("Bases Power Pack: this view requires a premium license.");
+          new import_obsidian11.Notice("Bases Power Pack: this view requires a premium license.");
           return false;
         }
         if (basePath) {
           if (!this.settings.isPro) {
-            new import_obsidian10.Notice("Bases Power Pack: opening a base as the data source requires premium.");
+            new import_obsidian11.Notice("Bases Power Pack: opening a base as the data source requires premium.");
             return false;
           }
-          const file = this.app.vault.getAbstractFileByPath((0, import_obsidian10.normalizePath)(basePath));
-          if (!(file instanceof import_obsidian10.TFile) || file.extension !== "base") {
-            new import_obsidian10.Notice("Bases Power Pack: base file not found.");
+          const file = this.app.vault.getAbstractFileByPath((0, import_obsidian11.normalizePath)(basePath));
+          if (!(file instanceof import_obsidian11.TFile) || file.extension !== "base") {
+            new import_obsidian11.Notice("Bases Power Pack: base file not found.");
             return false;
           }
           if (this.settings.activeBasePath !== file.path) {
@@ -7376,6 +8214,15 @@ var BasesPowerPackPlugin = class extends import_obsidian10.Plugin {
       this.settings.hierarchyParentProp = DEFAULT_SETTINGS.hierarchyParentProp;
     if (typeof this.settings.hierarchyOrderProp !== "string") this.settings.hierarchyOrderProp = DEFAULT_SETTINGS.hierarchyOrderProp;
     if (typeof this.settings.hierarchyQuickAddFolder !== "string") this.settings.hierarchyQuickAddFolder = "";
+    this.settings.pivotRowProp = coerceProp(this.settings.pivotRowProp, DEFAULT_SETTINGS.pivotRowProp);
+    this.settings.pivotColProp = coerceProp(this.settings.pivotColProp, DEFAULT_SETTINGS.pivotColProp);
+    if (!AGGREGATIONS.includes(this.settings.pivotAggregation)) this.settings.pivotAggregation = DEFAULT_SETTINGS.pivotAggregation;
+    if (typeof this.settings.pivotValueExpr !== "string") this.settings.pivotValueExpr = "";
+    this.settings.dashboardGroupBy = coerceProp(this.settings.dashboardGroupBy, DEFAULT_SETTINGS.dashboardGroupBy);
+    if (!AGGREGATIONS.includes(this.settings.dashboardAggregation)) this.settings.dashboardAggregation = DEFAULT_SETTINGS.dashboardAggregation;
+    if (typeof this.settings.dashboardValueExpr !== "string") this.settings.dashboardValueExpr = "";
+    if (!DASHBOARD_CHART_TYPES.includes(this.settings.dashboardChartType)) this.settings.dashboardChartType = DEFAULT_SETTINGS.dashboardChartType;
+    this.settings.galleryImageProp = coerceProp(this.settings.galleryImageProp, DEFAULT_SETTINGS.galleryImageProp);
   }
   async saveSettings(opts) {
     if ((opts == null ? void 0 : opts.invalidateResolved) !== false) this.invalidateResolved();

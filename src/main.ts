@@ -18,16 +18,35 @@ import { KanbanView, VIEW_TYPE_KANBAN } from "./views/kanbanView";
 import { CalendarView, VIEW_TYPE_CALENDAR } from "./views/calendarView";
 import { GanttView, VIEW_TYPE_GANTT } from "./views/ganttView";
 import { HierarchyView, VIEW_TYPE_HIERARCHY } from "./views/hierarchyView";
+import { PivotView, VIEW_TYPE_PIVOT } from "./views/pivotView";
+import { DashboardView, VIEW_TYPE_DASHBOARD } from "./views/dashboardView";
+import { GalleryView, VIEW_TYPE_GALLERY } from "./views/galleryView";
 import { buildRawNote, buildRawNotes, resolveViewRows, writeRowProperties, type ResolvedView } from "./views/viewData";
 import { UndoManager } from "./query/undo";
 import { KANBAN_SORTS } from "./query/kanban";
 import { sanitizeWipLimit } from "./query/wip";
 import { resolveParentRef } from "./query/hierarchy";
 import { normalizeColorRules } from "./query/colorRules";
+import { DASHBOARD_CHART_TYPES } from "./query/dashboard";
 import type { RawNote } from "./model/row";
 
-const PREMIUM_VIEW_TYPES = [VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT, VIEW_TYPE_HIERARCHY];
-const ALL_VIEW_TYPES = [VIEW_TYPE_KANBAN, VIEW_TYPE_CALENDAR, VIEW_TYPE_GANTT, VIEW_TYPE_HIERARCHY];
+const PREMIUM_VIEW_TYPES = [
+	VIEW_TYPE_CALENDAR,
+	VIEW_TYPE_GANTT,
+	VIEW_TYPE_HIERARCHY,
+	VIEW_TYPE_PIVOT,
+	VIEW_TYPE_DASHBOARD,
+	VIEW_TYPE_GALLERY,
+];
+const ALL_VIEW_TYPES = [
+	VIEW_TYPE_KANBAN,
+	VIEW_TYPE_CALENDAR,
+	VIEW_TYPE_GANTT,
+	VIEW_TYPE_HIERARCHY,
+	VIEW_TYPE_PIVOT,
+	VIEW_TYPE_DASHBOARD,
+	VIEW_TYPE_GALLERY,
+];
 
 const VIEW_NAME_TO_TYPE: Record<string, string> = {
 	kanban: VIEW_TYPE_KANBAN,
@@ -35,6 +54,9 @@ const VIEW_NAME_TO_TYPE: Record<string, string> = {
 	gantt: VIEW_TYPE_GANTT,
 	outline: VIEW_TYPE_HIERARCHY,
 	hierarchy: VIEW_TYPE_HIERARCHY,
+	pivot: VIEW_TYPE_PIVOT,
+	dashboard: VIEW_TYPE_DASHBOARD,
+	gallery: VIEW_TYPE_GALLERY,
 };
 
 /**
@@ -47,7 +69,10 @@ export interface BasesPowerPackApi {
 	 * (with a user-facing notice) when the view or the base source requires a
 	 * premium license, or when the base path doesn't resolve.
 	 */
-	openView: (view: "kanban" | "calendar" | "gantt" | "outline", basePath?: string) => Promise<boolean>;
+	openView: (
+		view: "kanban" | "calendar" | "gantt" | "outline" | "pivot" | "dashboard" | "gallery",
+		basePath?: string
+	) => Promise<boolean>;
 	isPremiumActive: () => boolean;
 }
 
@@ -116,6 +141,9 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.registerView(VIEW_TYPE_CALENDAR, (leaf) => new CalendarView(leaf, this));
 		this.registerView(VIEW_TYPE_GANTT, (leaf) => new GanttView(leaf, this));
 		this.registerView(VIEW_TYPE_HIERARCHY, (leaf) => new HierarchyView(leaf, this));
+		this.registerView(VIEW_TYPE_PIVOT, (leaf) => new PivotView(leaf, this));
+		this.registerView(VIEW_TYPE_DASHBOARD, (leaf) => new DashboardView(leaf, this));
+		this.registerView(VIEW_TYPE_GALLERY, (leaf) => new GalleryView(leaf, this));
 
 		// Keep the hierarchy intact when a parent note is renamed/moved: repoint any
 		// child whose parent property pointed at the old path (premium; one undo
@@ -152,6 +180,24 @@ export default class BasesPowerPackPlugin extends Plugin {
 			id: "open-outline-view",
 			name: "Open Outline view (Premium)",
 			checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_HIERARCHY),
+		});
+
+		this.addCommand({
+			id: "open-pivot-view",
+			name: "Open Pivot view (Premium)",
+			checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_PIVOT),
+		});
+
+		this.addCommand({
+			id: "open-dashboard-view",
+			name: "Open Dashboard view (Premium)",
+			checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_DASHBOARD),
+		});
+
+		this.addCommand({
+			id: "open-gallery-view",
+			name: "Open Gallery view (Premium)",
+			checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_GALLERY),
 		});
 
 		this.addCommand({
@@ -488,6 +534,15 @@ export default class BasesPowerPackPlugin extends Plugin {
 			this.settings.hierarchyParentProp = DEFAULT_SETTINGS.hierarchyParentProp;
 		if (typeof this.settings.hierarchyOrderProp !== "string") this.settings.hierarchyOrderProp = DEFAULT_SETTINGS.hierarchyOrderProp;
 		if (typeof this.settings.hierarchyQuickAddFolder !== "string") this.settings.hierarchyQuickAddFolder = "";
+		this.settings.pivotRowProp = coerceProp(this.settings.pivotRowProp, DEFAULT_SETTINGS.pivotRowProp);
+		this.settings.pivotColProp = coerceProp(this.settings.pivotColProp, DEFAULT_SETTINGS.pivotColProp);
+		if (!AGGREGATIONS.includes(this.settings.pivotAggregation)) this.settings.pivotAggregation = DEFAULT_SETTINGS.pivotAggregation;
+		if (typeof this.settings.pivotValueExpr !== "string") this.settings.pivotValueExpr = "";
+		this.settings.dashboardGroupBy = coerceProp(this.settings.dashboardGroupBy, DEFAULT_SETTINGS.dashboardGroupBy);
+		if (!AGGREGATIONS.includes(this.settings.dashboardAggregation)) this.settings.dashboardAggregation = DEFAULT_SETTINGS.dashboardAggregation;
+		if (typeof this.settings.dashboardValueExpr !== "string") this.settings.dashboardValueExpr = "";
+		if (!DASHBOARD_CHART_TYPES.includes(this.settings.dashboardChartType)) this.settings.dashboardChartType = DEFAULT_SETTINGS.dashboardChartType;
+		this.settings.galleryImageProp = coerceProp(this.settings.galleryImageProp, DEFAULT_SETTINGS.galleryImageProp);
 	}
 
 	// Serialize writes: overlapping saveData calls (e.g. per-keystroke license

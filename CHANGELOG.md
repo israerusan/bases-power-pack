@@ -3,6 +3,45 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.13.0] - 2026-07-19
+
+A **"make the Power real"** release: three new premium views that turn a base
+from a set of planning boards into a lightweight database — analysis, reporting,
+and visual browsing. Scoped from an LLM ideation pass and hardened by a
+multi-model roundtable review before shipping.
+
+### Added
+- **Pivot / matrix view (premium).** Cross-tabulate your notes like a spreadsheet
+  pivot: pick a **row property** and a **column property** and every intersection
+  is aggregated with `count`, `sum`, `avg`, `min`/`max`, `unique`, `filled`,
+  `empty`, or `range` (feed it a formula for weighted or computed cells). Every
+  row, every column, and the corner carry a **total**. Row/column/aggregation are
+  chosen from the toolbar and remembered; high-cardinality properties are capped
+  at 50 keys per axis so the grid can't explode. A quick-search narrows the rows
+  first. Command: **Open Pivot view (Premium)**.
+- **Dashboard / analytics view (premium).** A live reporting surface: **KPI cards**
+  from your configured roll-ups (or built-in totals — notes, done, remaining —
+  when you have none) plus a **distribution chart** that groups notes by any
+  property and aggregates each category, drawn as horizontal **bars** or a
+  **donut** (toggle from the toolbar). Everything reuses the roll-up engine, so a
+  headline number and its chart always agree, and it honors the active base and
+  saved filters. Command: **Open Dashboard view (Premium)**.
+- **Gallery view (premium).** A visual grid of cards, each with a **cover image**
+  from a configurable frontmatter property — a vault path, wikilink
+  (`[[img.png]]`), markdown image (`![](img.png)`), or URL all work — the note
+  title, and your card-detail fields as pills. Notes with no cover get a tidy
+  monogram placeholder. Click a card to open it; the ⋯ / right-click menu gives
+  the shared open / edit / rename / delete actions. Command: **Open Gallery view
+  (Premium)**.
+- **`window.basesPowerPack.openView()`** now accepts `"pivot"`, `"dashboard"`, and
+  `"gallery"` (premium-gated like the other views).
+
+### Changed
+- The roll-up engine gained a shared numeric-aggregation path
+  (`aggregateNumber` / `aggregateRows`) so the roll-up bar, pivot cells, and
+  dashboard charts all compute from one source. Roll-up display output is
+  unchanged.
+
 ## [1.12.0] - 2026-07-18
 
 A **correctness, polish, and premium-feel** release, driven by five rounds of

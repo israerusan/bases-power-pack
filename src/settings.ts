@@ -4,6 +4,7 @@ import type BasesPowerPackPlugin from "./main";
 import { AGGREGATIONS, type Aggregation, type Rollup } from "./query/rollup";
 import { AUTOMATION_ACTION_TYPES, type AutomationActionType, type AutomationRule } from "./query/automation";
 import { type ColorRule } from "./query/colorRules";
+import { DASHBOARD_CHART_TYPES, type DashboardChartType } from "./query/dashboard";
 
 const ACTION_LABELS: Record<AutomationActionType, string> = {
 	set: "Set to value",
@@ -73,6 +74,21 @@ export interface BasesPowerPackSettings {
 	hierarchyOrderProp: string;
 	hierarchyQuickAddFolder: string;
 
+	/** Pivot / matrix (premium) */
+	pivotRowProp: string;
+	pivotColProp: string;
+	pivotAggregation: Aggregation;
+	pivotValueExpr: string;
+
+	/** Dashboard / analytics (premium) */
+	dashboardGroupBy: string;
+	dashboardAggregation: Aggregation;
+	dashboardValueExpr: string;
+	dashboardChartType: DashboardChartType;
+
+	/** Gallery (premium) */
+	galleryImageProp: string;
+
 	/** Bases integration (premium) */
 	activeBasePath: string;
 
@@ -122,6 +138,15 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	hierarchyParentProp: "parent",
 	hierarchyOrderProp: "order",
 	hierarchyQuickAddFolder: "",
+	pivotRowProp: "status",
+	pivotColProp: "priority",
+	pivotAggregation: "count",
+	pivotValueExpr: "",
+	dashboardGroupBy: "status",
+	dashboardAggregation: "count",
+	dashboardValueExpr: "",
+	dashboardChartType: "bar",
+	galleryImageProp: "cover",
 	activeBasePath: "",
 	savedFilters: [],
 	activeFilterId: "",
@@ -443,6 +468,140 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 						this.plugin.settings.hierarchyQuickAddFolder = value.trim();
 						void this.plugin.saveSettings();
 					})
+				);
+			}
+		);
+
+		subHeading("Pivot");
+		premium(
+			"Pivot row property",
+			"Frontmatter property (or formula) that groups the pivot table's rows.",
+			(setting) => {
+				setting.addText((text) =>
+					this.keySuggest(text)
+						.setPlaceholder("status")
+						.setValue(this.plugin.settings.pivotRowProp)
+						.onChange((value) => {
+							this.plugin.settings.pivotRowProp = value.trim() || "status";
+							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+						})
+				);
+			}
+		);
+		premium(
+			"Pivot column property",
+			"Frontmatter property (or formula) that groups the pivot table's columns.",
+			(setting) => {
+				setting.addText((text) =>
+					this.keySuggest(text)
+						.setPlaceholder("priority")
+						.setValue(this.plugin.settings.pivotColProp)
+						.onChange((value) => {
+							this.plugin.settings.pivotColProp = value.trim() || "priority";
+							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+						})
+				);
+			}
+		);
+		premium(
+			"Pivot aggregation",
+			"How each cell aggregates its notes. count tallies notes; the others aggregate the value expression below.",
+			(setting) => {
+				setting.addDropdown((dd) => {
+					for (const agg of AGGREGATIONS) dd.addOption(agg, agg);
+					dd.setValue(this.plugin.settings.pivotAggregation);
+					dd.onChange((value) => {
+						this.plugin.settings.pivotAggregation = value as Aggregation;
+						void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+					});
+				});
+			}
+		);
+		premium(
+			"Pivot value expression",
+			'Expression aggregated in each cell for non-count aggregations, e.g. hours or done / total. Ignored for count.',
+			(setting) => {
+				setting.addText((text) =>
+					this.keySuggest(text)
+						.setPlaceholder("hours")
+						.setValue(this.plugin.settings.pivotValueExpr)
+						.onChange((value) => {
+							this.plugin.settings.pivotValueExpr = value.trim();
+							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+						})
+				);
+			}
+		);
+
+		subHeading("Dashboard");
+		premium(
+			"Dashboard group-by property",
+			"Frontmatter property (or formula) the distribution chart groups notes by.",
+			(setting) => {
+				setting.addText((text) =>
+					this.keySuggest(text)
+						.setPlaceholder("status")
+						.setValue(this.plugin.settings.dashboardGroupBy)
+						.onChange((value) => {
+							this.plugin.settings.dashboardGroupBy = value.trim() || "status";
+							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+						})
+				);
+			}
+		);
+		premium(
+			"Dashboard aggregation",
+			"How the chart aggregates each category. count tallies notes; the others aggregate the value expression below.",
+			(setting) => {
+				setting.addDropdown((dd) => {
+					for (const agg of AGGREGATIONS) dd.addOption(agg, agg);
+					dd.setValue(this.plugin.settings.dashboardAggregation);
+					dd.onChange((value) => {
+						this.plugin.settings.dashboardAggregation = value as Aggregation;
+						void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+					});
+				});
+			}
+		);
+		premium(
+			"Dashboard value expression",
+			"Expression aggregated per category for non-count aggregations, e.g. hours. Ignored for count.",
+			(setting) => {
+				setting.addText((text) =>
+					this.keySuggest(text)
+						.setPlaceholder("hours")
+						.setValue(this.plugin.settings.dashboardValueExpr)
+						.onChange((value) => {
+							this.plugin.settings.dashboardValueExpr = value.trim();
+							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+						})
+				);
+			}
+		);
+		premium("Dashboard chart type", "Default chart style for the distribution — you can also flip it from the toolbar.", (setting) => {
+			setting.addDropdown((dd) => {
+				for (const type of DASHBOARD_CHART_TYPES) dd.addOption(type, type === "bar" ? "Bars" : "Donut");
+				dd.setValue(this.plugin.settings.dashboardChartType);
+				dd.onChange((value) => {
+					this.plugin.settings.dashboardChartType = value as DashboardChartType;
+					void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+				});
+			});
+		});
+
+		subHeading("Gallery");
+		premium(
+			"Gallery cover property",
+			"Frontmatter property holding each card's cover image — a vault path, wikilink, markdown image, or URL.",
+			(setting) => {
+				setting.addText((text) =>
+					this.keySuggest(text)
+						.setPlaceholder("cover")
+						.setValue(this.plugin.settings.galleryImageProp)
+						.onChange((value) => {
+							this.plugin.settings.galleryImageProp = value.trim() || "cover";
+							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+						})
 				);
 			}
 		);

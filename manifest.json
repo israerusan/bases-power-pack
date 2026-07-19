@@ -1,7 +1,7 @@
 {
 	"id": "bases-power-pack",
 	"name": "Bases Power Pack",
-	"version": "1.12.0",
+	"version": "1.13.0",
 	"minAppVersion": "1.5.0",
 	"description": "Advanced database views: kanban, calendar, Gantt, and outline over your notes or a .base file, plus automation, roll-ups, formulas, and saved filters. Free kanban; premium unlocks the rest.",
 	"author": "israerusan",
