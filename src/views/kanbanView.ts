@@ -19,6 +19,8 @@ import {
 import { coerceFieldInput, formatFieldForEdit } from "../query/inlineEdit";
 import { coerceLiteral, computeRuleWrites, rulesForTransition } from "../query/automation";
 import { dropWouldExceed, formatWipCount, isOverWip, limitFor, sanitizeWipLimit } from "../query/wip";
+import { parseRank, planReorder, type RankItem } from "../query/ranking";
+import { buildCsv, buildMarkdownBoard, buildMarkdownTable } from "../query/export";
 import { evaluateSafe, toBool, toStr } from "../engine/expression";
 import { createSeededNote, writeRowProperties, writeRowProperty, type PropertyWrite } from "./viewData";
 import { renderContextControls, renderRollupBar } from "./viewChrome";
@@ -29,6 +31,7 @@ export const VIEW_TYPE_KANBAN = "bpp-kanban-view";
 
 const SORT_OPTIONS: Array<{ value: KanbanSort; label: string }> = [
 	{ value: "manual", label: "Default order" },
+	{ value: "rank", label: "Manual (drag)" },
 	{ value: "name-asc", label: "Name ↑" },
 	{ value: "name-desc", label: "Name ↓" },
 	{ value: "due-asc", label: "Due date" },
@@ -49,9 +52,22 @@ export class KanbanView extends PowerPackView {
 	 * value, ignoring the transient quick-search. Drives WIP badges/enforcement,
 	 * per-column roll-ups, and the column-rename target set. */
 	private lastColumnRows = new Map<string, Row[]>();
+	/** The rows AS DISPLAYED per column (search-filtered, in the active sort order)
+	 * — the basis for a manual drag-to-reorder, which reads the shown rank order. */
+	private lastDisplayColumns = new Map<string, Row[]>();
 
 	private get groupByProp(): string {
 		return this.plugin.settings.kanbanGroupBy || "status";
+	}
+
+	private get rankProp(): string {
+		return this.plugin.settings.kanbanRankProp || "rank";
+	}
+
+	/** Manual drag-to-reorder is live only in the "Manual (drag)" sort — otherwise
+	 * another sort governs the order and a hand-set rank would be invisible. */
+	private get reorderEnabled(): boolean {
+		return this.sortBy === "rank";
 	}
 
 	/** Sort + hide-done are persisted per group-by property, so the board reopens
@@ -109,6 +125,18 @@ export class KanbanView extends PowerPackView {
 		if (!this.plugin.settings.isPro) header.createEl("span", { cls: "bpp-badge bpp-badge-lite", text: "Lite" });
 		header.createEl("span", { cls: "bpp-muted", text: `grouped by "${groupBy}"` });
 		this.renderUndoButton(header);
+		this.addExportButton(header, [
+			{
+				label: "Copy board as Markdown",
+				build: () =>
+					buildMarkdownBoard(
+						[...this.lastDisplayColumns].map(([name, rows]) => ({ name, rows })),
+						this.plugin.settings.kanbanCardFields
+					),
+			},
+			{ label: "Copy as Markdown table", build: () => buildMarkdownTable(this.lastVisibleRows, this.exportFields(groupBy)) },
+			{ label: "Export as CSV", premium: true, build: () => buildCsv(this.lastVisibleRows, this.exportFields(groupBy)) },
+		]);
 
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
 		this.renderLiteControls(container, resolved.rows);
@@ -120,10 +148,12 @@ export class KanbanView extends PowerPackView {
 			search: this.searchQuery,
 			hideColumn: this.hideDoneColumn ? this.plugin.settings.kanbanDoneValue : "",
 			sortBy: this.sortBy,
+			rankProp: this.rankProp,
 			extraColumns,
 			columnOrder: this.plugin.settings.kanbanColumnOrder[groupBy] ?? [],
 		});
 		this.lastVisibleRows = columns.flatMap((column) => column.rows);
+		this.lastDisplayColumns = new Map(columns.map((column) => [column.name, column.rows]));
 		// TRUE column membership (see lastColumnRows): without it, hiding cards
 		// with a search let a drop sneak past a WIP cap because the badge and the
 		// enforcement both under-counted the target column.
@@ -269,6 +299,9 @@ export class KanbanView extends PowerPackView {
 					if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
 				});
 				card.addEventListener("dragend", () => card.removeClass("is-dragging"));
+				// Manual (drag) sort: each card is a precise drop target so a drag lands
+				// BETWEEN two cards, writing a rank that sorts it there.
+				if (this.reorderEnabled) this.wireCardReorder(card, row, column.name, groupBy);
 				card.addEventListener("click", () => this.openRow(row));
 				// Focusable + Enter-to-open + Shift+F10/ContextMenu-to-menu (keyboard path).
 				this.makeItemAccessible(card, row.name, () => this.openRow(row), openMenu);
@@ -846,6 +879,148 @@ export class KanbanView extends PowerPackView {
 			const n = writes.length - 1;
 			new Notice(`Moved to "${columnName}" · ${n} automation write${n === 1 ? "" : "s"}.`);
 		}
+		await this.render();
+	}
+
+	/** Fields for a row-oriented export (Markdown table / CSV): the note title, the
+	 * group-by value, then each configured card field, de-duplicated. */
+	private exportFields(groupBy: string): string[] {
+		return [...new Set(["name", groupBy, ...this.plugin.settings.kanbanCardFields])];
+	}
+
+	/**
+	 * Make one card a drop target for a manual reorder: the pointer's half of the
+	 * card decides whether an incoming card lands before or after it, shown with an
+	 * insertion line. Stops propagation so the column-level "move to column" drop
+	 * doesn't also fire.
+	 */
+	private wireCardReorder(cardEl: HTMLElement, targetRow: Row, columnName: string, groupBy: string): void {
+		cardEl.addEventListener("dragover", (event) => {
+			if (!(event.dataTransfer?.types ?? []).includes(DND_ROW)) return;
+			event.preventDefault();
+			event.stopPropagation();
+			if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+			const before = this.isBeforeHalf(cardEl, event);
+			cardEl.toggleClass("is-reorder-before", before);
+			cardEl.toggleClass("is-reorder-after", !before);
+		});
+		cardEl.addEventListener("dragleave", (event) => {
+			if (!this.dragTrulyLeft(cardEl, event)) return;
+			cardEl.removeClass("is-reorder-before");
+			cardEl.removeClass("is-reorder-after");
+		});
+		cardEl.addEventListener("drop", (event) => {
+			const rowId = event.dataTransfer?.getData(DND_ROW) || event.dataTransfer?.getData("text/plain");
+			cardEl.removeClass("is-reorder-before");
+			cardEl.removeClass("is-reorder-after");
+			if (!rowId) return;
+			event.preventDefault();
+			event.stopPropagation();
+			if (rowId === targetRow.id) return; // dropped onto itself
+			const before = this.isBeforeHalf(cardEl, event);
+			void this.applyCardReorder(rowId, columnName, targetRow, before, groupBy);
+		});
+	}
+
+	/** True when the pointer is in the top half of `el` (so a drop inserts before it). */
+	private isBeforeHalf(el: HTMLElement, event: DragEvent): boolean {
+		const rect = el.getBoundingClientRect();
+		return event.clientY < rect.top + rect.height / 2;
+	}
+
+	/** Order two rows the way the "rank" sort displays them — by numeric rank
+	 * (unranked last), ties broken by name — so a reorder plans against the same
+	 * order the user sees. Mirrors compareRankValue + compareText in kanban.ts. */
+	private compareByRank(a: Row, b: Row, rankProp: string): number {
+		const ar = parseRank(a.scope.get(rankProp));
+		const br = parseRank(b.scope.get(rankProp));
+		if (ar !== null && br !== null && ar !== br) return ar - br;
+		if (ar === null && br !== null) return 1;
+		if (ar !== null && br === null) return -1;
+		return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+	}
+
+	/**
+	 * Apply a manual reorder: write the card's new rank (and, when it came from
+	 * another column, its new group value plus any Move Rules), renumbering the
+	 * destination column only when the neighbouring gap can't be split. The whole
+	 * reorder is one undo entry.
+	 */
+	private async applyCardReorder(
+		rowId: string,
+		columnName: string,
+		targetRow: Row,
+		before: boolean,
+		groupBy: string
+	): Promise<void> {
+		const rankProp = this.rankProp;
+		const group = groupBy || "status";
+		// Writing a rank number to the group property would blow the card out of every
+		// named column (a cross-column drop writes both keys in one pass, rank last).
+		if (rankProp === group) {
+			new Notice(`Manual order property ("${rankProp}") must differ from the group-by property — pick a separate numeric property in settings.`);
+			return;
+		}
+		const resolved = await this.plugin.getResolvedView();
+		const movedRow = resolved.rows.find((r) => r.id === rowId);
+		if (!movedRow) return;
+		// The rank property must be a real writable frontmatter key — refuse to
+		// shadow a computed `file.*` accessor or a base formula.
+		if (COMPUTED_FILE_PROPS.has(rankProp) || Object.prototype.hasOwnProperty.call(resolved.def.formulas ?? {}, rankProp)) {
+			new Notice(`"${rankProp}" is a computed/formula field — pick a plain property for the manual order.`);
+			return;
+		}
+
+		const crossColumn = toStr(movedRow.scope.get(group)) !== columnName;
+		if (crossColumn && this.plugin.settings.kanbanBlockOverWip) {
+			const limit = limitFor(this.plugin.settings.kanbanWipLimits, columnName);
+			const targetCount = (this.lastColumnRows.get(columnName) ?? []).length;
+			if (dropWouldExceed(targetCount, limit)) {
+				new Notice(`"${columnName}" is at its WIP limit (${limit}). Move blocked.`);
+				await this.render();
+				return;
+			}
+		}
+
+		// Plan against the column's TRUE membership (in rank order), NOT the
+		// search-filtered display — otherwise a reorder run while a quick-search hides
+		// cards would renumber only the visible ones and scramble the hidden ones'
+		// persisted order. The drop's insertion index is derived from the target
+		// card's place in that full order.
+		const sorted = [...(this.lastColumnRows.get(columnName) ?? [])].sort((a, b) => this.compareByRank(a, b, rankProp));
+		const items: RankItem[] = sorted.map((r) => ({ id: r.id, rank: parseRank(r.scope.get(rankProp)) }));
+		const targetPos = items.filter((i) => i.id !== rowId).findIndex((i) => i.id === targetRow.id);
+		if (targetPos === -1) {
+			await this.render();
+			return;
+		}
+		const insertIndex = before ? targetPos : targetPos + 1;
+		const rankWrites = planReorder(items, rowId, insertIndex);
+		if (rankWrites.length === 0 && !crossColumn) return; // already in place
+
+		const rankById = new Map(rankWrites.map((w) => [w.id, w.rank]));
+		const label = crossColumn ? `Move to "${columnName}"` : "Reorder card";
+		const batch = this.plugin.undo.beginBatch(label);
+
+		// The moved card: its rank (if it changed) plus, for a cross-column drop, the
+		// group write and any Move Rules that fire on entering this column.
+		const movedWrites: PropertyWrite[] = [];
+		if (crossColumn) {
+			movedWrites.push({ key: group, value: columnName });
+			if (this.plugin.settings.isPro) {
+				const matched = rulesForTransition(this.plugin.settings.automations, group, columnName);
+				movedWrites.push(...computeRuleWrites(matched, movedRow.note.frontmatter, new Date()));
+			}
+		}
+		if (rankById.has(rowId)) movedWrites.push({ key: rankProp, value: rankById.get(rowId) });
+		if (movedWrites.length > 0) await writeRowProperties(this.plugin, rowId, movedWrites, { batch });
+
+		// Every other card touched by a renumber gets its rank only.
+		for (const write of rankWrites) {
+			if (write.id === rowId) continue;
+			await writeRowProperties(this.plugin, write.id, [{ key: rankProp, value: write.rank }], { batch });
+		}
+		this.plugin.undo.commitBatch(batch);
 		await this.render();
 	}
 

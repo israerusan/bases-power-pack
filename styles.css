@@ -1783,3 +1783,105 @@ table.bpp-pivot {
     transform: none;
   }
 }
+
+/* ---- Manual reorder (Kanban "Manual (drag)" sort) ------------------------- */
+/* An accent line on the half of the card an incoming drag would drop against —
+   layered over the card's existing shadow so there's no layout shift. */
+.bpp-card.is-reorder-before {
+  box-shadow: var(--bpp-shadow-1), inset 0 3px 0 0 var(--interactive-accent);
+}
+.bpp-card.is-reorder-after {
+  box-shadow: var(--bpp-shadow-1), inset 0 -3px 0 0 var(--interactive-accent);
+}
+
+/* ---- Export button -------------------------------------------------------- */
+.bpp-export-btn {
+  white-space: nowrap;
+}
+
+/* ---- Feed / timeline view ------------------------------------------------- */
+.bpp-feed {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bpp-space-5, 10px);
+  padding: var(--bpp-space-4) 0;
+}
+
+.bpp-feed-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.bpp-feed-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  gap: var(--bpp-space-3);
+  padding: var(--bpp-space-3) var(--bpp-space-2);
+  background: var(--background-primary);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.bpp-feed-head-label {
+  font-weight: 600;
+}
+
+.bpp-feed-head-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.bpp-feed-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bpp-space-3);
+  padding: var(--bpp-space-3) 0;
+}
+
+.bpp-feed-item {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--bpp-space-3);
+  padding: var(--bpp-space-3) var(--bpp-space-4);
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--bpp-radius-md);
+  box-shadow: var(--bpp-shadow-1);
+  cursor: pointer;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.bpp-feed-item:hover {
+  border-color: var(--bpp-accent-select);
+  box-shadow: var(--bpp-shadow-2);
+}
+
+.bpp-feed-item.bpp-rule-colored {
+  border-left: 3px solid var(--bpp-rule-color);
+}
+
+.bpp-feed-body {
+  min-width: 0;
+  flex: 1;
+}
+
+.bpp-feed-title {
+  font-weight: 500;
+}
+
+.bpp-feed-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: var(--bpp-space-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bpp-feed-item,
+  .bpp-feed-item:hover {
+    transition: none;
+  }
+}

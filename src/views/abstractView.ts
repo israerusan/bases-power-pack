@@ -16,6 +16,14 @@ import { resolveRowColor } from "../query/colorRules";
 import { writeRowProperty } from "./viewData";
 import { renderSearchControl } from "./viewChrome";
 
+/** One entry in a view's Export menu — a labelled builder that produces the text
+ * to copy. `premium` options are locked (and prompt an upgrade) on the free tier. */
+export interface ExportOption {
+	label: string;
+	premium?: boolean;
+	build: () => string;
+}
+
 /**
  * Shared base for the three Power Pack views. Hoists the lifecycle plumbing that
  * was duplicated across kanban/calendar/gantt: the render token, a debounced
@@ -308,6 +316,49 @@ export abstract class PowerPackView extends ItemView {
 			openMenu(evt);
 		});
 		return btn;
+	}
+
+	/**
+	 * Render a toolbar "Export" button that copies the current view to the
+	 * clipboard. Each option builds its text lazily (at click time, so it reflects
+	 * the latest render) — Markdown formats are free; a `premium` option shows a
+	 * lock and an upgrade notice on the free tier instead of copying.
+	 */
+	protected addExportButton(container: HTMLElement, options: ExportOption[]): void {
+		if (options.length === 0) return;
+		const btn = container.createEl("button", {
+			cls: "bpp-seg-btn bpp-export-btn",
+			text: "⤓ Export",
+			attr: { "aria-label": "Export this view", "aria-haspopup": "menu" },
+		});
+		btn.addEventListener("click", (evt) => {
+			const menu = new Menu();
+			for (const opt of options) {
+				const locked = opt.premium === true && !this.plugin.settings.isPro;
+				menu.addItem((i) => {
+					i.setTitle(locked ? `${opt.label} (Premium)` : opt.label).setIcon(locked ? "lock" : "copy");
+					i.onClick(() => {
+						if (locked) {
+							new Notice("Export to CSV is a Premium feature — unlock Bases Power Pack to use it.");
+							this.openSettings();
+							return;
+						}
+						void this.copyToClipboard(opt.build(), opt.label);
+					});
+				});
+			}
+			menu.showAtMouseEvent(evt);
+		});
+	}
+
+	/** Copy text to the clipboard, reporting success or failure via a Notice. */
+	private async copyToClipboard(text: string, label: string): Promise<void> {
+		try {
+			await navigator.clipboard.writeText(text);
+			new Notice(`Copied ${label.toLowerCase()} to the clipboard.`);
+		} catch (error) {
+			new Notice(`Couldn't copy to the clipboard (${String(error)}).`);
+		}
 	}
 
 	/**

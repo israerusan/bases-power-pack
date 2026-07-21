@@ -16,6 +16,7 @@ Advanced database views and automation on top of Obsidian's native **Bases** fea
 | **Kanban drag-and-drop updates** (move a card, write frontmatter) | ✅ | ✅ |
 | **Kanban add / remove columns** (create a new status column from the board) | ✅ | ✅ |
 | **Kanban reorder columns** (drag a column header to reposition it) | ✅ | ✅ |
+| **Manual card ordering** (drag a card between two others; a rank is written) | ✅ | ✅ |
 | **Kanban color-coded columns & cards** (stable color per column value) | ✅ | ✅ |
 | **Kanban card metadata** (due / priority / owner / tags on the card) | ✅ | ✅ |
 | **Semantic card chips** (overdue/due-soon pill, priority badge, tag pills) | ✅ | ✅ |
@@ -25,6 +26,8 @@ Advanced database views and automation on top of Obsidian's native **Bases** fea
 | **Bulk edit** (set/clear/toggle a property across the visible cards) | ✅ | ✅ |
 | **WIP limits** (per-column work-in-progress caps; flag or block over-limit) | ✅ | ✅ |
 | **Undo** (reverse the last move, edit, bulk change, or column rename) | ✅ | ✅ |
+| **Export as Markdown** (copy the board / any view as a Markdown table or task board) | ✅ | ✅ |
+| **Export as CSV** (copy the current view or pivot matrix as CSV) | — | ✅ |
 | **Move Rules automation** (on entering a column, auto-write frontmatter) | — | ✅ |
 | **Rule-based color coding** (color cards / events / bars by an expression rule) | — | ✅ |
 | **Calendar view** (Month / Week / Agenda with an Overdue section) | — | ✅ |
@@ -41,6 +44,7 @@ Advanced database views and automation on top of Obsidian's native **Bases** fea
 | **Pivot / matrix view** (cross-tabulate rows × columns with totals) | — | ✅ |
 | **Dashboard / analytics view** (KPI cards + bar/donut distribution charts) | — | ✅ |
 | **Gallery view** (visual grid of cover images with detail pills) | — | ✅ |
+| **Feed / timeline view** (reverse-chron stream grouped by day / week / month) | — | ✅ |
 | **Roll-ups** (aggregate an expression across rows, plus per-column chips) | — | ✅ |
 | **Formulas** (computed columns / card values) | — | ✅ |
 | **Saved filters & view presets** | — | ✅ |
@@ -52,13 +56,14 @@ Lite is a genuinely useful kanban layer: create, move, and inline-edit cards, re
 
 All views run on a shared query engine. In the **Lite** tier they read standard frontmatter across the vault; in **Premium** they can instead take a `.base` file as their data source, applying its filters and formulas.
 
-- **Kanban** — groups rows by a configurable property (default `status`), supports quick search/sort/hide-done controls and a toolbar **group-by picker** (sort and hide-done are remembered per group-by across restarts), lets you create a note directly from any column, add brand-new status columns from the board (so you can drag a card to a status no note has yet), drag cards between columns to update frontmatter, and drag column headers to reorder the board. Card fields render as **semantic chips**: a due pill that turns red when overdue (and amber when due within 2 days), a priority badge, and tag pills — click any of them to **edit the value in place**. Set a **WIP limit** on any column (right-click its header) to cap its cards — the count is the column's true membership, so a search can't sneak a move past the cap. Columns and their cards are color-coded by a stable hue per value (toggle in settings). Premium cards can also show a formula value (e.g. `round(done / total * 100, 0) + "%"`), and premium roll-ups also compute **per column** ("Doing 6/8 · 21 pts"). Click a card to open the note.
+- **Kanban** — groups rows by a configurable property (default `status`), supports quick search/sort/hide-done controls and a toolbar **group-by picker** (sort and hide-done are remembered per group-by across restarts), lets you create a note directly from any column, add brand-new status columns from the board (so you can drag a card to a status no note has yet), drag cards between columns to update frontmatter, and drag column headers to reorder the board. Card fields render as **semantic chips**: a due pill that turns red when overdue (and amber when due within 2 days), a priority badge, and tag pills — click any of them to **edit the value in place**. Set a **WIP limit** on any column (right-click its header) to cap its cards — the count is the column's true membership, so a search can't sneak a move past the cap. Columns and their cards are color-coded by a stable hue per value (toggle in settings). Premium cards can also show a formula value (e.g. `round(done / total * 100, 0) + "%"`), and premium roll-ups also compute **per column** ("Doing 6/8 · 21 pts"). Click a card to open the note. Choose the **Manual (drag)** sort to **hand-order cards** — drag a card between two others and its position is saved to a numeric `rank` property. The toolbar **⤓ Export** copies the board as a Markdown task list or table (free), or as CSV (premium).
 - **Calendar** — Month, Week, or Agenda. Places rows onto days using a configurable date property (default `due`), highlights today, and can color events by any property. The Agenda leads with an **Overdue** section so slipped work is impossible to miss, and past-day events carry a red edge in Month/Week. **Drag an event to another day to reschedule it** (the date property is rewritten, preserving any time-of-day), or hover a day and click **+** to create a note dated to that day. A toolbar **search** filters events; **right-click an event** to reschedule via a prompt, open, rename, or delete without dragging.
 - **Gantt** — horizontal timeline; each row becomes a bar from a start date property to an optional end date. **Drag a bar to move it, drag its right edge to resize** (both write frontmatter). Zoom the time scale, scroll to today, fill bars by a `progress` property (accepts a `0–1` fraction or a `0–100` percent), and show `milestone` notes as diamonds. A toolbar **search** filters bars; **right-click a bar** to set its start/end date via a prompt, open, rename, or delete.
 - **Outline** — an indented tree of your notes linked by a `parent` frontmatter property holding the parent note's path. Each branch rolls up a **descendant count** and a **done / total + progress** bar over its leaf tasks. **Drag a row onto another to reparent it**, drop it on the top strip to detach it, or right-click to add a child, set/clear the parent, and open/rename/delete. Cycles and dangling parents are flagged, not crashed; a parent that's filtered out still appears as a faint placeholder so its children stay nested. Renaming or moving a parent note automatically repoints its children.
 - **Pivot** _(Premium)_ — a spreadsheet-style matrix. Pick a **row property** and a **column property** and the view cross-tabulates your notes at every intersection, aggregating with `count`, `sum`, `avg`, `min`/`max`, `unique`, and more (feed it a formula for weighted or computed cells). Every row, every column, and the corner carry a **total**. Row/column/aggregation are chosen from the toolbar and remembered; high-cardinality properties are capped so the grid can't explode.
 - **Dashboard** _(Premium)_ — a live reporting surface. **KPI cards** show your configured roll-ups (or built-in totals — notes, done, remaining — when you have none), and a **distribution chart** groups notes by any property and aggregates each category, drawn as horizontal **bars** or a **donut** (toggle from the toolbar). Everything reuses the roll-up engine, so a headline number and its chart always agree; it honors your active base and saved filters.
 - **Gallery** _(Premium)_ — a visual grid of cards. Each card shows a **cover image** taken from a configurable frontmatter property (a vault path, wikilink, markdown image, or URL), the note title, and your card-detail fields as pills. Notes with no cover get a tidy monogram placeholder so the grid stays even. Click a card to open it; the ⋯ / right-click menu offers the shared open / edit / rename / delete actions.
+- **Feed** _(Premium)_ — a reverse-chronological **timeline** of your notes, the "time as a stream" companion to the Calendar's grid and the Gantt's spans. Group by **modified** or **created** date (`file.mtime` / `file.ctime`) for an activity log, or by any frontmatter date for a due/publish stream — then bucket by **day, week, or month** from the toolbar. Each entry carries your card-detail fields as pills, opens on click, and offers the shared ⋯ / right-click actions; a quick-search narrows the stream and notes with no date collect in an **Undated** section.
 
 ### Quick search (Free)
 
@@ -142,6 +147,10 @@ Commands (open the command palette):
 - **Open Calendar view (Premium)** — hidden until a valid license is active
 - **Open Gantt view (Premium)** — hidden until a valid license is active
 - **Open Outline view (Premium)** — hidden until a valid license is active
+- **Open Pivot view (Premium)** — hidden until a valid license is active
+- **Open Dashboard view (Premium)** — hidden until a valid license is active
+- **Open Gallery view (Premium)** — hidden until a valid license is active
+- **Open Feed view (Premium)** — hidden until a valid license is active
 - **Undo last change** — reverse the most recent frontmatter edit (available only when there is something to undo)
 - **Verify license key**
 

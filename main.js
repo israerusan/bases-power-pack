@@ -2271,7 +2271,7 @@ __export(main_exports, {
   default: () => BasesPowerPackPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian11 = require("obsidian");
+var import_obsidian12 = require("obsidian");
 
 // src/settings.ts
 var import_obsidian3 = require("obsidian");
@@ -3282,13 +3282,60 @@ function filterRowsByText(rows, query) {
   return rows.filter((row) => rowMatchesText(row, query));
 }
 
+// src/query/ranking.ts
+var RANK_STEP = 1e3;
+var MIN_GAP = 1e-6;
+function parseRank(value) {
+  if (value === void 0 || value === null || value === "") return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const n = toNumber(value);
+  return Number.isFinite(n) ? n : null;
+}
+function rankBetween(before, after) {
+  if (before === null && after === null) return 0;
+  if (before === null) return after - RANK_STEP;
+  if (after === null) return before + RANK_STEP;
+  if (after - before < MIN_GAP) return null;
+  return before + (after - before) / 2;
+}
+function renormalizedRanks(count, step = RANK_STEP) {
+  const out = [];
+  for (let i = 0; i < count; i++) out.push(i * step);
+  return out;
+}
+function planReorder(ordered, movedId, targetIndex) {
+  var _a;
+  const moved = (_a = ordered.find((i) => i.id === movedId)) != null ? _a : { id: movedId, rank: null };
+  const rest = ordered.filter((i) => i.id !== movedId);
+  const index = Math.max(0, Math.min(targetIndex, rest.length));
+  const newOrder = [...rest.slice(0, index), moved, ...rest.slice(index)];
+  if (newOrder.length === ordered.length && newOrder.every((it, i) => it.id === ordered[i].id)) return [];
+  const before = index > 0 ? newOrder[index - 1] : null;
+  const after = index < newOrder.length - 1 ? newOrder[index + 1] : null;
+  const beforeOk = before === null || before.rank !== null;
+  const afterOk = after === null || after.rank !== null;
+  if (beforeOk && afterOk) {
+    const candidate = rankBetween(before ? before.rank : null, after ? after.rank : null);
+    if (candidate !== null && (before === null || before.rank < candidate) && (after === null || candidate < after.rank)) {
+      if (moved.rank === candidate) return [];
+      return [{ id: movedId, rank: candidate }];
+    }
+  }
+  const ranks = renormalizedRanks(newOrder.length);
+  const writes = [];
+  newOrder.forEach((item, i) => {
+    if (item.rank !== ranks[i]) writes.push({ id: item.id, rank: ranks[i] });
+  });
+  return writes;
+}
+
 // src/query/kanban.ts
 function isRowDone(row, statusProp, doneValue) {
   const dv = (doneValue || "").trim().toLowerCase();
   if (dv && toStr(row.scope.get(statusProp)).trim().toLowerCase() === dv) return true;
   return toBool(row.scope.get("done"));
 }
-var KANBAN_SORTS = ["manual", "name-asc", "name-desc", "due-asc", "priority-desc", "mtime-desc"];
+var KANBAN_SORTS = ["manual", "rank", "name-asc", "name-desc", "due-asc", "priority-desc", "mtime-desc"];
 function buildKanbanColumns(rows, options) {
   var _a, _b, _c, _d;
   const groupBy = options.groupBy || "status";
@@ -3324,7 +3371,7 @@ function buildKanbanColumns(rows, options) {
     var _a2;
     return {
       name,
-      rows: sortRows(items, (_a2 = options.sortBy) != null ? _a2 : "manual")
+      rows: sortRows(items, (_a2 = options.sortBy) != null ? _a2 : "manual", options.rankProp || "rank")
     };
   });
 }
@@ -3346,14 +3393,16 @@ function columnHue(name) {
 function matchesSearch(row, search, columnName) {
   return rowMatchesText(row, search, [columnName]);
 }
-function sortRows(rows, sortBy) {
+function sortRows(rows, sortBy, rankProp) {
   const copy = [...rows];
   if (sortBy === "manual") return copy;
-  copy.sort((a, b) => compareRows(a, b, sortBy));
+  copy.sort((a, b) => compareRows(a, b, sortBy, rankProp));
   return copy;
 }
-function compareRows(a, b, sortBy) {
+function compareRows(a, b, sortBy, rankProp) {
   switch (sortBy) {
+    case "rank":
+      return compareRankValue(a.scope.get(rankProp), b.scope.get(rankProp)) || compareText(a.name, b.name);
     case "name-asc":
       return compareText(a.name, b.name);
     case "name-desc":
@@ -3370,6 +3419,14 @@ function compareRows(a, b, sortBy) {
 }
 function compareText(a, b) {
   return a.localeCompare(b, void 0, { sensitivity: "base" });
+}
+function compareRankValue(a, b) {
+  const av = parseRank(a);
+  const bv = parseRank(b);
+  if (av === null && bv === null) return 0;
+  if (av === null) return 1;
+  if (bv === null) return -1;
+  return av - bv;
 }
 function compareNumberValue(a, b) {
   const av = numberOrNull(a);
@@ -3521,6 +3578,101 @@ function annularSectorPath(cx, cy, rOuter, rInner, startAngle, endAngle) {
 }
 function round(n) {
   return Math.round(n * 100) / 100;
+}
+
+// src/query/feed.ts
+var EPOCH_MS_FLOOR = 1e11;
+var FEED_GRANULARITIES = ["day", "week", "month"];
+var MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December"
+];
+var WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+function feedDateOf(row, dateProp) {
+  const value = row.scope.get(dateProp);
+  if (typeof value === "number" && Number.isFinite(value) && Math.abs(value) >= EPOCH_MS_FLOOR) {
+    return epochToIso(value);
+  }
+  return toIsoDateKey(value);
+}
+function feedTimeOf(row, dateProp) {
+  const value = row.scope.get(dateProp);
+  if (typeof value === "number" && Number.isFinite(value) && Math.abs(value) >= EPOCH_MS_FLOOR) return value;
+  const t = Date.parse(toStr(value));
+  return Number.isFinite(t) ? t : 0;
+}
+function epochToIso(ms) {
+  const d = new Date(ms);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+function sectionKeyFor(iso, granularity) {
+  var _a;
+  if (granularity === "month") {
+    const key = iso.slice(0, 7);
+    const [y, m] = key.split("-");
+    const monthName = (_a = MONTHS[Number(m) - 1]) != null ? _a : m;
+    return { key, label: `${monthName} ${y}` };
+  }
+  if (granularity === "week") {
+    const key = startOfWeekIso(iso);
+    return { key, label: `Week of ${shortDate(key)}` };
+  }
+  return { key: iso, label: longDate(iso) };
+}
+function shortDate(iso) {
+  var _a, _b;
+  const m = Number(iso.slice(5, 7));
+  const day = Number(iso.slice(8, 10));
+  const monthName = (_b = (_a = MONTHS[m - 1]) == null ? void 0 : _a.slice(0, 3)) != null ? _b : String(m);
+  return `${monthName} ${day}`;
+}
+function longDate(iso) {
+  const dn = toDayNumber(iso);
+  const wd = dn === null ? "" : `${WEEKDAYS[weekdayOf(dn)]}, `;
+  return `${wd}${shortDate(iso)} ${iso.slice(0, 4)}`;
+}
+function buildFeed(rows, opts) {
+  var _a;
+  const order = (_a = opts.order) != null ? _a : "desc";
+  const undated = [];
+  const buckets = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const iso = feedDateOf(row, opts.dateProp);
+    if (iso === null) {
+      undated.push(row);
+      continue;
+    }
+    const { key, label } = sectionKeyFor(iso, opts.granularity);
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = { label, entries: [] };
+      buckets.set(key, bucket);
+    }
+    bucket.entries.push({ row, t: feedTimeOf(row, opts.dateProp) });
+  }
+  const dir = order === "asc" ? 1 : -1;
+  const sections = Array.from(buckets.entries()).sort((a, b) => dir * a[0].localeCompare(b[0])).map(([key, bucket]) => ({
+    key,
+    label: bucket.label,
+    // Within a bucket, order by exact time (newest first by default) so an
+    // activity feed reads chronologically, not alphabetically; ties by name.
+    rows: bucket.entries.sort((a, b) => dir * (a.t - b.t) || a.row.name.localeCompare(b.row.name)).map((e) => e.row)
+  }));
+  undated.sort((a, b) => a.name.localeCompare(b.name));
+  return { sections, undated };
 }
 
 // src/views/viewData.ts
@@ -3813,6 +3965,9 @@ var DEFAULT_SETTINGS = {
   kanbanHideDone: {},
   kanbanWipLimits: {},
   kanbanBlockOverWip: false,
+  kanbanRankProp: "rank",
+  feedDateProp: "file.mtime",
+  feedGranularity: "day",
   calendarDateProp: "due",
   calendarViewMode: "month",
   calendarColorProp: "",
@@ -3922,6 +4077,14 @@ var BasesPowerPackSettingTab = class extends import_obsidian3.PluginSettingTab {
       (toggle) => toggle.setValue(this.plugin.settings.kanbanBlockOverWip).onChange((value) => {
         this.plugin.settings.kanbanBlockOverWip = value;
         void this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian3.Setting(containerEl).setName("Manual order property").setDesc(
+      'Numeric frontmatter property written when you hand-order cards. Choose the "Manual (drag)" sort on the board, then drag a card between two others to reorder it.'
+    ).addText(
+      (text) => this.keySuggest(text).setPlaceholder("rank").setValue(this.plugin.settings.kanbanRankProp).onChange((value) => {
+        this.plugin.settings.kanbanRankProp = value.trim() || "rank";
+        void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
       })
     );
     new import_obsidian3.Setting(containerEl).setName("Premium").setHeading();
@@ -4183,6 +4346,29 @@ var BasesPowerPackSettingTab = class extends import_obsidian3.PluginSettingTab {
         );
       }
     );
+    subHeading("Feed");
+    premium(
+      "Feed date property",
+      "What the timeline groups notes by \u2014 a frontmatter date property, or file.mtime / file.ctime for a modified / created activity stream.",
+      (setting) => {
+        setting.addText(
+          (text) => this.keySuggest(text).setPlaceholder("file.mtime").setValue(this.plugin.settings.feedDateProp).onChange((value) => {
+            this.plugin.settings.feedDateProp = value.trim() || "file.mtime";
+            void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+          })
+        );
+      }
+    );
+    premium("Feed grouping", "Bucket the feed by day, week, or month. You can also flip this from the toolbar.", (setting) => {
+      setting.addDropdown((dd) => {
+        for (const g of FEED_GRANULARITIES) dd.addOption(g, g.charAt(0).toUpperCase() + g.slice(1));
+        dd.setValue(this.plugin.settings.feedGranularity);
+        dd.onChange((value) => {
+          this.plugin.settings.feedGranularity = value;
+          void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+        });
+      });
+    });
     subHeading("Kanban (premium)");
     premium(
       "Kanban card formula",
@@ -5128,6 +5314,47 @@ var PowerPackView = class extends import_obsidian5.ItemView {
     return btn;
   }
   /**
+   * Render a toolbar "Export" button that copies the current view to the
+   * clipboard. Each option builds its text lazily (at click time, so it reflects
+   * the latest render) — Markdown formats are free; a `premium` option shows a
+   * lock and an upgrade notice on the free tier instead of copying.
+   */
+  addExportButton(container, options) {
+    if (options.length === 0) return;
+    const btn = container.createEl("button", {
+      cls: "bpp-seg-btn bpp-export-btn",
+      text: "\u2913 Export",
+      attr: { "aria-label": "Export this view", "aria-haspopup": "menu" }
+    });
+    btn.addEventListener("click", (evt) => {
+      const menu = new import_obsidian5.Menu();
+      for (const opt of options) {
+        const locked = opt.premium === true && !this.plugin.settings.isPro;
+        menu.addItem((i) => {
+          i.setTitle(locked ? `${opt.label} (Premium)` : opt.label).setIcon(locked ? "lock" : "copy");
+          i.onClick(() => {
+            if (locked) {
+              new import_obsidian5.Notice("Export to CSV is a Premium feature \u2014 unlock Bases Power Pack to use it.");
+              this.openSettings();
+              return;
+            }
+            void this.copyToClipboard(opt.build(), opt.label);
+          });
+        });
+      }
+      menu.showAtMouseEvent(evt);
+    });
+  }
+  /** Copy text to the clipboard, reporting success or failure via a Notice. */
+  async copyToClipboard(text, label) {
+    try {
+      await navigator.clipboard.writeText(text);
+      new import_obsidian5.Notice(`Copied ${label.toLowerCase()} to the clipboard.`);
+    } catch (error) {
+      new import_obsidian5.Notice(`Couldn't copy to the clipboard (${String(error)}).`);
+    }
+  }
+  /**
    * Render a toolbar Undo button when there's something to undo — the discoverable
    * affordance for the otherwise command-palette-only undo. Its tooltip names the
    * exact action that would be reversed.
@@ -5240,6 +5467,76 @@ function formatWipCount(count, limit) {
   return limit !== null ? `${count} / ${limit}` : String(count);
 }
 
+// src/query/export.ts
+function exportCell(row, field) {
+  if (field === "name" || field === "file.name") return row.name;
+  if (field === "path" || field === "file.path") return row.id;
+  const value = row.scope.get(field);
+  if (value === void 0 || value === null) return "";
+  if ((field === "file.mtime" || field === "file.ctime") && typeof value === "number" && Number.isFinite(value)) {
+    return epochToIso(value);
+  }
+  if (Array.isArray(value)) return value.map((v) => toStr(v)).filter(Boolean).join("; ");
+  return toStr(value);
+}
+function mdCell(value) {
+  return value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+}
+function csvCell(value) {
+  const guarded = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+  return `"${guarded.replace(/"/g, '""')}"`;
+}
+function buildMarkdownTable(rows, fields) {
+  const cols = fields.length > 0 ? fields : ["name"];
+  const header = `| ${cols.map(mdCell).join(" | ")} |`;
+  const divider = `| ${cols.map(() => "---").join(" | ")} |`;
+  const body = rows.map((row) => `| ${cols.map((f) => mdCell(exportCell(row, f))).join(" | ")} |`);
+  return [header, divider, ...body].join("\n");
+}
+function buildCsv(rows, fields) {
+  const cols = fields.length > 0 ? fields : ["name"];
+  const header = cols.map(csvCell).join(",");
+  const body = rows.map((row) => cols.map((f) => csvCell(exportCell(row, f))).join(","));
+  return [header, ...body].join("\r\n");
+}
+function buildMarkdownBoard(columns, fields) {
+  const blocks = [];
+  for (const column of columns) {
+    const lines = [`## ${column.name}`, ""];
+    if (column.rows.length === 0) {
+      lines.push("_(empty)_");
+    } else {
+      for (const row of column.rows) {
+        const details = fields.map((f) => ({ f, v: exportCell(row, f) })).filter((d) => d.v !== "").map((d) => `${d.f}: ${mdCell(d.v)}`);
+        const suffix = details.length > 0 ? ` \u2014 ${details.join(", ")}` : "";
+        lines.push(`- [ ] ${mdCell(row.name)}${suffix}`);
+      }
+    }
+    blocks.push(lines.join("\n"));
+  }
+  return blocks.join("\n\n");
+}
+function pivotHeader(model, rowProp, colProp) {
+  return [`${rowProp} \\ ${colProp}`, ...model.colKeys, "Total"];
+}
+function pivotRows(model) {
+  const body = model.rowKeys.map((rowKey, ri) => [rowKey, ...model.cells[ri], model.rowTotals[ri]]);
+  const totals = ["Total", ...model.colTotals, model.grandTotal];
+  return [...body, totals];
+}
+function pivotToCsv(model, rowProp, colProp) {
+  const header = pivotHeader(model, rowProp, colProp).map(csvCell).join(",");
+  const rows = pivotRows(model).map((r) => r.map(csvCell).join(","));
+  return [header, ...rows].join("\r\n");
+}
+function pivotToMarkdownTable(model, rowProp, colProp) {
+  const header = pivotHeader(model, rowProp, colProp);
+  const headerLine = `| ${header.map(mdCell).join(" | ")} |`;
+  const divider = `| ${header.map(() => "---").join(" | ")} |`;
+  const body = pivotRows(model).map((r) => `| ${r.map((c) => mdCell(c)).join(" | ")} |`);
+  return [headerLine, divider, ...body].join("\n");
+}
+
 // src/views/dnd.ts
 var DND_ROW = "application/x-bpp-row";
 var DND_COLUMN = "application/x-bpp-column";
@@ -5249,6 +5546,7 @@ var DND_TREE = "application/x-bpp-tree";
 var VIEW_TYPE_KANBAN = "bpp-kanban-view";
 var SORT_OPTIONS = [
   { value: "manual", label: "Default order" },
+  { value: "rank", label: "Manual (drag)" },
   { value: "name-asc", label: "Name \u2191" },
   { value: "name-desc", label: "Name \u2193" },
   { value: "due-asc", label: "Due date" },
@@ -5264,9 +5562,20 @@ var KanbanView = class extends PowerPackView {
      * value, ignoring the transient quick-search. Drives WIP badges/enforcement,
      * per-column roll-ups, and the column-rename target set. */
     this.lastColumnRows = /* @__PURE__ */ new Map();
+    /** The rows AS DISPLAYED per column (search-filtered, in the active sort order)
+     * — the basis for a manual drag-to-reorder, which reads the shown rank order. */
+    this.lastDisplayColumns = /* @__PURE__ */ new Map();
   }
   get groupByProp() {
     return this.plugin.settings.kanbanGroupBy || "status";
+  }
+  get rankProp() {
+    return this.plugin.settings.kanbanRankProp || "rank";
+  }
+  /** Manual drag-to-reorder is live only in the "Manual (drag)" sort — otherwise
+   * another sort governs the order and a hand-set rank would be invisible. */
+  get reorderEnabled() {
+    return this.sortBy === "rank";
   }
   /** Sort + hide-done are persisted per group-by property, so the board reopens
    * exactly as you left it (they were session-only fields before 1.11). */
@@ -5313,6 +5622,17 @@ var KanbanView = class extends PowerPackView {
     if (!this.plugin.settings.isPro) header.createEl("span", { cls: "bpp-badge bpp-badge-lite", text: "Lite" });
     header.createEl("span", { cls: "bpp-muted", text: `grouped by "${groupBy}"` });
     this.renderUndoButton(header);
+    this.addExportButton(header, [
+      {
+        label: "Copy board as Markdown",
+        build: () => buildMarkdownBoard(
+          [...this.lastDisplayColumns].map(([name, rows]) => ({ name, rows })),
+          this.plugin.settings.kanbanCardFields
+        )
+      },
+      { label: "Copy as Markdown table", build: () => buildMarkdownTable(this.lastVisibleRows, this.exportFields(groupBy)) },
+      { label: "Export as CSV", premium: true, build: () => buildCsv(this.lastVisibleRows, this.exportFields(groupBy)) }
+    ]);
     renderContextControls(container, this.plugin, resolved, () => void this.render());
     this.renderLiteControls(container, resolved.rows);
     renderRollupBar(container, this.plugin, resolved.rows);
@@ -5322,10 +5642,12 @@ var KanbanView = class extends PowerPackView {
       search: this.searchQuery,
       hideColumn: this.hideDoneColumn ? this.plugin.settings.kanbanDoneValue : "",
       sortBy: this.sortBy,
+      rankProp: this.rankProp,
       extraColumns,
       columnOrder: (_b = this.plugin.settings.kanbanColumnOrder[groupBy]) != null ? _b : []
     });
     this.lastVisibleRows = columns.flatMap((column) => column.rows);
+    this.lastDisplayColumns = new Map(columns.map((column) => [column.name, column.rows]));
     const columnRows = /* @__PURE__ */ new Map();
     for (const row of resolved.rows) {
       const name = toStr(row.scope.get(groupBy));
@@ -5446,6 +5768,7 @@ var KanbanView = class extends PowerPackView {
           if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
         });
         card.addEventListener("dragend", () => card.removeClass("is-dragging"));
+        if (this.reorderEnabled) this.wireCardReorder(card, row, column.name, groupBy);
         card.addEventListener("click", () => this.openRow(row));
         this.makeItemAccessible(card, row.name, () => this.openRow(row), openMenu);
         card.addEventListener("contextmenu", (evt) => openMenu(evt));
@@ -5890,6 +6213,123 @@ var KanbanView = class extends PowerPackView {
       const n = writes.length - 1;
       new import_obsidian6.Notice(`Moved to "${columnName}" \xB7 ${n} automation write${n === 1 ? "" : "s"}.`);
     }
+    await this.render();
+  }
+  /** Fields for a row-oriented export (Markdown table / CSV): the note title, the
+   * group-by value, then each configured card field, de-duplicated. */
+  exportFields(groupBy) {
+    return [.../* @__PURE__ */ new Set(["name", groupBy, ...this.plugin.settings.kanbanCardFields])];
+  }
+  /**
+   * Make one card a drop target for a manual reorder: the pointer's half of the
+   * card decides whether an incoming card lands before or after it, shown with an
+   * insertion line. Stops propagation so the column-level "move to column" drop
+   * doesn't also fire.
+   */
+  wireCardReorder(cardEl, targetRow, columnName, groupBy) {
+    cardEl.addEventListener("dragover", (event) => {
+      var _a, _b;
+      if (!((_b = (_a = event.dataTransfer) == null ? void 0 : _a.types) != null ? _b : []).includes(DND_ROW)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      const before = this.isBeforeHalf(cardEl, event);
+      cardEl.toggleClass("is-reorder-before", before);
+      cardEl.toggleClass("is-reorder-after", !before);
+    });
+    cardEl.addEventListener("dragleave", (event) => {
+      if (!this.dragTrulyLeft(cardEl, event)) return;
+      cardEl.removeClass("is-reorder-before");
+      cardEl.removeClass("is-reorder-after");
+    });
+    cardEl.addEventListener("drop", (event) => {
+      var _a, _b;
+      const rowId = ((_a = event.dataTransfer) == null ? void 0 : _a.getData(DND_ROW)) || ((_b = event.dataTransfer) == null ? void 0 : _b.getData("text/plain"));
+      cardEl.removeClass("is-reorder-before");
+      cardEl.removeClass("is-reorder-after");
+      if (!rowId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (rowId === targetRow.id) return;
+      const before = this.isBeforeHalf(cardEl, event);
+      void this.applyCardReorder(rowId, columnName, targetRow, before, groupBy);
+    });
+  }
+  /** True when the pointer is in the top half of `el` (so a drop inserts before it). */
+  isBeforeHalf(el, event) {
+    const rect = el.getBoundingClientRect();
+    return event.clientY < rect.top + rect.height / 2;
+  }
+  /** Order two rows the way the "rank" sort displays them — by numeric rank
+   * (unranked last), ties broken by name — so a reorder plans against the same
+   * order the user sees. Mirrors compareRankValue + compareText in kanban.ts. */
+  compareByRank(a, b, rankProp) {
+    const ar = parseRank(a.scope.get(rankProp));
+    const br = parseRank(b.scope.get(rankProp));
+    if (ar !== null && br !== null && ar !== br) return ar - br;
+    if (ar === null && br !== null) return 1;
+    if (ar !== null && br === null) return -1;
+    return a.name.localeCompare(b.name, void 0, { sensitivity: "base" });
+  }
+  /**
+   * Apply a manual reorder: write the card's new rank (and, when it came from
+   * another column, its new group value plus any Move Rules), renumbering the
+   * destination column only when the neighbouring gap can't be split. The whole
+   * reorder is one undo entry.
+   */
+  async applyCardReorder(rowId, columnName, targetRow, before, groupBy) {
+    var _a, _b, _c;
+    const rankProp = this.rankProp;
+    const group = groupBy || "status";
+    if (rankProp === group) {
+      new import_obsidian6.Notice(`Manual order property ("${rankProp}") must differ from the group-by property \u2014 pick a separate numeric property in settings.`);
+      return;
+    }
+    const resolved = await this.plugin.getResolvedView();
+    const movedRow = resolved.rows.find((r) => r.id === rowId);
+    if (!movedRow) return;
+    if (COMPUTED_FILE_PROPS.has(rankProp) || Object.prototype.hasOwnProperty.call((_a = resolved.def.formulas) != null ? _a : {}, rankProp)) {
+      new import_obsidian6.Notice(`"${rankProp}" is a computed/formula field \u2014 pick a plain property for the manual order.`);
+      return;
+    }
+    const crossColumn = toStr(movedRow.scope.get(group)) !== columnName;
+    if (crossColumn && this.plugin.settings.kanbanBlockOverWip) {
+      const limit = limitFor(this.plugin.settings.kanbanWipLimits, columnName);
+      const targetCount = ((_b = this.lastColumnRows.get(columnName)) != null ? _b : []).length;
+      if (dropWouldExceed(targetCount, limit)) {
+        new import_obsidian6.Notice(`"${columnName}" is at its WIP limit (${limit}). Move blocked.`);
+        await this.render();
+        return;
+      }
+    }
+    const sorted = [...(_c = this.lastColumnRows.get(columnName)) != null ? _c : []].sort((a, b) => this.compareByRank(a, b, rankProp));
+    const items = sorted.map((r) => ({ id: r.id, rank: parseRank(r.scope.get(rankProp)) }));
+    const targetPos = items.filter((i) => i.id !== rowId).findIndex((i) => i.id === targetRow.id);
+    if (targetPos === -1) {
+      await this.render();
+      return;
+    }
+    const insertIndex = before ? targetPos : targetPos + 1;
+    const rankWrites = planReorder(items, rowId, insertIndex);
+    if (rankWrites.length === 0 && !crossColumn) return;
+    const rankById = new Map(rankWrites.map((w) => [w.id, w.rank]));
+    const label = crossColumn ? `Move to "${columnName}"` : "Reorder card";
+    const batch = this.plugin.undo.beginBatch(label);
+    const movedWrites = [];
+    if (crossColumn) {
+      movedWrites.push({ key: group, value: columnName });
+      if (this.plugin.settings.isPro) {
+        const matched = rulesForTransition(this.plugin.settings.automations, group, columnName);
+        movedWrites.push(...computeRuleWrites(matched, movedRow.note.frontmatter, /* @__PURE__ */ new Date()));
+      }
+    }
+    if (rankById.has(rowId)) movedWrites.push({ key: rankProp, value: rankById.get(rowId) });
+    if (movedWrites.length > 0) await writeRowProperties(this.plugin, rowId, movedWrites, { batch });
+    for (const write of rankWrites) {
+      if (write.id === rowId) continue;
+      await writeRowProperties(this.plugin, write.id, [{ key: rankProp, value: write.rank }], { batch });
+    }
+    this.plugin.undo.commitBatch(batch);
     await this.render();
   }
   async quickAddNote(columnName, groupBy) {
@@ -7301,6 +7741,11 @@ function buildPivot(rows, options) {
 // src/views/pivotView.ts
 var VIEW_TYPE_PIVOT = "bpp-pivot-view";
 var PivotView = class extends PowerPackView {
+  constructor() {
+    super(...arguments);
+    /** The matrix behind the current render, captured for the export builders. */
+    this.lastModel = null;
+  }
   getViewType() {
     return VIEW_TYPE_PIVOT;
   }
@@ -7339,6 +7784,7 @@ var PivotView = class extends PowerPackView {
     renderContextControls(container, this.plugin, resolved, () => void this.render());
     const rows = filterRowsByText(resolved.rows, this.searchQuery);
     if (rows.length === 0) {
+      this.lastModel = null;
       container.createDiv({
         cls: "bpp-empty",
         text: this.searchQuery ? "No notes match the current search." : "No notes to pivot yet."
@@ -7385,6 +7831,17 @@ var PivotView = class extends PowerPackView {
         this.persist();
       });
     }
+    this.addExportButton(toolbar, [
+      {
+        label: "Copy as Markdown table",
+        build: () => this.lastModel ? pivotToMarkdownTable(this.lastModel, s.pivotRowProp, s.pivotColProp) : ""
+      },
+      {
+        label: "Export as CSV",
+        premium: true,
+        build: () => this.lastModel ? pivotToCsv(this.lastModel, s.pivotRowProp, s.pivotColProp) : ""
+      }
+    ]);
     this.renderManagedSearch(toolbar);
   }
   /** Persist a toolbar choice without dropping the resolved-view cache — these are
@@ -7401,6 +7858,7 @@ var PivotView = class extends PowerPackView {
       aggregation: s.pivotAggregation,
       valueExpr: s.pivotValueExpr
     });
+    this.lastModel = model;
     if (model.truncatedRows || model.truncatedCols) {
       const axes = [model.truncatedRows ? "rows" : null, model.truncatedCols ? "columns" : null].filter(Boolean).join(" and ");
       container.createDiv({
@@ -7784,6 +8242,153 @@ var GalleryView = class extends PowerPackView {
   }
 };
 
+// src/views/feedView.ts
+var import_obsidian11 = require("obsidian");
+var VIEW_TYPE_FEED = "bpp-feed-view";
+var FILE_DATE_OPTIONS = [
+  { value: "file.mtime", label: "Modified date" },
+  { value: "file.ctime", label: "Created date" }
+];
+var FeedView = class extends PowerPackView {
+  constructor() {
+    super(...arguments);
+    /** The rows behind the current render, captured for the export builders. */
+    this.lastRows = [];
+  }
+  getViewType() {
+    return VIEW_TYPE_FEED;
+  }
+  getDisplayText() {
+    return "Power Pack: Feed";
+  }
+  getIcon() {
+    return "rss";
+  }
+  async render() {
+    const token = ++this.renderToken;
+    const container = this.contentEl;
+    if (!this.plugin.settings.isPro) {
+      container.empty();
+      container.addClass("bpp-view");
+      this.renderUpgradeNotice(
+        container,
+        "\u{1F552}",
+        "Feed is a Premium view",
+        "See your notes as a reverse-chronological activity stream.",
+        [
+          "Group by modified, created, or any date property",
+          "Bucket by day, week, or month",
+          "A running log of what changed and when",
+          "Respects your active base and saved filters"
+        ]
+      );
+      return;
+    }
+    const resolved = await this.plugin.getResolvedView();
+    if (this.isStale(token)) return;
+    this.captureSearchState();
+    container.empty();
+    container.addClass("bpp-view");
+    this.renderToolbar(container);
+    renderContextControls(container, this.plugin, resolved, () => void this.render());
+    const rows = filterRowsByText(resolved.rows, this.searchQuery);
+    this.lastRows = rows;
+    if (rows.length === 0) {
+      container.createDiv({
+        cls: "bpp-empty",
+        text: this.searchQuery ? "No notes match the current search." : "No notes to show yet."
+      });
+      return;
+    }
+    const model = buildFeed(rows, {
+      dateProp: this.plugin.settings.feedDateProp,
+      granularity: this.plugin.settings.feedGranularity
+    });
+    const stream = container.createDiv({ cls: "bpp-feed" });
+    for (const section of model.sections) this.renderSection(stream, section.label, section.rows);
+    if (model.undated.length > 0) this.renderSection(stream, "Undated", model.undated);
+  }
+  renderToolbar(container) {
+    const toolbar = container.createDiv({ cls: "bpp-toolbar" });
+    toolbar.createEl("h3", { text: "Feed" });
+    const s = this.plugin.settings;
+    const controls = toolbar.createDiv({ cls: "bpp-lite-controls" });
+    const keys = this.plugin.getFrontmatterKeys().filter((k) => !k.startsWith("file."));
+    const dateOptions = [
+      ...FILE_DATE_OPTIONS,
+      ...keys.map((k) => ({ value: k, label: k }))
+    ];
+    if (!dateOptions.some((o) => o.value === s.feedDateProp)) {
+      dateOptions.push({ value: s.feedDateProp, label: s.feedDateProp });
+    }
+    renderSelect(controls, "Date", dateOptions, s.feedDateProp, (value) => {
+      s.feedDateProp = value || "file.mtime";
+      this.persist();
+    });
+    const seg = toolbar.createDiv({ cls: "bpp-segmented" });
+    for (const g of FEED_GRANULARITIES) {
+      const btn = seg.createEl("button", { text: capitalize(g), cls: "bpp-seg-btn" });
+      if (s.feedGranularity === g) btn.addClass("is-active");
+      btn.setAttr("aria-pressed", String(s.feedGranularity === g));
+      btn.addEventListener("click", () => {
+        if (s.feedGranularity === g) return;
+        s.feedGranularity = g;
+        this.persist();
+      });
+    }
+    this.renderUndoButton(toolbar);
+    this.addExportButton(toolbar, [
+      { label: "Copy as Markdown table", build: () => buildMarkdownTable(this.lastRows, this.exportFields()) },
+      { label: "Export as CSV", premium: true, build: () => buildCsv(this.lastRows, this.exportFields()) }
+    ]);
+    this.renderManagedSearch(toolbar);
+  }
+  exportFields() {
+    return ["name", this.plugin.settings.feedDateProp, ...this.plugin.settings.kanbanCardFields];
+  }
+  persist() {
+    void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
+  }
+  renderSection(stream, label, rows) {
+    const section = stream.createDiv({ cls: "bpp-feed-section" });
+    const head = section.createDiv({ cls: "bpp-feed-head" });
+    head.createSpan({ cls: "bpp-feed-head-label", text: label });
+    head.createSpan({ cls: "bpp-muted bpp-feed-head-count", text: `${rows.length}` });
+    const list = section.createDiv({ cls: "bpp-feed-list" });
+    for (const row of rows) this.renderItem(list, row);
+  }
+  renderItem(list, row) {
+    const item = list.createDiv({ cls: "bpp-feed-item" });
+    this.applyColorRule(item, row);
+    const body = item.createDiv({ cls: "bpp-feed-body" });
+    body.createDiv({ cls: "bpp-feed-title", text: row.name });
+    const pills = this.plugin.settings.kanbanCardFields.map((field) => ({ field, value: formatCardField(row, field) })).filter((f) => f.value !== null);
+    if (pills.length > 0) {
+      const pillRow = body.createDiv({ cls: "bpp-feed-pills" });
+      for (const pill of pills) {
+        pillRow.createSpan({ cls: "bpp-pill", text: pill.value, attr: { title: `${pill.field}: ${pill.value}` } });
+      }
+    }
+    const openMenu = (anchor) => this.openItemMenu(anchor, row);
+    item.addEventListener("click", () => this.openRow(row));
+    item.addEventListener("contextmenu", (evt) => {
+      evt.preventDefault();
+      openMenu(evt);
+    });
+    this.makeItemAccessible(item, row.name, () => this.openRow(row), (anchor) => openMenu(anchor));
+    this.addOverflowButton(item, row.name, openMenu);
+  }
+  openItemMenu(anchor, row) {
+    if (anchor instanceof MouseEvent) anchor.preventDefault();
+    const menu = new import_obsidian11.Menu();
+    this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, () => void this.render());
+    this.showMenuAtAnchor(menu, anchor);
+  }
+};
+function capitalize(s) {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
 // src/main.ts
 var PREMIUM_VIEW_TYPES = [
   VIEW_TYPE_CALENDAR,
@@ -7791,7 +8396,8 @@ var PREMIUM_VIEW_TYPES = [
   VIEW_TYPE_HIERARCHY,
   VIEW_TYPE_PIVOT,
   VIEW_TYPE_DASHBOARD,
-  VIEW_TYPE_GALLERY
+  VIEW_TYPE_GALLERY,
+  VIEW_TYPE_FEED
 ];
 var ALL_VIEW_TYPES = [
   VIEW_TYPE_KANBAN,
@@ -7800,7 +8406,8 @@ var ALL_VIEW_TYPES = [
   VIEW_TYPE_HIERARCHY,
   VIEW_TYPE_PIVOT,
   VIEW_TYPE_DASHBOARD,
-  VIEW_TYPE_GALLERY
+  VIEW_TYPE_GALLERY,
+  VIEW_TYPE_FEED
 ];
 var VIEW_NAME_TO_TYPE = {
   kanban: VIEW_TYPE_KANBAN,
@@ -7810,9 +8417,10 @@ var VIEW_NAME_TO_TYPE = {
   hierarchy: VIEW_TYPE_HIERARCHY,
   pivot: VIEW_TYPE_PIVOT,
   dashboard: VIEW_TYPE_DASHBOARD,
-  gallery: VIEW_TYPE_GALLERY
+  gallery: VIEW_TYPE_GALLERY,
+  feed: VIEW_TYPE_FEED
 };
-var BasesPowerPackPlugin = class extends import_obsidian11.Plugin {
+var BasesPowerPackPlugin = class extends import_obsidian12.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -7844,19 +8452,19 @@ var BasesPowerPackPlugin = class extends import_obsidian11.Plugin {
     this.registerEvent(this.app.metadataCache.on("changed", (file) => this.patchNote(file)));
     this.registerEvent(
       this.app.vault.on("create", (file) => {
-        if (file instanceof import_obsidian11.TFile) this.patchNote(file);
+        if (file instanceof import_obsidian12.TFile) this.patchNote(file);
         else this.invalidateSnapshot();
       })
     );
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
-        if (file instanceof import_obsidian11.TFile) this.removeNote(file.path);
+        if (file instanceof import_obsidian12.TFile) this.removeNote(file.path);
         else this.invalidateSnapshot();
       })
     );
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
-        if (file instanceof import_obsidian11.TFile) {
+        if (file instanceof import_obsidian12.TFile) {
           this.removeNote(oldPath);
           this.patchNote(file);
         } else {
@@ -7866,7 +8474,7 @@ var BasesPowerPackPlugin = class extends import_obsidian11.Plugin {
     );
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof import_obsidian11.TFile && file.extension === "base") this.invalidateResolved();
+        if (file instanceof import_obsidian12.TFile && file.extension === "base") this.invalidateResolved();
       })
     );
     this.registerView(VIEW_TYPE_KANBAN, (leaf) => new KanbanView(leaf, this));
@@ -7876,6 +8484,7 @@ var BasesPowerPackPlugin = class extends import_obsidian11.Plugin {
     this.registerView(VIEW_TYPE_PIVOT, (leaf) => new PivotView(leaf, this));
     this.registerView(VIEW_TYPE_DASHBOARD, (leaf) => new DashboardView(leaf, this));
     this.registerView(VIEW_TYPE_GALLERY, (leaf) => new GalleryView(leaf, this));
+    this.registerView(VIEW_TYPE_FEED, (leaf) => new FeedView(leaf, this));
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => this.queueHierarchyRetarget(file.path, oldPath))
     );
@@ -7918,6 +8527,11 @@ var BasesPowerPackPlugin = class extends import_obsidian11.Plugin {
       checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_GALLERY)
     });
     this.addCommand({
+      id: "open-feed-view",
+      name: "Open Feed view (Premium)",
+      checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_FEED)
+    });
+    this.addCommand({
       id: "undo-last-change",
       name: "Undo last change",
       checkCallback: (checking) => {
@@ -7932,7 +8546,7 @@ var BasesPowerPackPlugin = class extends import_obsidian11.Plugin {
       callback: async () => {
         await this.refreshLicense();
         this.refreshViews();
-        new import_obsidian11.Notice(this.settings.isPro ? "Premium active." : "Lite tier (no valid license).");
+        new import_obsidian12.Notice(this.settings.isPro ? "Premium active." : "Lite tier (no valid license).");
       }
     });
     this.addSettingTab(new BasesPowerPackSettingTab(this.app, this));
@@ -8043,7 +8657,7 @@ var BasesPowerPackPlugin = class extends import_obsidian11.Plugin {
     }
     const missed = entry.notes.length - ok;
     const detail = missed > 0 ? ` (${missed} no longer at ${missed === 1 ? "its" : "their"} original path)` : "";
-    new import_obsidian11.Notice(`Undid "${entry.label}" \u2014 restored ${ok} note${ok === 1 ? "" : "s"}${detail}.`);
+    new import_obsidian12.Notice(`Undid "${entry.label}" \u2014 restored ${ok} note${ok === 1 ? "" : "s"}${detail}.`);
     this.refreshViews();
   }
   queueHierarchyRetarget(newPath, oldPath) {
@@ -8084,7 +8698,7 @@ var BasesPowerPackPlugin = class extends import_obsidian11.Plugin {
     }
     this.undo.commitBatch(batch);
     if (ok > 0) {
-      new import_obsidian11.Notice(`Bases Power Pack: repointed ${ok} child note${ok === 1 ? "" : "s"} after rename.`);
+      new import_obsidian12.Notice(`Bases Power Pack: repointed ${ok} child note${ok === 1 ? "" : "s"} after rename.`);
       this.refreshViews();
     }
   }
@@ -8093,21 +8707,21 @@ var BasesPowerPackPlugin = class extends import_obsidian11.Plugin {
       openView: async (view, basePath) => {
         const viewType = VIEW_NAME_TO_TYPE[view];
         if (!viewType) {
-          new import_obsidian11.Notice(`Bases Power Pack: unknown view "${String(view)}".`);
+          new import_obsidian12.Notice(`Bases Power Pack: unknown view "${String(view)}".`);
           return false;
         }
         if (PREMIUM_VIEW_TYPES.includes(viewType) && !this.settings.isPro) {
-          new import_obsidian11.Notice("Bases Power Pack: this view requires a premium license.");
+          new import_obsidian12.Notice("Bases Power Pack: this view requires a premium license.");
           return false;
         }
         if (basePath) {
           if (!this.settings.isPro) {
-            new import_obsidian11.Notice("Bases Power Pack: opening a base as the data source requires premium.");
+            new import_obsidian12.Notice("Bases Power Pack: opening a base as the data source requires premium.");
             return false;
           }
-          const file = this.app.vault.getAbstractFileByPath((0, import_obsidian11.normalizePath)(basePath));
-          if (!(file instanceof import_obsidian11.TFile) || file.extension !== "base") {
-            new import_obsidian11.Notice("Bases Power Pack: base file not found.");
+          const file = this.app.vault.getAbstractFileByPath((0, import_obsidian12.normalizePath)(basePath));
+          if (!(file instanceof import_obsidian12.TFile) || file.extension !== "base") {
+            new import_obsidian12.Notice("Bases Power Pack: base file not found.");
             return false;
           }
           if (this.settings.activeBasePath !== file.path) {
@@ -8196,6 +8810,9 @@ var BasesPowerPackPlugin = class extends import_obsidian11.Plugin {
     this.settings.kanbanSortBy = sanitizeSortMap(this.settings.kanbanSortBy);
     this.settings.kanbanHideDone = sanitizeBoolMap(this.settings.kanbanHideDone);
     if (typeof this.settings.kanbanColorColumns !== "boolean") this.settings.kanbanColorColumns = DEFAULT_SETTINGS.kanbanColorColumns;
+    this.settings.kanbanRankProp = coerceProp(this.settings.kanbanRankProp, DEFAULT_SETTINGS.kanbanRankProp);
+    this.settings.feedDateProp = coerceProp(this.settings.feedDateProp, DEFAULT_SETTINGS.feedDateProp);
+    if (!FEED_GRANULARITIES.includes(this.settings.feedGranularity)) this.settings.feedGranularity = DEFAULT_SETTINGS.feedGranularity;
     this.settings.kanbanGroupBy = coerceProp(this.settings.kanbanGroupBy, DEFAULT_SETTINGS.kanbanGroupBy);
     this.settings.kanbanDoneValue = coerceProp(this.settings.kanbanDoneValue, DEFAULT_SETTINGS.kanbanDoneValue);
     this.settings.calendarDateProp = coerceProp(this.settings.calendarDateProp, DEFAULT_SETTINGS.calendarDateProp);

@@ -5,6 +5,7 @@ import { AGGREGATIONS, type Aggregation, type Rollup } from "./query/rollup";
 import { AUTOMATION_ACTION_TYPES, type AutomationActionType, type AutomationRule } from "./query/automation";
 import { type ColorRule } from "./query/colorRules";
 import { DASHBOARD_CHART_TYPES, type DashboardChartType } from "./query/dashboard";
+import { FEED_GRANULARITIES, type FeedGranularity } from "./query/feed";
 
 const ACTION_LABELS: Record<AutomationActionType, string> = {
 	set: "Set to value",
@@ -56,6 +57,13 @@ export interface BasesPowerPackSettings {
 	/** When true, a move that would push a column past its WIP limit is blocked
 	 * (rather than merely flagged). */
 	kanbanBlockOverWip: boolean;
+	/** Frontmatter property holding a card's manual rank, written by drag-to-reorder
+	 * in the "Manual (drag)" sort. */
+	kanbanRankProp: string;
+
+	/** Feed / timeline (premium) */
+	feedDateProp: string;
+	feedGranularity: FeedGranularity;
 
 	/** Calendar (premium) */
 	calendarDateProp: string;
@@ -127,6 +135,9 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	kanbanHideDone: {},
 	kanbanWipLimits: {},
 	kanbanBlockOverWip: false,
+	kanbanRankProp: "rank",
+	feedDateProp: "file.mtime",
+	feedGranularity: "day",
 	calendarDateProp: "due",
 	calendarViewMode: "month",
 	calendarColorProp: "",
@@ -293,6 +304,21 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 					this.plugin.settings.kanbanBlockOverWip = value;
 					void this.plugin.saveSettings();
 				})
+			);
+
+		new Setting(containerEl)
+			.setName("Manual order property")
+			.setDesc(
+				'Numeric frontmatter property written when you hand-order cards. Choose the "Manual (drag)" sort on the board, then drag a card between two others to reorder it.'
+			)
+			.addText((text) =>
+				this.keySuggest(text)
+					.setPlaceholder("rank")
+					.setValue(this.plugin.settings.kanbanRankProp)
+					.onChange((value) => {
+						this.plugin.settings.kanbanRankProp = value.trim() || "rank";
+						void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+					})
 			);
 
 		// ---- Premium ---------------------------------------------------------
@@ -605,6 +631,33 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 				);
 			}
 		);
+
+		subHeading("Feed");
+		premium(
+			"Feed date property",
+			"What the timeline groups notes by — a frontmatter date property, or file.mtime / file.ctime for a modified / created activity stream.",
+			(setting) => {
+				setting.addText((text) =>
+					this.keySuggest(text)
+						.setPlaceholder("file.mtime")
+						.setValue(this.plugin.settings.feedDateProp)
+						.onChange((value) => {
+							this.plugin.settings.feedDateProp = value.trim() || "file.mtime";
+							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+						})
+				);
+			}
+		);
+		premium("Feed grouping", "Bucket the feed by day, week, or month. You can also flip this from the toolbar.", (setting) => {
+			setting.addDropdown((dd) => {
+				for (const g of FEED_GRANULARITIES) dd.addOption(g, g.charAt(0).toUpperCase() + g.slice(1));
+				dd.setValue(this.plugin.settings.feedGranularity);
+				dd.onChange((value) => {
+					this.plugin.settings.feedGranularity = value as FeedGranularity;
+					void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+				});
+			});
+		});
 
 		subHeading("Kanban (premium)");
 		premium(

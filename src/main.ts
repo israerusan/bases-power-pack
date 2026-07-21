@@ -21,6 +21,7 @@ import { HierarchyView, VIEW_TYPE_HIERARCHY } from "./views/hierarchyView";
 import { PivotView, VIEW_TYPE_PIVOT } from "./views/pivotView";
 import { DashboardView, VIEW_TYPE_DASHBOARD } from "./views/dashboardView";
 import { GalleryView, VIEW_TYPE_GALLERY } from "./views/galleryView";
+import { FeedView, VIEW_TYPE_FEED } from "./views/feedView";
 import { buildRawNote, buildRawNotes, resolveViewRows, writeRowProperties, type ResolvedView } from "./views/viewData";
 import { UndoManager } from "./query/undo";
 import { KANBAN_SORTS } from "./query/kanban";
@@ -28,6 +29,7 @@ import { sanitizeWipLimit } from "./query/wip";
 import { resolveParentRef } from "./query/hierarchy";
 import { normalizeColorRules } from "./query/colorRules";
 import { DASHBOARD_CHART_TYPES } from "./query/dashboard";
+import { FEED_GRANULARITIES } from "./query/feed";
 import type { RawNote } from "./model/row";
 
 const PREMIUM_VIEW_TYPES = [
@@ -37,6 +39,7 @@ const PREMIUM_VIEW_TYPES = [
 	VIEW_TYPE_PIVOT,
 	VIEW_TYPE_DASHBOARD,
 	VIEW_TYPE_GALLERY,
+	VIEW_TYPE_FEED,
 ];
 const ALL_VIEW_TYPES = [
 	VIEW_TYPE_KANBAN,
@@ -46,6 +49,7 @@ const ALL_VIEW_TYPES = [
 	VIEW_TYPE_PIVOT,
 	VIEW_TYPE_DASHBOARD,
 	VIEW_TYPE_GALLERY,
+	VIEW_TYPE_FEED,
 ];
 
 const VIEW_NAME_TO_TYPE: Record<string, string> = {
@@ -57,6 +61,7 @@ const VIEW_NAME_TO_TYPE: Record<string, string> = {
 	pivot: VIEW_TYPE_PIVOT,
 	dashboard: VIEW_TYPE_DASHBOARD,
 	gallery: VIEW_TYPE_GALLERY,
+	feed: VIEW_TYPE_FEED,
 };
 
 /**
@@ -70,7 +75,7 @@ export interface BasesPowerPackApi {
 	 * premium license, or when the base path doesn't resolve.
 	 */
 	openView: (
-		view: "kanban" | "calendar" | "gantt" | "outline" | "pivot" | "dashboard" | "gallery",
+		view: "kanban" | "calendar" | "gantt" | "outline" | "pivot" | "dashboard" | "gallery" | "feed",
 		basePath?: string
 	) => Promise<boolean>;
 	isPremiumActive: () => boolean;
@@ -144,6 +149,7 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.registerView(VIEW_TYPE_PIVOT, (leaf) => new PivotView(leaf, this));
 		this.registerView(VIEW_TYPE_DASHBOARD, (leaf) => new DashboardView(leaf, this));
 		this.registerView(VIEW_TYPE_GALLERY, (leaf) => new GalleryView(leaf, this));
+		this.registerView(VIEW_TYPE_FEED, (leaf) => new FeedView(leaf, this));
 
 		// Keep the hierarchy intact when a parent note is renamed/moved: repoint any
 		// child whose parent property pointed at the old path (premium; one undo
@@ -198,6 +204,12 @@ export default class BasesPowerPackPlugin extends Plugin {
 			id: "open-gallery-view",
 			name: "Open Gallery view (Premium)",
 			checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_GALLERY),
+		});
+
+		this.addCommand({
+			id: "open-feed-view",
+			name: "Open Feed view (Premium)",
+			checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_FEED),
 		});
 
 		this.addCommand({
@@ -513,6 +525,9 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.settings.kanbanSortBy = sanitizeSortMap(this.settings.kanbanSortBy);
 		this.settings.kanbanHideDone = sanitizeBoolMap(this.settings.kanbanHideDone);
 		if (typeof this.settings.kanbanColorColumns !== "boolean") this.settings.kanbanColorColumns = DEFAULT_SETTINGS.kanbanColorColumns;
+		this.settings.kanbanRankProp = coerceProp(this.settings.kanbanRankProp, DEFAULT_SETTINGS.kanbanRankProp);
+		this.settings.feedDateProp = coerceProp(this.settings.feedDateProp, DEFAULT_SETTINGS.feedDateProp);
+		if (!FEED_GRANULARITIES.includes(this.settings.feedGranularity)) this.settings.feedGranularity = DEFAULT_SETTINGS.feedGranularity;
 		// Required non-empty property names that drive a view — a corrupted/hand-edited
 		// data.json with a non-string here would throw on .trim() during a Kanban move
 		// or break a group-by <select>. Fall back to the default like their neighbors.

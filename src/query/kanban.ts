@@ -2,6 +2,7 @@ import { toBool, toNumber, toStr } from "../engine/expression";
 import type { Row } from "../model/row";
 import { toDayNumber } from "./gantt";
 import { rowMatchesText } from "./search";
+import { parseRank } from "./ranking";
 
 /**
  * The single "is this row done?" predicate shared by every view, so the Kanban
@@ -17,10 +18,10 @@ export function isRowDone(row: Row, statusProp: string, doneValue: string): bool
 	return toBool(row.scope.get("done"));
 }
 
-export type KanbanSort = "manual" | "name-asc" | "name-desc" | "due-asc" | "priority-desc" | "mtime-desc";
+export type KanbanSort = "manual" | "rank" | "name-asc" | "name-desc" | "due-asc" | "priority-desc" | "mtime-desc";
 
 /** Every valid sort value — the settings sanitizer's allow-list. */
-export const KANBAN_SORTS: KanbanSort[] = ["manual", "name-asc", "name-desc", "due-asc", "priority-desc", "mtime-desc"];
+export const KANBAN_SORTS: KanbanSort[] = ["manual", "rank", "name-asc", "name-desc", "due-asc", "priority-desc", "mtime-desc"];
 export type KanbanMetaField = "due" | "priority" | "owner" | "tags" | "file.folder";
 
 export interface BuildKanbanColumnsOptions {
@@ -28,6 +29,9 @@ export interface BuildKanbanColumnsOptions {
 	search?: string;
 	hideColumn?: string;
 	sortBy?: KanbanSort;
+	/** Frontmatter property holding a card's manual rank — only read by the
+	 * "rank" sort (the "Manual (drag)" order). */
+	rankProp?: string;
 	/** User-added column values that should appear even with no rows yet, so they
 	 * are droppable targets. Skipped while a search is active. */
 	extraColumns?: string[];
@@ -80,7 +84,7 @@ export function buildKanbanColumns(rows: Row[], options: BuildKanbanColumnsOptio
 
 	return entries.map(([name, items]) => ({
 		name,
-		rows: sortRows(items, options.sortBy ?? "manual"),
+		rows: sortRows(items, options.sortBy ?? "manual", options.rankProp || "rank"),
 	}));
 }
 
@@ -120,15 +124,19 @@ function matchesSearch(row: Row, search: string, columnName: string): boolean {
 	return rowMatchesText(row, search, [columnName]);
 }
 
-function sortRows(rows: Row[], sortBy: KanbanSort): Row[] {
+function sortRows(rows: Row[], sortBy: KanbanSort, rankProp: string): Row[] {
 	const copy = [...rows];
 	if (sortBy === "manual") return copy;
-	copy.sort((a, b) => compareRows(a, b, sortBy));
+	copy.sort((a, b) => compareRows(a, b, sortBy, rankProp));
 	return copy;
 }
 
-function compareRows(a: Row, b: Row, sortBy: KanbanSort): number {
+function compareRows(a: Row, b: Row, sortBy: KanbanSort, rankProp: string): number {
 	switch (sortBy) {
+		case "rank":
+			// Hand-ordered cards sort by their numeric rank; a card never dragged yet
+			// (no rank) falls to the end, ties broken by name so the order is stable.
+			return compareRankValue(a.scope.get(rankProp), b.scope.get(rankProp)) || compareText(a.name, b.name);
 		case "name-asc":
 			return compareText(a.name, b.name);
 		case "name-desc":
@@ -146,6 +154,16 @@ function compareRows(a: Row, b: Row, sortBy: KanbanSort): number {
 
 function compareText(a: string, b: string): number {
 	return a.localeCompare(b, undefined, { sensitivity: "base" });
+}
+
+/** Order by manual rank: real ranks ascending, unranked cards last. */
+function compareRankValue(a: unknown, b: unknown): number {
+	const av = parseRank(a);
+	const bv = parseRank(b);
+	if (av === null && bv === null) return 0;
+	if (av === null) return 1;
+	if (bv === null) return -1;
+	return av - bv;
 }
 
 function compareNumberValue(a: unknown, b: unknown): number {

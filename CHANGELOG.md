@@ -3,6 +3,42 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.14.0] - 2026-07-20
+
+A **funnel + portability** release: one big free-tier magnet, one freemium wedge,
+and one new premium view — scoped from a product review of the plugin against the
+Bases-companion field and hardened by a multi-agent adversarial review before
+shipping.
+
+### Added
+- **Manual card ordering (free).** Pick the new **Manual (drag)** sort on the
+  Kanban board, then **drag a card between two others** to hand-order it — the
+  position is saved to a numeric `rank` frontmatter property (configurable), so it
+  survives reloads and travels with the note. Ordering computes a rank *between*
+  the neighbours (a single write in the common case), renumbering the column only
+  when a gap can no longer be split. A cross-column drop sets the position *and*
+  the group value (firing any premium Move Rules), all as one undo entry. This was
+  the single most-requested Kanban gap ("drag-to-reorder that persists").
+- **Export (free Markdown / premium CSV).** A toolbar **⤓ Export** button copies
+  the current view to the clipboard. **Free:** the Kanban board as a Markdown task
+  list, or any view as a **Markdown table**. **Premium:** **CSV** of the view — or
+  of the whole **Pivot matrix**, totals and all — for spreadsheets and sharing.
+  RFC-4180 quoting (and a leading-quote guard against spreadsheet formula
+  injection) and Markdown pipe/newline escaping are handled for you.
+- **Feed / timeline view (premium).** A reverse-chronological **stream** of your
+  notes — the "time as a stream" axis the Calendar (a grid) and Gantt (spans)
+  don't cover. Group by **modified** or **created** date (`file.mtime` /
+  `file.ctime`) for an activity log, or by any frontmatter date for a due/publish
+  timeline, then bucket by **day, week, or month** from the toolbar. Each entry
+  shows your card-detail fields as pills, opens on click, and offers the shared
+  ⋯ / right-click actions; undated notes collect in their own section. Command:
+  **Open Feed view (Premium)**.
+
+### Notes
+- New pure, unit-tested cores: `src/query/ranking.ts` (rank arithmetic),
+  `src/query/export.ts` (Markdown/CSV builders), `src/query/feed.ts` (timeline
+  bucketing) — ~40 new assertions in `engine.test.mjs`.
+
 ## [1.13.0] - 2026-07-19
 
 A **"make the Power real"** release: three new premium views that turn a base

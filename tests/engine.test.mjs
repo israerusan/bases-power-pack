@@ -26,6 +26,9 @@ await build({
 			export * as pivot from "./src/query/pivot.ts";
 			export * as dashboard from "./src/query/dashboard.ts";
 			export * as gallery from "./src/query/gallery.ts";
+			export * as ranking from "./src/query/ranking.ts";
+			export * as exporter from "./src/query/export.ts";
+			export * as feed from "./src/query/feed.ts";
 			export * as kanbanActions from "./src/query/kanbanActions.ts";
 			export * as base from "./src/bases/baseDefinition.ts";
 			export * as resolve from "./src/bases/resolveRows.ts";
@@ -42,7 +45,13 @@ await build({
 });
 
 const m = await import(`file://${outfile.replace(/\\/g, "/")}`);
-const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, hierarchy, kanban, colorRules, pivot, dashboard, gallery, kanbanActions, base, resolve, rowmod } = m;
+const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, hierarchy, kanban, colorRules, pivot, dashboard, gallery, ranking, exporter, feed, kanbanActions, base, resolve, rowmod } = m;
+
+/** Build a Row-like object with the given frontmatter/name for the pure engines. */
+function makeTestRow(name, fm) {
+	const data = { "file.name": name, "file.path": `${name}.md`, ...fm };
+	return { id: `${name}.md`, name, note: { frontmatter: fm }, scope: { get: (k) => (k in data ? data[k] : undefined) } };
+}
 
 // ---- expression engine -----------------------------------------------------
 const scope = {
@@ -1033,6 +1042,126 @@ assert.equal(gallery.parseImageRef("   "), null, "whitespace → null");
 assert.equal(gallery.parseImageRef(42), null, "non-string → null");
 assert.equal(gallery.parseImageRef("data:image/png;base64,AAAA"), null, "data: uri rejected");
 assert.deepEqual(gallery.parseImageRef(["", "cover.png"]), { kind: "vault", ref: "cover.png" }, "first usable list entry");
+
+// ---- manual ordering / rank ------------------------------------------------
+assert.equal(ranking.parseRank(5), 5, "numeric rank");
+assert.equal(ranking.parseRank("12"), 12, "numeric-string rank");
+assert.equal(ranking.parseRank(""), null, "empty rank → null");
+assert.equal(ranking.parseRank("abc"), null, "non-numeric rank → null");
+assert.equal(ranking.parseRank(null), null, "null rank → null");
+assert.equal(ranking.rankBetween(null, null), 0, "first-ever rank is 0");
+assert.equal(ranking.rankBetween(null, 1000), 0, "insert at head is one step below");
+assert.equal(ranking.rankBetween(1000, null), 2000, "append is one step above");
+assert.equal(ranking.rankBetween(0, 1000), 500, "midpoint between two ranks");
+assert.equal(ranking.rankBetween(1000, 1000), null, "no gap to split → renumber signal");
+assert.deepEqual(ranking.renormalizedRanks(3), [0, 1000, 2000], "even integer renumber");
+
+// planReorder: same-column single-write move (b sits between a and c → still fine, move to head)
+const items = [
+	{ id: "a", rank: 0 },
+	{ id: "b", rank: 1000 },
+	{ id: "c", rank: 2000 },
+];
+assert.deepEqual(ranking.planReorder(items, "c", 0), [{ id: "c", rank: -1000 }], "move c to head → one write below all");
+assert.deepEqual(ranking.planReorder(items, "a", 3), [{ id: "a", rank: 3000 }], "move a to tail → one write above all");
+assert.deepEqual(ranking.planReorder(items, "a", 1), [{ id: "a", rank: 1500 }], "move a between b and c → midpoint");
+assert.deepEqual(ranking.planReorder(items, "a", 0), [], "move a to where it already is → no writes");
+// A fresh column (no ranks) renumbers everyone in the requested order.
+const fresh = [
+	{ id: "x", rank: null },
+	{ id: "y", rank: null },
+	{ id: "z", rank: null },
+];
+assert.deepEqual(
+	ranking.planReorder(fresh, "z", 0),
+	[{ id: "z", rank: 0 }, { id: "x", rank: 1000 }, { id: "y", rank: 2000 }],
+	"unranked column renumbers in the new order"
+);
+assert.deepEqual(ranking.planReorder(fresh, "x", 0), [], "dropping a card onto its own slot writes nothing (no phantom renumber)");
+assert.deepEqual(ranking.planReorder(items, "b", 1), [], "no-op move in a ranked column writes nothing");
+// A cross-column drop (moved not present) inserts and single-writes it.
+assert.deepEqual(ranking.planReorder(items, "new", 1), [{ id: "new", rank: 500 }], "insert a new id between a and b");
+// No gap to split (equal neighbouring ranks) → the whole column renumbers.
+const tight = [
+	{ id: "a", rank: 5 },
+	{ id: "b", rank: 5 },
+];
+const tightPlan = ranking.planReorder(tight, "new", 1);
+assert.ok(tightPlan.length >= 2 && tightPlan.some((w) => w.id === "new"), "unsplittable gap forces a renumber including the new card");
+
+// ---- export ----------------------------------------------------------------
+const exRows = [
+	makeTestRow("Alpha", { status: "todo", due: "2026-07-01", tags: ["x", "y"] }),
+	makeTestRow("Beta, Inc", { status: "done", due: "2026-07-02" }),
+];
+assert.equal(exporter.exportCell(exRows[0], "name"), "Alpha", "exportCell name → title");
+assert.equal(exporter.exportCell(exRows[0], "path"), "Alpha.md", "exportCell path → id");
+assert.equal(exporter.exportCell(exRows[0], "tags"), "x; y", "exportCell array joined");
+assert.equal(exporter.exportCell(exRows[0], "missing"), "", "exportCell missing → empty");
+const md = exporter.buildMarkdownTable(exRows, ["name", "status"]);
+assert.ok(md.startsWith("| name | status |\n| --- | --- |"), "markdown table header + divider");
+assert.ok(md.includes("| Alpha | todo |"), "markdown table row");
+const csv = exporter.buildCsv(exRows, ["name", "status"]);
+assert.equal(csv.split("\r\n")[0], '"name","status"', "csv quoted header");
+assert.ok(csv.includes('"Beta, Inc","done"'), "csv quotes a value containing a comma");
+// CSV / formula injection: a leading =/+/-/@ is neutralized with a leading quote.
+const inj = [makeTestRow("=HYPERLINK(\"http://evil\")", { status: "@SUM(A1)" })];
+const injCsv = exporter.buildCsv(inj, ["name", "status"]);
+assert.ok(injCsv.includes(`"'=HYPERLINK`), "csv breaks a leading = formula trigger");
+assert.ok(injCsv.includes(`"'@SUM(A1)"`), "csv breaks a leading @ formula trigger");
+assert.equal(exporter.exportCell(makeTestRow("A", {}), "name"), "A", "plain name is not prefixed");
+// Epoch accessors export as a date, not raw milliseconds.
+assert.equal(exporter.exportCell(makeTestRow("A", { "file.mtime": Date.UTC(2026, 6, 20, 12) }), "file.mtime"), feed.epochToIso(Date.UTC(2026, 6, 20, 12)), "file.mtime exports as a date");
+// Markdown board collapses a newline in a value so it can't break the task item.
+const nlBoard = exporter.buildMarkdownBoard([{ name: "C", rows: [makeTestRow("T", { note: "l1\nl2" })] }], ["note"]);
+assert.ok(nlBoard.includes("- [ ] T — note: l1 l2"), "board collapses a newline in a detail value");
+const pipeRow = [makeTestRow("A|B", { status: "x" })];
+assert.ok(exporter.buildMarkdownTable(pipeRow, ["name"]).includes("A\\|B"), "markdown escapes a pipe in a cell");
+const exportBoard = exporter.buildMarkdownBoard(
+	[{ name: "To Do", rows: [exRows[0]] }, { name: "Empty", rows: [] }],
+	["due"]
+);
+assert.ok(exportBoard.includes("## To Do"), "exportBoard has a section per column");
+assert.ok(exportBoard.includes("- [ ] Alpha — due: 2026-07-01"), "exportBoard card is a task item with details");
+assert.ok(exportBoard.includes("_(empty)_"), "exportBoard marks an empty column");
+const pmodel = pivot.buildPivot(exRows, { rowProp: "status", colProp: "due", aggregation: "count", valueExpr: "" });
+const pcsv = exporter.pivotToCsv(pmodel, "status", "due");
+assert.ok(pcsv.split("\r\n")[0].startsWith('"status \\ due"'), "pivot csv corner label");
+assert.ok(exporter.pivotToMarkdownTable(pmodel, "status", "due").includes("Total"), "pivot markdown has a Total column");
+
+// ---- feed / timeline -------------------------------------------------------
+assert.equal(feed.feedDateOf(makeTestRow("A", { when: "2026-07-20" }), "when"), "2026-07-20", "feed date from a frontmatter prop");
+assert.equal(feed.feedDateOf(makeTestRow("A", {}), "when"), null, "no date → null");
+assert.equal(feed.feedDateOf(makeTestRow("A", { "file.mtime": Date.UTC(2026, 6, 20, 12) }), "file.mtime"), feed.epochToIso(Date.UTC(2026, 6, 20, 12)), "epoch accessor resolves");
+// A small integer (a year, a count) is NOT mis-read as epoch-ms 1970.
+assert.notEqual(feed.feedDateOf(makeTestRow("A", { yr: 2020 }), "yr"), "1970-01-01", "a bare small integer is not treated as an epoch timestamp");
+assert.equal(feed.feedTimeOf(makeTestRow("A", { "file.mtime": 1.7e12 }), "file.mtime"), 1.7e12, "feedTimeOf returns the raw epoch for a numeric accessor");
+assert.equal(feed.feedTimeOf(makeTestRow("A", {}), "when"), 0, "feedTimeOf with no value is 0");
+assert.deepEqual(feed.sectionKeyFor("2026-07-20", "month"), { key: "2026-07", label: "July 2026" }, "month bucket");
+assert.equal(feed.sectionKeyFor("2026-07-20", "week").key, dates.startOfWeekIso("2026-07-20"), "week bucket keys on the week start");
+assert.ok(feed.sectionKeyFor("2026-07-20", "day").label.includes("Jul 20 2026"), "day label");
+const feedRows = [
+	makeTestRow("Old", { when: "2026-01-05" }),
+	makeTestRow("New", { when: "2026-07-20" }),
+	makeTestRow("AlsoNew", { when: "2026-07-20" }),
+	makeTestRow("NoDate", {}),
+];
+const fmodel = feed.buildFeed(feedRows, { dateProp: "when", granularity: "day" });
+assert.equal(fmodel.sections.length, 2, "two dated days → two sections");
+assert.equal(fmodel.sections[0].key, "2026-07-20", "newest section first (desc)");
+assert.deepEqual(fmodel.sections[0].rows.map((r) => r.name), ["AlsoNew", "New"], "within-day ties break by name");
+assert.equal(fmodel.undated.length, 1, "the undated note is kept separately");
+assert.equal(feed.buildFeed(feedRows, { dateProp: "when", granularity: "day", order: "asc" }).sections[0].key, "2026-01-05", "asc order flips section order");
+// Within a day, order by exact time (newest first), not alphabetically.
+const timed = [
+	makeTestRow("Apple", { when: "2026-07-20T09:00" }),
+	makeTestRow("Zebra", { when: "2026-07-20T17:00" }),
+];
+assert.deepEqual(
+	feed.buildFeed(timed, { dateProp: "when", granularity: "day" }).sections[0].rows.map((r) => r.name),
+	["Zebra", "Apple"],
+	"within a day the later time comes first, not alphabetical"
+);
 
 fs.unlinkSync(outfile);
 console.log("engine tests passed");

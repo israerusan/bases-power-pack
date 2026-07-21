@@ -1,7 +1,8 @@
 import type { Row } from "../model/row";
 import { PowerPackView } from "./abstractView";
 import { AGGREGATIONS, type Aggregation } from "../query/rollup";
-import { buildPivot } from "../query/pivot";
+import { buildPivot, type PivotModel } from "../query/pivot";
+import { pivotToCsv, pivotToMarkdownTable } from "../query/export";
 import { filterRowsByText } from "../query/search";
 import { renderContextControls, renderPropertySelect, renderSelect } from "./viewChrome";
 
@@ -15,6 +16,9 @@ export const VIEW_TYPE_PIVOT = "bpp-pivot-view";
  * toolbar and remembered in settings; a quick-search narrows the rows first.
  */
 export class PivotView extends PowerPackView {
+	/** The matrix behind the current render, captured for the export builders. */
+	private lastModel: PivotModel | null = null;
+
 	getViewType(): string {
 		return VIEW_TYPE_PIVOT;
 	}
@@ -59,6 +63,7 @@ export class PivotView extends PowerPackView {
 
 		const rows = filterRowsByText(resolved.rows, this.searchQuery);
 		if (rows.length === 0) {
+			this.lastModel = null; // so Export can't copy a stale, no-longer-shown matrix
 			container.createDiv({
 				cls: "bpp-empty",
 				text: this.searchQuery ? "No notes match the current search." : "No notes to pivot yet.",
@@ -112,6 +117,17 @@ export class PivotView extends PowerPackView {
 			});
 		}
 
+		this.addExportButton(toolbar, [
+			{
+				label: "Copy as Markdown table",
+				build: () => this.lastModel ? pivotToMarkdownTable(this.lastModel, s.pivotRowProp, s.pivotColProp) : "",
+			},
+			{
+				label: "Export as CSV",
+				premium: true,
+				build: () => this.lastModel ? pivotToCsv(this.lastModel, s.pivotRowProp, s.pivotColProp) : "",
+			},
+		]);
 		this.renderManagedSearch(toolbar);
 	}
 
@@ -130,6 +146,7 @@ export class PivotView extends PowerPackView {
 			aggregation: s.pivotAggregation,
 			valueExpr: s.pivotValueExpr,
 		});
+		this.lastModel = model;
 
 		if (model.truncatedRows || model.truncatedCols) {
 			const axes = [model.truncatedRows ? "rows" : null, model.truncatedCols ? "columns" : null]
