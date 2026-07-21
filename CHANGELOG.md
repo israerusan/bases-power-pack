@@ -3,6 +3,40 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.15.0] - 2026-07-21
+
+A **drill-down** release: the analytical views stop being dead ends. Pivot and
+Dashboard used to *show* numbers you couldn't touch — a cell said "12" with no way
+to reach those 12 notes. Now every number is a doorway, and both views gained
+richer controls. Hardened by a lifecycle audit that caught (and fixed) an
+"Other"-bucket collision and a truncation mislabel before shipping.
+
+### Added
+- **Drill-down on Pivot (premium).** Click any **cell, row/column header, or
+  total** to open a panel listing the exact notes behind it. Each note opens on
+  click and carries the same action menu as every other view — open, open to the
+  right, edit any card field, rename, delete — so you can act without leaving the
+  matrix. The panel refreshes itself after an edit: change a note's value and it
+  leaves the bucket it no longer belongs to. Keyboard-operable (Enter/Space to
+  drill, Escape to close) with a "copy this list as Markdown" button.
+- **Drill-down on Dashboard (premium).** The same panel sits behind every **bar,
+  donut arc, legend row, stacked segment, and KPI card** — the "Done" KPI drills
+  to the done notes, a bar to its category, and so on.
+- **Pivot: axis order + heat-map (premium).** Order the row/column keys
+  alphabetically or **busiest-first** (so the most-populated intersections rise to
+  the corner), and toggle a **heat-map** that shades each cell by its value.
+- **Dashboard: sort, Top-N, and a stacked bar (premium).** Sort the distribution
+  by value (either direction), note count, or name; cap it to the **top N**
+  categories (the smallest fold into "Other"); and flip to a new **stacked-bar**
+  chart — the donut unrolled — alongside bars and the donut.
+
+### Fixed
+- A real category value literally named `Other (…)` could be mistaken for the
+  synthesized "Other" fold when drilling a truncated Dashboard chart, listing the
+  wrong notes. The fold is now marked explicitly rather than matched by label text.
+- Pivot header/total drill labels no longer say "All N notes" when column/row
+  truncation means some notes aren't counted in that total.
+
 ## [1.14.0] - 2026-07-20
 
 A **funnel + portability** release: one big free-tier magnet, one freemium wedge,

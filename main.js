@@ -3491,13 +3491,39 @@ function normalize2(value) {
 }
 
 // src/query/dashboard.ts
-var DASHBOARD_CHART_TYPES = ["bar", "donut"];
+var DASHBOARD_CHART_TYPES = ["bar", "donut", "stacked"];
+var DASHBOARD_CHART_LABELS = {
+  bar: "Bars",
+  donut: "Donut",
+  stacked: "Stacked"
+};
+var DISTRIBUTION_SORTS = ["value", "value-asc", "count", "label"];
+var DISTRIBUTION_SORT_LABELS = {
+  value: "Value (high\u2192low)",
+  "value-asc": "Value (low\u2192high)",
+  count: "Note count",
+  label: "Name (A\u2192Z)"
+};
 var DASHBOARD_EMPTY_KEY = "(empty)";
 var DEFAULT_MAX_SLICES = 12;
+function sortComparator(sort) {
+  const byLabel = (a, b) => a.key.localeCompare(b.key, void 0, { numeric: true, sensitivity: "base" });
+  switch (sort) {
+    case "value-asc":
+      return (a, b) => a.value - b.value || byLabel(a, b);
+    case "count":
+      return (a, b) => b.count - a.count || byLabel(a, b);
+    case "label":
+      return byLabel;
+    default:
+      return (a, b) => b.value - a.value || byLabel(a, b);
+  }
+}
 function buildDistribution(rows, options) {
-  var _a;
+  var _a, _b;
   const maxSlices = Math.max(1, (_a = options.maxSlices) != null ? _a : DEFAULT_MAX_SLICES);
   const expression = options.valueExpr.trim() || "1";
+  const sort = (_b = options.sort) != null ? _b : "value";
   const buckets = /* @__PURE__ */ new Map();
   for (const row of rows) {
     const key = toStr(row.scope.get(options.groupBy)).trim() || DASHBOARD_EMPTY_KEY;
@@ -3513,34 +3539,39 @@ function buildDistribution(rows, options) {
     return Math.max(0, (_a2 = aggregateRows(options.aggregation, bucketRows, expression)) != null ? _a2 : 0);
   };
   const scored = Array.from(buckets.entries()).map(([key, rows2]) => ({ key, rows: rows2, count: rows2.length, value: valueOf(rows2) }));
-  scored.sort((a, b) => b.value - a.value || a.key.localeCompare(b.key));
-  const truncated = scored.length > maxSlices;
-  let folded = scored;
+  const byValue = [...scored].sort((a, b) => b.value - a.value || a.key.localeCompare(b.key));
+  const truncated = byValue.length > maxSlices;
+  let head = byValue;
+  let other = null;
   if (truncated) {
-    const head = scored.slice(0, maxSlices - 1);
-    const tail = scored.slice(maxSlices - 1);
+    head = byValue.slice(0, maxSlices - 1);
+    const tail = byValue.slice(maxSlices - 1);
     const tailRows = tail.flatMap((b) => b.rows);
-    folded = [...head, { key: `Other (${tail.length})`, rows: tailRows, count: tailRows.length, value: valueOf(tailRows) }];
+    other = { key: `Other (${tail.length})`, rows: tailRows, count: tailRows.length, value: valueOf(tailRows) };
   }
-  const slices = folded.map((b) => ({ key: b.key, value: b.value, count: b.count }));
+  const ordered = [...head].sort(sortComparator(sort));
+  const slices = ordered.map((b) => ({ key: b.key, value: b.value, count: b.count, rows: b.rows }));
+  if (other) slices.push({ key: other.key, value: other.value, count: other.count, rows: other.rows, isOther: true });
   const total = slices.reduce((s, x) => s + x.value, 0);
   const max = slices.reduce((m, x) => x.value > m ? x.value : m, 0);
   return { slices, total, max, truncated };
 }
 function buildDefaultKpis(rows, statusProp, doneValue) {
+  const doneRows = rows.filter((r) => isRowDone(r, statusProp, doneValue));
+  const remainingRows = rows.filter((r) => !isRowDone(r, statusProp, doneValue));
   const total = rows.length;
-  const done = rows.reduce((n, r) => n + (isRowDone(r, statusProp, doneValue) ? 1 : 0), 0);
-  const pct = total > 0 ? Math.round(done / total * 100) : 0;
+  const pct = total > 0 ? Math.round(doneRows.length / total * 100) : 0;
   return [
-    { label: "Notes", value: String(total) },
-    { label: "Done", value: String(done), sub: `${pct}%` },
-    { label: "Remaining", value: String(total - done) }
+    { label: "Notes", value: String(total), rows },
+    { label: "Done", value: String(doneRows.length), sub: `${pct}%`, rows: doneRows },
+    { label: "Remaining", value: String(remainingRows.length), rows: remainingRows }
   ];
 }
 function buildRollupKpis(rows, rollups) {
   return rollups.map((rollup) => ({
     label: rollup.label || rollup.aggregation,
-    value: computeRollup(rollup, rows)
+    value: computeRollup(rollup, rows),
+    rows
   }));
 }
 function buildDonutSegments(slices) {
@@ -3983,10 +4014,14 @@ var DEFAULT_SETTINGS = {
   pivotColProp: "priority",
   pivotAggregation: "count",
   pivotValueExpr: "",
+  pivotSort: "label",
+  pivotHeat: false,
   dashboardGroupBy: "status",
   dashboardAggregation: "count",
   dashboardValueExpr: "",
   dashboardChartType: "bar",
+  dashboardSort: "value",
+  dashboardTopN: 12,
   galleryImageProp: "cover",
   activeBasePath: "",
   savedFilters: [],
@@ -4284,6 +4319,33 @@ var BasesPowerPackSettingTab = class extends import_obsidian3.PluginSettingTab {
         );
       }
     );
+    premium(
+      "Pivot axis order",
+      "Order the row/column keys alphabetically, or by busiest-first so the most-populated intersections rise to the top-left. Also flip it from the toolbar.",
+      (setting) => {
+        setting.addDropdown((dd) => {
+          dd.addOption("label", "Name (A\u2192Z)");
+          dd.addOption("total", "Busiest first");
+          dd.setValue(this.plugin.settings.pivotSort);
+          dd.onChange((value) => {
+            this.plugin.settings.pivotSort = value;
+            void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+          });
+        });
+      }
+    );
+    premium(
+      "Pivot heat-map",
+      "Shade each cell by its value so the hot spots pop out. Also toggle it from the toolbar.",
+      (setting) => {
+        setting.addToggle(
+          (toggle) => toggle.setValue(this.plugin.settings.pivotHeat).onChange((value) => {
+            this.plugin.settings.pivotHeat = value;
+            void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+          })
+        );
+      }
+    );
     subHeading("Dashboard");
     premium(
       "Dashboard group-by property",
@@ -4323,12 +4385,33 @@ var BasesPowerPackSettingTab = class extends import_obsidian3.PluginSettingTab {
         );
       }
     );
-    premium("Dashboard chart type", "Default chart style for the distribution \u2014 you can also flip it from the toolbar.", (setting) => {
+    premium("Dashboard chart type", "Default chart style for the distribution \u2014 bars, a donut, or a single stacked bar. You can also flip it from the toolbar.", (setting) => {
       setting.addDropdown((dd) => {
-        for (const type of DASHBOARD_CHART_TYPES) dd.addOption(type, type === "bar" ? "Bars" : "Donut");
+        for (const type of DASHBOARD_CHART_TYPES) dd.addOption(type, DASHBOARD_CHART_LABELS[type]);
         dd.setValue(this.plugin.settings.dashboardChartType);
         dd.onChange((value) => {
           this.plugin.settings.dashboardChartType = value;
+          void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+        });
+      });
+    });
+    premium("Dashboard slice order", "How the distribution slices are ordered. Also flip it from the toolbar.", (setting) => {
+      setting.addDropdown((dd) => {
+        for (const s of DISTRIBUTION_SORTS) dd.addOption(s, DISTRIBUTION_SORT_LABELS[s]);
+        dd.setValue(this.plugin.settings.dashboardSort);
+        dd.onChange((value) => {
+          this.plugin.settings.dashboardSort = value;
+          void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+        });
+      });
+    });
+    premium("Dashboard categories shown", "How many categories to chart before the smallest fold into \u201COther\u201D. Also change it from the toolbar.", (setting) => {
+      setting.addDropdown((dd) => {
+        for (const n of ["5", "8", "12", "20"]) dd.addOption(n, n);
+        dd.addOption("0", "All");
+        dd.setValue(String(this.plugin.settings.dashboardTopN));
+        dd.onChange((value) => {
+          this.plugin.settings.dashboardTopN = Number(value) || 0;
           void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
         });
       });
@@ -5010,6 +5093,76 @@ function normalizeColorRules(raw) {
   return out;
 }
 
+// src/query/export.ts
+function exportCell(row, field) {
+  if (field === "name" || field === "file.name") return row.name;
+  if (field === "path" || field === "file.path") return row.id;
+  const value = row.scope.get(field);
+  if (value === void 0 || value === null) return "";
+  if ((field === "file.mtime" || field === "file.ctime") && typeof value === "number" && Number.isFinite(value)) {
+    return epochToIso(value);
+  }
+  if (Array.isArray(value)) return value.map((v) => toStr(v)).filter(Boolean).join("; ");
+  return toStr(value);
+}
+function mdCell(value) {
+  return value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+}
+function csvCell(value) {
+  const guarded = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+  return `"${guarded.replace(/"/g, '""')}"`;
+}
+function buildMarkdownTable(rows, fields) {
+  const cols = fields.length > 0 ? fields : ["name"];
+  const header = `| ${cols.map(mdCell).join(" | ")} |`;
+  const divider = `| ${cols.map(() => "---").join(" | ")} |`;
+  const body = rows.map((row) => `| ${cols.map((f) => mdCell(exportCell(row, f))).join(" | ")} |`);
+  return [header, divider, ...body].join("\n");
+}
+function buildCsv(rows, fields) {
+  const cols = fields.length > 0 ? fields : ["name"];
+  const header = cols.map(csvCell).join(",");
+  const body = rows.map((row) => cols.map((f) => csvCell(exportCell(row, f))).join(","));
+  return [header, ...body].join("\r\n");
+}
+function buildMarkdownBoard(columns, fields) {
+  const blocks = [];
+  for (const column of columns) {
+    const lines = [`## ${column.name}`, ""];
+    if (column.rows.length === 0) {
+      lines.push("_(empty)_");
+    } else {
+      for (const row of column.rows) {
+        const details = fields.map((f) => ({ f, v: exportCell(row, f) })).filter((d) => d.v !== "").map((d) => `${d.f}: ${mdCell(d.v)}`);
+        const suffix = details.length > 0 ? ` \u2014 ${details.join(", ")}` : "";
+        lines.push(`- [ ] ${mdCell(row.name)}${suffix}`);
+      }
+    }
+    blocks.push(lines.join("\n"));
+  }
+  return blocks.join("\n\n");
+}
+function pivotHeader(model, rowProp, colProp) {
+  return [`${rowProp} \\ ${colProp}`, ...model.colKeys, "Total"];
+}
+function pivotRows(model) {
+  const body = model.rowKeys.map((rowKey, ri) => [rowKey, ...model.cells[ri], model.rowTotals[ri]]);
+  const totals = ["Total", ...model.colTotals, model.grandTotal];
+  return [...body, totals];
+}
+function pivotToCsv(model, rowProp, colProp) {
+  const header = pivotHeader(model, rowProp, colProp).map(csvCell).join(",");
+  const rows = pivotRows(model).map((r) => r.map(csvCell).join(","));
+  return [header, ...rows].join("\r\n");
+}
+function pivotToMarkdownTable(model, rowProp, colProp) {
+  const header = pivotHeader(model, rowProp, colProp);
+  const headerLine = `| ${header.map(mdCell).join(" | ")} |`;
+  const divider = `| ${header.map(() => "---").join(" | ")} |`;
+  const body = pivotRows(model).map((r) => `| ${r.map((c) => mdCell(c)).join(" | ")} |`);
+  return [headerLine, divider, ...body].join("\n");
+}
+
 // src/views/viewChrome.ts
 function renderSearchControl(container, current, onInput) {
   const wrap = container.createDiv({ cls: "bpp-lite-control" });
@@ -5089,6 +5242,12 @@ var PowerPackView = class extends import_obsidian5.ItemView {
      * input or the drag target (which would drop or corrupt the write). */
     this.suppressAutoRender = false;
     this.autoRenderPending = false;
+    /** The open drill-down panel and the resolver that (re)materialises its rows.
+     * The resolver is stored — not a row snapshot — so the panel refreshes against
+     * current data after each render (an edit inside it can move a note out of the
+     * bucket, and the panel should reflect that). null = no panel open. */
+    this.drillResolver = null;
+    this.drillEl = null;
     this.plugin = plugin;
     this.scheduleRender = (0, import_obsidian5.debounce)(() => {
       if (this.suppressAutoRender) {
@@ -5116,6 +5275,7 @@ var PowerPackView = class extends import_obsidian5.ItemView {
     this.searchInputEl = null;
     this.suppressAutoRender = false;
     this.autoRenderPending = false;
+    this.closeDrill();
     this.contentEl.empty();
   }
   /** Enter a direct-manipulation interaction (inline edit / drag): background
@@ -5419,6 +5579,142 @@ var PowerPackView = class extends import_obsidian5.ItemView {
     btn.addEventListener("click", () => void this.render());
   }
   /**
+   * Open a drill-down panel listing the notes behind a clicked mark (a pivot cell,
+   * a dashboard bar, a KPI card…). Pass a *resolver* — a function that returns the
+   * current rows for the thing that was clicked — rather than a fixed list, so the
+   * panel can refresh itself after an edit moves a note in or out of the bucket.
+   * The resolver looks up its rows by stable keys against the view's latest model,
+   * so it stays correct across re-renders; it returns null when the bucket no
+   * longer exists (e.g. its column was emptied), which closes the panel.
+   */
+  openDrill(resolver) {
+    this.drillResolver = resolver;
+    const req = resolver();
+    if (!req) {
+      this.closeDrill();
+      return;
+    }
+    this.paintDrill(req, true);
+  }
+  /** Re-materialise an open drill panel after a render (call at the tail of a
+   * view's render()). A no-op when nothing is drilled. */
+  restoreDrill() {
+    if (!this.drillResolver) return;
+    const req = this.drillResolver();
+    if (!req) {
+      this.closeDrill();
+      return;
+    }
+    this.paintDrill(req, false);
+  }
+  closeDrill() {
+    var _a;
+    this.drillResolver = null;
+    (_a = this.drillEl) == null ? void 0 : _a.remove();
+    this.drillEl = null;
+  }
+  /**
+   * Paint (or repaint) the drill panel. It's a sticky bottom sheet appended as the
+   * last child of the view content: part of normal flow (so it survives no matter
+   * how the view lays out) but pinned to the bottom of the scrollport while you
+   * scroll the chart/matrix above it. `focus` moves focus into the panel on the
+   * initial open (for keyboard + screen-reader users) but not on a background
+   * refresh, which would otherwise steal focus while you work elsewhere.
+   */
+  paintDrill(req, focus) {
+    var _a, _b;
+    (_a = this.drillEl) == null ? void 0 : _a.remove();
+    const panel = this.contentEl.createDiv({
+      cls: "bpp-drill",
+      attr: { role: "dialog", "aria-label": req.title }
+    });
+    const head = panel.createDiv({ cls: "bpp-drill-head" });
+    const titles = head.createDiv({ cls: "bpp-drill-titles" });
+    titles.createDiv({ cls: "bpp-drill-title", text: req.title });
+    titles.createDiv({
+      cls: "bpp-muted bpp-drill-sub",
+      text: (_b = req.subtitle) != null ? _b : `${req.rows.length} note${req.rows.length === 1 ? "" : "s"}`
+    });
+    const actions = head.createDiv({ cls: "bpp-drill-actions" });
+    const copy = actions.createEl("button", {
+      cls: "bpp-drill-btn",
+      text: "\u2913",
+      attr: { "aria-label": "Copy this list as a Markdown table", title: "Copy as Markdown" }
+    });
+    copy.addEventListener("click", () => void this.copyDrill(req));
+    const close = actions.createEl("button", {
+      cls: "bpp-drill-btn bpp-drill-close",
+      text: "\u2715",
+      attr: { "aria-label": "Close drill-down" }
+    });
+    close.addEventListener("click", () => this.closeDrill());
+    panel.addEventListener("keydown", (evt) => {
+      if (evt.key === "Escape") {
+        evt.preventDefault();
+        this.closeDrill();
+      }
+    });
+    const list = panel.createDiv({ cls: "bpp-drill-list" });
+    if (req.rows.length === 0) {
+      list.createDiv({ cls: "bpp-empty", text: "No notes here." });
+    } else {
+      for (const row of req.rows) this.renderDrillItem(list, row);
+    }
+    this.drillEl = panel;
+    if (focus) {
+      close.focus();
+      panel.scrollIntoView({ block: "nearest" });
+    }
+  }
+  /** One note in the drill panel — clickable to open, with the same right-click /
+   * ⋯ / keyboard action menu every view item has, so you can act without leaving. */
+  renderDrillItem(list, row) {
+    const item = list.createDiv({ cls: "bpp-feed-item bpp-drill-item" });
+    this.applyColorRule(item, row);
+    const body = item.createDiv({ cls: "bpp-feed-body" });
+    body.createDiv({ cls: "bpp-feed-title", text: row.name });
+    const pills = this.plugin.settings.kanbanCardFields.map((field) => ({ field, value: formatCardField(row, field) })).filter((f) => f.value !== null);
+    if (pills.length > 0) {
+      const pillRow = body.createDiv({ cls: "bpp-feed-pills" });
+      for (const pill of pills) {
+        pillRow.createSpan({ cls: "bpp-pill", text: pill.value, attr: { title: `${pill.field}: ${pill.value}` } });
+      }
+    }
+    const openMenu = (anchor) => {
+      if (anchor instanceof MouseEvent) anchor.preventDefault();
+      const menu = new import_obsidian5.Menu();
+      this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, () => void this.render());
+      this.showMenuAtAnchor(menu, anchor);
+    };
+    item.addEventListener("click", () => this.openRow(row));
+    item.addEventListener("contextmenu", (evt) => openMenu(evt));
+    this.makeItemAccessible(item, row.name, () => this.openRow(row), (anchor) => openMenu(anchor));
+    this.addOverflowButton(item, row.name, openMenu);
+  }
+  async copyDrill(req) {
+    const fields = ["name", ...this.plugin.settings.kanbanCardFields];
+    await this.copyToClipboard(buildMarkdownTable(req.rows, fields), "list");
+  }
+  /**
+   * Make an element a drill trigger: clickable, focusable, and keyboard-operable
+   * (Enter / Space) with a button role and label. Used for pivot cells & headers
+   * and dashboard bars / slices / KPIs so every number is a doorway to its notes.
+   */
+  makeDrillable(el, label, open) {
+    el.addClass("bpp-drillable");
+    el.tabIndex = 0;
+    el.setAttribute("role", "button");
+    el.setAttribute("aria-label", label);
+    el.addEventListener("click", () => open());
+    el.addEventListener("keydown", (evt) => {
+      if (evt.target !== el) return;
+      if (evt.key === "Enter" || evt.key === " ") {
+        evt.preventDefault();
+        open();
+      }
+    });
+  }
+  /**
    * The premium upsell shown on a locked view: emoji, headline, one-line pitch, an
    * optional list of what unlocks, and the CTA to the license field. This is the
    * product's "money screen" — it earns a real feature list, not a bare sentence.
@@ -5465,76 +5761,6 @@ function dropWouldExceed(targetCount, limit) {
 }
 function formatWipCount(count, limit) {
   return limit !== null ? `${count} / ${limit}` : String(count);
-}
-
-// src/query/export.ts
-function exportCell(row, field) {
-  if (field === "name" || field === "file.name") return row.name;
-  if (field === "path" || field === "file.path") return row.id;
-  const value = row.scope.get(field);
-  if (value === void 0 || value === null) return "";
-  if ((field === "file.mtime" || field === "file.ctime") && typeof value === "number" && Number.isFinite(value)) {
-    return epochToIso(value);
-  }
-  if (Array.isArray(value)) return value.map((v) => toStr(v)).filter(Boolean).join("; ");
-  return toStr(value);
-}
-function mdCell(value) {
-  return value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
-}
-function csvCell(value) {
-  const guarded = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
-  return `"${guarded.replace(/"/g, '""')}"`;
-}
-function buildMarkdownTable(rows, fields) {
-  const cols = fields.length > 0 ? fields : ["name"];
-  const header = `| ${cols.map(mdCell).join(" | ")} |`;
-  const divider = `| ${cols.map(() => "---").join(" | ")} |`;
-  const body = rows.map((row) => `| ${cols.map((f) => mdCell(exportCell(row, f))).join(" | ")} |`);
-  return [header, divider, ...body].join("\n");
-}
-function buildCsv(rows, fields) {
-  const cols = fields.length > 0 ? fields : ["name"];
-  const header = cols.map(csvCell).join(",");
-  const body = rows.map((row) => cols.map((f) => csvCell(exportCell(row, f))).join(","));
-  return [header, ...body].join("\r\n");
-}
-function buildMarkdownBoard(columns, fields) {
-  const blocks = [];
-  for (const column of columns) {
-    const lines = [`## ${column.name}`, ""];
-    if (column.rows.length === 0) {
-      lines.push("_(empty)_");
-    } else {
-      for (const row of column.rows) {
-        const details = fields.map((f) => ({ f, v: exportCell(row, f) })).filter((d) => d.v !== "").map((d) => `${d.f}: ${mdCell(d.v)}`);
-        const suffix = details.length > 0 ? ` \u2014 ${details.join(", ")}` : "";
-        lines.push(`- [ ] ${mdCell(row.name)}${suffix}`);
-      }
-    }
-    blocks.push(lines.join("\n"));
-  }
-  return blocks.join("\n\n");
-}
-function pivotHeader(model, rowProp, colProp) {
-  return [`${rowProp} \\ ${colProp}`, ...model.colKeys, "Total"];
-}
-function pivotRows(model) {
-  const body = model.rowKeys.map((rowKey, ri) => [rowKey, ...model.cells[ri], model.rowTotals[ri]]);
-  const totals = ["Total", ...model.colTotals, model.grandTotal];
-  return [...body, totals];
-}
-function pivotToCsv(model, rowProp, colProp) {
-  const header = pivotHeader(model, rowProp, colProp).map(csvCell).join(",");
-  const rows = pivotRows(model).map((r) => r.map(csvCell).join(","));
-  return [header, ...rows].join("\r\n");
-}
-function pivotToMarkdownTable(model, rowProp, colProp) {
-  const header = pivotHeader(model, rowProp, colProp);
-  const headerLine = `| ${header.map(mdCell).join(" | ")} |`;
-  const divider = `| ${header.map(() => "---").join(" | ")} |`;
-  const body = pivotRows(model).map((r) => `| ${r.map((c) => mdCell(c)).join(" | ")} |`);
-  return [headerLine, divider, ...body].join("\n");
 }
 
 // src/views/dnd.ts
@@ -7669,32 +7895,41 @@ var HierarchyView = class extends PowerPackView {
 // src/query/pivot.ts
 var PIVOT_EMPTY_KEY = "(empty)";
 var DEFAULT_MAX_KEYS = 50;
+var PIVOT_SORTS = ["label", "total"];
 function keyOf(row, prop) {
   const raw = toStr(row.scope.get(prop)).trim();
   return raw || PIVOT_EMPTY_KEY;
 }
-function sortedKeys(keys) {
-  return Array.from(keys).sort((a, b) => {
+function sortedKeys(tally, sort) {
+  return Array.from(tally.keys()).sort((a, b) => {
+    var _a, _b;
     if (a === PIVOT_EMPTY_KEY) return 1;
     if (b === PIVOT_EMPTY_KEY) return -1;
+    if (sort === "total") {
+      const diff = ((_a = tally.get(b)) != null ? _a : 0) - ((_b = tally.get(a)) != null ? _b : 0);
+      if (diff !== 0) return diff;
+    }
     return a.localeCompare(b, void 0, { numeric: true, sensitivity: "base" });
   });
 }
 function buildPivot(rows, options) {
-  var _a, _b;
+  var _a, _b, _c, _d, _e;
   const { rowProp, colProp } = options;
   const maxRowKeys = (_a = options.maxRowKeys) != null ? _a : DEFAULT_MAX_KEYS;
   const maxColKeys = (_b = options.maxColKeys) != null ? _b : DEFAULT_MAX_KEYS;
   const aggregation = options.aggregation;
   const expression = options.valueExpr.trim() || "1";
-  const allRowKeys = /* @__PURE__ */ new Set();
-  const allColKeys = /* @__PURE__ */ new Set();
+  const sort = (_c = options.sort) != null ? _c : "label";
+  const rowTally = /* @__PURE__ */ new Map();
+  const colTally = /* @__PURE__ */ new Map();
   for (const row of rows) {
-    allRowKeys.add(keyOf(row, rowProp));
-    allColKeys.add(keyOf(row, colProp));
+    const rk = keyOf(row, rowProp);
+    const ck = keyOf(row, colProp);
+    rowTally.set(rk, ((_d = rowTally.get(rk)) != null ? _d : 0) + 1);
+    colTally.set(ck, ((_e = colTally.get(ck)) != null ? _e : 0) + 1);
   }
-  const sortedRowKeys = sortedKeys(allRowKeys);
-  const sortedColKeys = sortedKeys(allColKeys);
+  const sortedRowKeys = sortedKeys(rowTally, sort);
+  const sortedColKeys = sortedKeys(colTally, sort);
   const truncatedRows = sortedRowKeys.length > maxRowKeys;
   const truncatedCols = sortedColKeys.length > maxColKeys;
   const rowKeys = truncatedRows ? sortedRowKeys.slice(0, maxRowKeys) : sortedRowKeys;
@@ -7729,6 +7964,10 @@ function buildPivot(rows, options) {
     colKeys,
     cells,
     counts,
+    cellRows: buckets,
+    rowKeyRows: rowBuckets,
+    colKeyRows: colBuckets,
+    allRows: all,
     rowTotals,
     colTotals,
     grandTotal,
@@ -7743,7 +7982,7 @@ var VIEW_TYPE_PIVOT = "bpp-pivot-view";
 var PivotView = class extends PowerPackView {
   constructor() {
     super(...arguments);
-    /** The matrix behind the current render, captured for the export builders. */
+    /** The matrix behind the current render, captured for the export + drill builders. */
     this.lastModel = null;
   }
   getViewType() {
@@ -7770,7 +8009,7 @@ var PivotView = class extends PowerPackView {
           "Group by two properties at once \u2014 rows \xD7 columns",
           "Aggregate with count, sum, average, min/max, and more",
           "Per-row, per-column, and grand totals",
-          "Feed it a formula for weighted or computed cells"
+          "Click any cell to drill into the notes behind it"
         ]
       );
       return;
@@ -7789,9 +8028,11 @@ var PivotView = class extends PowerPackView {
         cls: "bpp-empty",
         text: this.searchQuery ? "No notes match the current search." : "No notes to pivot yet."
       });
+      this.restoreDrill();
       return;
     }
     this.renderMatrix(container, rows);
+    this.restoreDrill();
   }
   renderToolbar(container) {
     const toolbar = container.createDiv({ cls: "bpp-toolbar" });
@@ -7831,6 +8072,29 @@ var PivotView = class extends PowerPackView {
         this.persist();
       });
     }
+    renderSelect(
+      controls,
+      "Order",
+      [
+        { value: "label", label: "Name" },
+        { value: "total", label: "Busiest" }
+      ],
+      s.pivotSort,
+      (value) => {
+        s.pivotSort = value === "total" ? "total" : "label";
+        this.persist();
+      }
+    );
+    const heat = toolbar.createEl("button", {
+      cls: "bpp-seg-btn",
+      text: "\u{1F525} Heat",
+      attr: { "aria-pressed": String(s.pivotHeat), "aria-label": "Toggle heat-map shading" }
+    });
+    if (s.pivotHeat) heat.addClass("is-active");
+    heat.addEventListener("click", () => {
+      s.pivotHeat = !s.pivotHeat;
+      this.persist();
+    });
     this.addExportButton(toolbar, [
       {
         label: "Copy as Markdown table",
@@ -7848,6 +8112,7 @@ var PivotView = class extends PowerPackView {
    * presentation-only (they re-bucket already-resolved rows), so re-resolving the
    * base and rebuilding every Row would be wasted work. */
   persist() {
+    this.closeDrill();
     void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
   }
   renderMatrix(container, rows) {
@@ -7856,7 +8121,8 @@ var PivotView = class extends PowerPackView {
       rowProp: s.pivotRowProp,
       colProp: s.pivotColProp,
       aggregation: s.pivotAggregation,
-      valueExpr: s.pivotValueExpr
+      valueExpr: s.pivotValueExpr,
+      sort: s.pivotSort
     });
     this.lastModel = model;
     if (model.truncatedRows || model.truncatedCols) {
@@ -7866,18 +8132,32 @@ var PivotView = class extends PowerPackView {
         text: `Too many distinct values \u2014 showing the first 50 ${axes}. Pick a lower-cardinality property or add a filter.`
       });
     }
+    const maxCount = s.pivotHeat ? Math.max(1, ...model.counts.flat()) : 0;
     const scroll = container.createDiv({ cls: "bpp-pivot-scroll" });
     const table = scroll.createEl("table", { cls: "bpp-pivot" });
+    if (s.pivotHeat) table.addClass("is-heat");
     const thead = table.createEl("thead");
     const headRow = thead.createEl("tr");
     headRow.createEl("th", { cls: "bpp-pivot-corner", text: `${s.pivotRowProp} \\ ${s.pivotColProp}` });
-    for (const colKey of model.colKeys) headRow.createEl("th", { cls: "bpp-pivot-colhead", text: colKey });
+    model.colKeys.forEach((colKey) => {
+      const th = headRow.createEl("th", { cls: "bpp-pivot-colhead", text: colKey });
+      this.makeDrillable(
+        th,
+        `Notes where ${s.pivotColProp} is ${colKey}`,
+        () => this.openDrill(() => this.colDrill(colKey))
+      );
+    });
     headRow.createEl("th", { cls: "bpp-pivot-total-head", text: "Total" });
     const tbody = table.createEl("tbody");
     model.rowKeys.forEach((rowKey, ri) => {
       const tr = tbody.createEl("tr");
-      tr.createEl("th", { cls: "bpp-pivot-rowhead", text: rowKey, attr: { scope: "row" } });
-      model.colKeys.forEach((_colKey, ci) => {
+      const rh = tr.createEl("th", { cls: "bpp-pivot-rowhead", text: rowKey, attr: { scope: "row" } });
+      this.makeDrillable(
+        rh,
+        `Notes where ${s.pivotRowProp} is ${rowKey}`,
+        () => this.openDrill(() => this.rowDrill(rowKey))
+      );
+      model.colKeys.forEach((colKey, ci) => {
         const count = model.counts[ri][ci];
         const cell = tr.createEl("td", { cls: "bpp-pivot-cell" });
         if (count === 0) {
@@ -7886,17 +8166,93 @@ var PivotView = class extends PowerPackView {
         } else {
           cell.setText(model.cells[ri][ci]);
           cell.setAttr("title", `${count} note${count === 1 ? "" : "s"}`);
+          if (s.pivotHeat) {
+            cell.addClass("is-hot");
+            cell.style.setProperty("--bpp-heat", (count / maxCount).toFixed(3));
+          }
+          this.makeDrillable(
+            cell,
+            `${count} note${count === 1 ? "" : "s"}: ${rowKey} \xD7 ${colKey}`,
+            () => this.openDrill(() => this.cellDrill(rowKey, colKey))
+          );
         }
       });
-      tr.createEl("td", { cls: "bpp-pivot-cell bpp-pivot-total", text: model.rowTotals[ri] });
+      const rt = tr.createEl("td", { cls: "bpp-pivot-cell bpp-pivot-total", text: model.rowTotals[ri] });
+      this.makeDrillable(
+        rt,
+        `${model.rowKeyRows[ri].length} notes in ${rowKey}`,
+        () => this.openDrill(() => this.rowDrill(rowKey))
+      );
     });
     const tfoot = table.createEl("tfoot");
     const totalRow = tfoot.createEl("tr");
     totalRow.createEl("th", { cls: "bpp-pivot-rowhead bpp-pivot-total", text: "Total", attr: { scope: "row" } });
-    model.colKeys.forEach((_colKey, ci) => {
-      totalRow.createEl("td", { cls: "bpp-pivot-cell bpp-pivot-total", text: model.colTotals[ci] });
+    model.colKeys.forEach((colKey, ci) => {
+      const ct = totalRow.createEl("td", { cls: "bpp-pivot-cell bpp-pivot-total", text: model.colTotals[ci] });
+      this.makeDrillable(
+        ct,
+        `${model.colKeyRows[ci].length} notes in ${colKey}`,
+        () => this.openDrill(() => this.colDrill(colKey))
+      );
     });
-    totalRow.createEl("td", { cls: "bpp-pivot-cell bpp-pivot-total bpp-pivot-grand", text: model.grandTotal });
+    const grand = totalRow.createEl("td", { cls: "bpp-pivot-cell bpp-pivot-total bpp-pivot-grand", text: model.grandTotal });
+    this.makeDrillable(grand, `All ${model.allRows.length} notes`, () => this.openDrill(() => this.grandDrill()));
+  }
+  // ---- drill resolvers -----------------------------------------------------
+  // Each looks its rows up by stable KEY (not a captured index/snapshot) against
+  // the latest matrix, so the panel stays correct after a re-render reorders keys
+  // or an edit changes the counts. Returns null when the bucket is gone.
+  cellDrill(rowKey, colKey) {
+    const model = this.lastModel;
+    if (!model) return null;
+    const ri = model.rowKeys.indexOf(rowKey);
+    const ci = model.colKeys.indexOf(colKey);
+    if (ri < 0 || ci < 0) return null;
+    const cellRows = model.cellRows[ri][ci];
+    if (cellRows.length === 0) return null;
+    return {
+      title: `${rowKey} \xD7 ${colKey}`,
+      subtitle: this.cellSubtitle(cellRows.length, model.cells[ri][ci]),
+      rows: cellRows
+    };
+  }
+  rowDrill(rowKey) {
+    const model = this.lastModel;
+    if (!model) return null;
+    const ri = model.rowKeys.indexOf(rowKey);
+    if (ri < 0) return null;
+    return {
+      title: `${this.plugin.settings.pivotRowProp}: ${rowKey}`,
+      subtitle: this.cellSubtitle(model.rowKeyRows[ri].length, model.rowTotals[ri]),
+      rows: model.rowKeyRows[ri]
+    };
+  }
+  colDrill(colKey) {
+    const model = this.lastModel;
+    if (!model) return null;
+    const ci = model.colKeys.indexOf(colKey);
+    if (ci < 0) return null;
+    return {
+      title: `${this.plugin.settings.pivotColProp}: ${colKey}`,
+      subtitle: this.cellSubtitle(model.colKeyRows[ci].length, model.colTotals[ci]),
+      rows: model.colKeyRows[ci]
+    };
+  }
+  grandDrill() {
+    const model = this.lastModel;
+    if (!model || model.allRows.length === 0) return null;
+    return {
+      title: "All notes",
+      subtitle: this.cellSubtitle(model.allRows.length, model.grandTotal),
+      rows: model.allRows
+    };
+  }
+  /** Panel subtitle: the note count, plus the aggregated value when it's not just
+   * a count (so a "sum of hours" cell says what the number means). */
+  cellSubtitle(count, display) {
+    const noun = `${count} note${count === 1 ? "" : "s"}`;
+    const agg = this.plugin.settings.pivotAggregation;
+    return agg === "count" ? noun : `${noun} \xB7 ${agg} = ${display}`;
   }
 };
 
@@ -7905,7 +8261,14 @@ var VIEW_TYPE_DASHBOARD = "bpp-dashboard-view";
 var DONUT_SIZE = 200;
 var DONUT_OUTER = 92;
 var DONUT_INNER = 56;
+var TOP_N_OPTIONS = [5, 8, 12, 20, 0];
 var DashboardView = class extends PowerPackView {
+  constructor() {
+    super(...arguments);
+    /** The rows behind the current render, captured so drill resolvers can re-derive
+     * the slice / KPI subsets against current data after an edit. */
+    this.lastRows = [];
+  }
   getViewType() {
     return VIEW_TYPE_DASHBOARD;
   }
@@ -7928,9 +8291,9 @@ var DashboardView = class extends PowerPackView {
         "Turn any base into a live reporting surface.",
         [
           "KPI cards from your roll-ups and formulas",
-          "Distribution charts \u2014 horizontal bars or a donut",
-          "Aggregate by count, sum, or average",
-          "Respects your active base and saved filters"
+          "Distribution as bars, a donut, or a stacked bar",
+          "Sort and cap categories; aggregate by count, sum, or average",
+          "Click any figure to drill into the notes behind it"
         ]
       );
       return;
@@ -7943,15 +8306,18 @@ var DashboardView = class extends PowerPackView {
     this.renderToolbar(container);
     renderContextControls(container, this.plugin, resolved, () => void this.render());
     const rows = filterRowsByText(resolved.rows, this.searchQuery);
+    this.lastRows = rows;
     if (rows.length === 0) {
       container.createDiv({
         cls: "bpp-empty",
         text: this.searchQuery ? "No notes match the current search." : "No notes to summarize yet."
       });
+      this.restoreDrill();
       return;
     }
     this.renderKpis(container, rows);
     this.renderChart(container, rows);
+    this.restoreDrill();
   }
   renderToolbar(container) {
     const toolbar = container.createDiv({ cls: "bpp-toolbar" });
@@ -7987,9 +8353,29 @@ var DashboardView = class extends PowerPackView {
         this.persist();
       });
     }
+    renderSelect(
+      controls,
+      "Sort",
+      DISTRIBUTION_SORTS.map((v) => ({ value: v, label: DISTRIBUTION_SORT_LABELS[v] })),
+      s.dashboardSort,
+      (value) => {
+        s.dashboardSort = value;
+        this.persist();
+      }
+    );
+    renderSelect(
+      controls,
+      "Show",
+      TOP_N_OPTIONS.map((n) => ({ value: String(n), label: n === 0 ? "All" : `Top ${n}` })),
+      String(s.dashboardTopN),
+      (value) => {
+        s.dashboardTopN = Number(value) || 0;
+        this.persist();
+      }
+    );
     const seg = toolbar.createDiv({ cls: "bpp-segmented" });
     for (const type of DASHBOARD_CHART_TYPES) {
-      const btn = seg.createEl("button", { text: type === "bar" ? "Bars" : "Donut", cls: "bpp-seg-btn" });
+      const btn = seg.createEl("button", { text: DASHBOARD_CHART_LABELS[type], cls: "bpp-seg-btn" });
       if (s.dashboardChartType === type) btn.addClass("is-active");
       btn.setAttr("aria-pressed", String(s.dashboardChartType === type));
       btn.addEventListener("click", () => {
@@ -8001,26 +8387,45 @@ var DashboardView = class extends PowerPackView {
     this.renderManagedSearch(toolbar);
   }
   persist() {
+    this.closeDrill();
     void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
   }
-  renderKpis(container, rows) {
+  /** The distribution for the current settings — shared by render and the slice
+   * drill resolvers so they always agree. Top-N of 0 means "no fold". */
+  distributionOf(rows) {
     const s = this.plugin.settings;
-    const kpis = s.rollups.length > 0 ? buildRollupKpis(rows, s.rollups) : buildDefaultKpis(rows, s.kanbanGroupBy || "status", s.kanbanDoneValue);
+    return buildDistribution(rows, {
+      groupBy: s.dashboardGroupBy,
+      aggregation: s.dashboardAggregation,
+      valueExpr: s.dashboardValueExpr,
+      sort: s.dashboardSort,
+      maxSlices: s.dashboardTopN > 0 ? s.dashboardTopN : Number.MAX_SAFE_INTEGER
+    });
+  }
+  /** The KPI cards for the current settings — shared by render and the KPI drill. */
+  kpisOf(rows) {
+    const s = this.plugin.settings;
+    return s.rollups.length > 0 ? buildRollupKpis(rows, s.rollups) : buildDefaultKpis(rows, s.kanbanGroupBy || "status", s.kanbanDoneValue);
+  }
+  renderKpis(container, rows) {
     const grid = container.createDiv({ cls: "bpp-kpi-grid" });
-    for (const kpi of kpis) {
+    for (const kpi of this.kpisOf(rows)) {
       const card = grid.createDiv({ cls: "bpp-kpi" });
       card.createDiv({ cls: "bpp-kpi-value", text: kpi.value });
       card.createDiv({ cls: "bpp-kpi-label", text: kpi.label });
       if (kpi.sub) card.createDiv({ cls: "bpp-kpi-sub", text: kpi.sub });
+      if (kpi.rows.length > 0) {
+        this.makeDrillable(
+          card,
+          `${kpi.value} ${kpi.label} \u2014 list the notes`,
+          () => this.openDrill(() => this.kpiDrill(kpi.label))
+        );
+      }
     }
   }
   renderChart(container, rows) {
     const s = this.plugin.settings;
-    const distribution = buildDistribution(rows, {
-      groupBy: s.dashboardGroupBy,
-      aggregation: s.dashboardAggregation,
-      valueExpr: s.dashboardValueExpr
-    });
+    const distribution = this.distributionOf(rows);
     const section = container.createDiv({ cls: "bpp-chart-section" });
     const heading = s.dashboardAggregation === "count" ? "count" : `${s.dashboardAggregation} of ${s.dashboardValueExpr || "1"}`;
     section.createEl("h4", { cls: "bpp-chart-title", text: `${heading} by ${s.dashboardGroupBy}` });
@@ -8029,6 +8434,7 @@ var DashboardView = class extends PowerPackView {
       return;
     }
     if (s.dashboardChartType === "donut") this.renderDonut(section, distribution);
+    else if (s.dashboardChartType === "stacked") this.renderStacked(section, distribution);
     else this.renderBars(section, distribution);
     if (distribution.truncated) {
       section.createDiv({ cls: "bpp-muted bpp-chart-note", text: "Smaller categories are folded into \u201COther\u201D." });
@@ -8045,9 +8451,38 @@ var DashboardView = class extends PowerPackView {
       fill.setCssProps({ width: `${pct}%` });
       fill.setCssProps({ "--bpp-bar-hue": String(columnHue(slice.key)) });
       row.createSpan({ cls: "bpp-bar-value", text: formatValue(slice.value) });
+      if (slice.rows.length > 0) {
+        this.makeDrillable(
+          row,
+          `${slice.key}: ${slice.count} notes \u2014 list them`,
+          () => this.openDrill(() => this.sliceDrill(slice.key, slice.isOther === true))
+        );
+      }
     }
   }
+  /** A single full-width bar split into proportional colored segments — the donut
+   * "unrolled", compact and easy to compare part-to-whole at a glance. */
+  renderStacked(section, distribution) {
+    const wrap = section.createDiv({ cls: "bpp-stacked-wrap" });
+    const bar = wrap.createDiv({ cls: "bpp-stacked" });
+    for (const slice of distribution.slices) {
+      if (slice.value <= 0) continue;
+      const seg = bar.createDiv({ cls: "bpp-stacked-seg" });
+      const pct = distribution.total > 0 ? slice.value / distribution.total * 100 : 0;
+      seg.setCssProps({ width: `${pct}%`, "--bpp-bar-hue": String(columnHue(slice.key)) });
+      seg.setAttr("title", `${slice.key}: ${formatValue(slice.value)} \xB7 ${Math.round(pct)}%`);
+      if (slice.rows.length > 0) {
+        this.makeDrillable(
+          seg,
+          `${slice.key}: ${slice.count} notes \u2014 list them`,
+          () => this.openDrill(() => this.sliceDrill(slice.key, slice.isOther === true))
+        );
+      }
+    }
+    this.renderLegend(wrap, distribution);
+  }
   renderDonut(section, distribution) {
+    var _a, _b;
     const wrap = section.createDiv({ cls: "bpp-donut-wrap" });
     const segments = buildDonutSegments(distribution.slices);
     const svg = wrap.createSvg("svg", {
@@ -8064,24 +8499,34 @@ var DashboardView = class extends PowerPackView {
     const cy = DONUT_SIZE / 2;
     if (segments.length === 1) {
       const seg = segments[0];
-      svg.createSvg("circle", {
+      const disc = svg.createSvg("circle", {
         attr: { cx: String(cx), cy: String(cy), r: String(DONUT_OUTER), fill: sliceColor(seg.key) }
       });
+      this.makeArcDrillable(disc, seg.key, ((_a = distribution.slices.find((sl) => sl.key === seg.key)) == null ? void 0 : _a.isOther) === true);
       svg.createSvg("circle", {
         cls: "bpp-donut-hole",
         attr: { cx: String(cx), cy: String(cy), r: String(DONUT_INNER) }
       });
     } else {
       for (const seg of segments) {
-        svg.createSvg("path", {
+        const path = svg.createSvg("path", {
           attr: {
             d: annularSectorPath(cx, cy, DONUT_OUTER, DONUT_INNER, seg.startAngle, seg.endAngle),
             fill: sliceColor(seg.key)
           }
         });
+        this.makeArcDrillable(path, seg.key, ((_b = distribution.slices.find((sl) => sl.key === seg.key)) == null ? void 0 : _b.isOther) === true);
       }
     }
     this.renderLegend(wrap, distribution);
+  }
+  /** Make a donut arc a mouse drill target (keyboard users use the legend, which is
+   * fully drillable). SVG elements aren't HTMLElements, so this is a lighter-weight
+   * click+cursor rather than the full `makeDrillable`. */
+  makeArcDrillable(el, key, isOther) {
+    el.classList.add("bpp-arc-drill");
+    el.createSvg("title").textContent = `${key} \u2014 click to list notes`;
+    el.addEventListener("click", () => this.openDrill(() => this.sliceDrill(key, isOther)));
   }
   renderLegend(wrap, distribution) {
     const legend = wrap.createDiv({ cls: "bpp-legend" });
@@ -8092,7 +8537,39 @@ var DashboardView = class extends PowerPackView {
       item.createSpan({ cls: "bpp-legend-label", text: slice.key });
       const pct = distribution.total > 0 ? Math.round(slice.value / distribution.total * 100) : 0;
       item.createSpan({ cls: "bpp-muted bpp-legend-value", text: `${formatValue(slice.value)} \xB7 ${pct}%` });
+      if (slice.rows.length > 0) {
+        this.makeDrillable(
+          item,
+          `${slice.key}: ${slice.count} notes \u2014 list them`,
+          () => this.openDrill(() => this.sliceDrill(slice.key, slice.isOther === true))
+        );
+      }
     }
+  }
+  // ---- drill resolvers -----------------------------------------------------
+  // Re-derive the subset from the CURRENT rows/settings and look it up by key, so
+  // the panel stays correct after an edit changes the buckets. Returns null when
+  // the slice / KPI no longer exists.
+  sliceDrill(key, isOther) {
+    const dist = this.distributionOf(this.lastRows);
+    const slice = dist.slices.find((s) => isOther ? s.isOther === true : s.isOther !== true && s.key === key);
+    if (!slice || slice.rows.length === 0) return null;
+    const agg = this.plugin.settings.dashboardAggregation;
+    const noun = `${slice.count} note${slice.count === 1 ? "" : "s"}`;
+    return {
+      title: `${this.plugin.settings.dashboardGroupBy}: ${slice.key}`,
+      subtitle: agg === "count" ? noun : `${noun} \xB7 ${agg} = ${formatValue(slice.value)}`,
+      rows: slice.rows
+    };
+  }
+  kpiDrill(label) {
+    const kpi = this.kpisOf(this.lastRows).find((k) => k.label === label);
+    if (!kpi || kpi.rows.length === 0) return null;
+    return {
+      title: kpi.label,
+      subtitle: `${kpi.rows.length} note${kpi.rows.length === 1 ? "" : "s"}`,
+      rows: kpi.rows
+    };
   }
 };
 function sliceColor(key) {
@@ -8835,10 +9312,15 @@ var BasesPowerPackPlugin = class extends import_obsidian12.Plugin {
     this.settings.pivotColProp = coerceProp(this.settings.pivotColProp, DEFAULT_SETTINGS.pivotColProp);
     if (!AGGREGATIONS.includes(this.settings.pivotAggregation)) this.settings.pivotAggregation = DEFAULT_SETTINGS.pivotAggregation;
     if (typeof this.settings.pivotValueExpr !== "string") this.settings.pivotValueExpr = "";
+    if (!PIVOT_SORTS.includes(this.settings.pivotSort)) this.settings.pivotSort = DEFAULT_SETTINGS.pivotSort;
+    if (typeof this.settings.pivotHeat !== "boolean") this.settings.pivotHeat = DEFAULT_SETTINGS.pivotHeat;
     this.settings.dashboardGroupBy = coerceProp(this.settings.dashboardGroupBy, DEFAULT_SETTINGS.dashboardGroupBy);
     if (!AGGREGATIONS.includes(this.settings.dashboardAggregation)) this.settings.dashboardAggregation = DEFAULT_SETTINGS.dashboardAggregation;
     if (typeof this.settings.dashboardValueExpr !== "string") this.settings.dashboardValueExpr = "";
     if (!DASHBOARD_CHART_TYPES.includes(this.settings.dashboardChartType)) this.settings.dashboardChartType = DEFAULT_SETTINGS.dashboardChartType;
+    if (!DISTRIBUTION_SORTS.includes(this.settings.dashboardSort)) this.settings.dashboardSort = DEFAULT_SETTINGS.dashboardSort;
+    if (!Number.isInteger(this.settings.dashboardTopN) || this.settings.dashboardTopN < 0)
+      this.settings.dashboardTopN = DEFAULT_SETTINGS.dashboardTopN;
     this.settings.galleryImageProp = coerceProp(this.settings.galleryImageProp, DEFAULT_SETTINGS.galleryImageProp);
   }
   async saveSettings(opts) {

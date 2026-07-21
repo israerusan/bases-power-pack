@@ -28,7 +28,8 @@ import { KANBAN_SORTS } from "./query/kanban";
 import { sanitizeWipLimit } from "./query/wip";
 import { resolveParentRef } from "./query/hierarchy";
 import { normalizeColorRules } from "./query/colorRules";
-import { DASHBOARD_CHART_TYPES } from "./query/dashboard";
+import { DASHBOARD_CHART_TYPES, DISTRIBUTION_SORTS } from "./query/dashboard";
+import { PIVOT_SORTS } from "./query/pivot";
 import { FEED_GRANULARITIES } from "./query/feed";
 import type { RawNote } from "./model/row";
 
@@ -553,10 +554,17 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.settings.pivotColProp = coerceProp(this.settings.pivotColProp, DEFAULT_SETTINGS.pivotColProp);
 		if (!AGGREGATIONS.includes(this.settings.pivotAggregation)) this.settings.pivotAggregation = DEFAULT_SETTINGS.pivotAggregation;
 		if (typeof this.settings.pivotValueExpr !== "string") this.settings.pivotValueExpr = "";
+		if (!PIVOT_SORTS.includes(this.settings.pivotSort)) this.settings.pivotSort = DEFAULT_SETTINGS.pivotSort;
+		if (typeof this.settings.pivotHeat !== "boolean") this.settings.pivotHeat = DEFAULT_SETTINGS.pivotHeat;
 		this.settings.dashboardGroupBy = coerceProp(this.settings.dashboardGroupBy, DEFAULT_SETTINGS.dashboardGroupBy);
 		if (!AGGREGATIONS.includes(this.settings.dashboardAggregation)) this.settings.dashboardAggregation = DEFAULT_SETTINGS.dashboardAggregation;
 		if (typeof this.settings.dashboardValueExpr !== "string") this.settings.dashboardValueExpr = "";
 		if (!DASHBOARD_CHART_TYPES.includes(this.settings.dashboardChartType)) this.settings.dashboardChartType = DEFAULT_SETTINGS.dashboardChartType;
+		if (!DISTRIBUTION_SORTS.includes(this.settings.dashboardSort)) this.settings.dashboardSort = DEFAULT_SETTINGS.dashboardSort;
+		// Top-N: a non-negative integer, or 0 for "all". A corrupt/non-numeric value
+		// falls back to the default rather than uncapping (or NaN-capping) the chart.
+		if (!Number.isInteger(this.settings.dashboardTopN) || this.settings.dashboardTopN < 0)
+			this.settings.dashboardTopN = DEFAULT_SETTINGS.dashboardTopN;
 		this.settings.galleryImageProp = coerceProp(this.settings.galleryImageProp, DEFAULT_SETTINGS.galleryImageProp);
 	}
 

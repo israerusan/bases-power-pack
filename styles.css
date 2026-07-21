@@ -1885,3 +1885,149 @@ table.bpp-pivot {
     transition: none;
   }
 }
+
+/* ---- Drill-down: shared affordances + panel ------------------------------- */
+/* Any number that opens the notes behind it — a pivot cell, a dashboard bar, a
+   KPI card. The affordance must read as "clickable" without shouting. */
+.bpp-drillable {
+  cursor: pointer;
+  transition: background-color 120ms ease, box-shadow 120ms ease, filter 120ms ease;
+}
+.bpp-drillable:hover {
+  filter: brightness(1.06);
+}
+.bpp-drillable:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: -2px;
+  border-radius: var(--bpp-radius-sm);
+}
+/* Table cells/headers get a tinted hover so the whole cell reads as the target. */
+td.bpp-drillable:hover,
+th.bpp-drillable:hover {
+  background-color: var(--background-modifier-hover);
+  filter: none;
+}
+
+/* The drill panel: a sticky bottom sheet inside the (scrolling) view, so it stays
+   pinned to the bottom while you scroll the chart/matrix above it. */
+.bpp-drill {
+  position: sticky;
+  bottom: 0;
+  margin-top: var(--bpp-space-5);
+  /* vh (not %) so the cap resolves even when the view has no definite height; the
+     list inside scrolls once the panel hits this ceiling. */
+  max-height: 50vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--bpp-radius-lg) var(--bpp-radius-lg) 0 0;
+  box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.18);
+  z-index: 5;
+}
+.bpp-drill-head {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--bpp-space-4);
+  padding: var(--bpp-space-4) var(--bpp-space-5);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.bpp-drill-titles {
+  flex: 1;
+  min-width: 0;
+}
+.bpp-drill-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bpp-drill-sub {
+  font-size: 0.85em;
+}
+.bpp-drill-actions {
+  display: flex;
+  gap: var(--bpp-space-2);
+  flex-shrink: 0;
+}
+.bpp-drill-btn {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: var(--bpp-radius-sm);
+  padding: 2px 6px;
+  color: var(--text-muted);
+  line-height: 1.2;
+}
+.bpp-drill-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+.bpp-drill-list {
+  overflow-y: auto;
+  padding: var(--bpp-space-4) var(--bpp-space-5) var(--bpp-space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--bpp-space-3);
+}
+/* Reuse the Feed item look for drill rows (already themed + accessible). */
+.bpp-drill-item {
+  cursor: pointer;
+}
+
+/* ---- Pivot heat-map ------------------------------------------------------- */
+/* Shade a cell by its share of the busiest cell (--bpp-heat is 0..1). Uses the
+   accent color at a low alpha so it reads in both light and dark themes. */
+.bpp-pivot .bpp-pivot-cell.is-hot {
+  background-color: hsla(var(--accent-h, 220), var(--accent-s, 70%), var(--accent-l, 50%), calc(var(--bpp-heat, 0) * 0.32));
+}
+
+/* ---- Dashboard: stacked bar ---------------------------------------------- */
+.bpp-stacked-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bpp-space-5);
+}
+.bpp-stacked {
+  display: flex;
+  width: 100%;
+  height: 28px;
+  border-radius: var(--bpp-radius-pill);
+  overflow: hidden;
+  border: 1px solid var(--background-modifier-border);
+}
+.bpp-stacked-seg {
+  height: 100%;
+  min-width: 2px;
+  background-color: hsl(var(--bpp-bar-hue, 220), 60%, 55%);
+}
+.bpp-stacked-seg:focus-visible {
+  outline: 2px solid var(--background-primary);
+  outline-offset: -3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bpp-drillable {
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .bpp-drill {
+    border: 1px solid CanvasText;
+  }
+  .bpp-drillable:focus-visible {
+    outline: 2px solid Highlight;
+  }
+  .bpp-stacked-seg {
+    border-right: 1px solid CanvasText;
+  }
+}
+
+/* Donut arcs are mouse drill targets (keyboard users drill via the legend). */
+.bpp-arc-drill {
+  cursor: pointer;
+}
+.bpp-arc-drill:hover {
+  filter: brightness(1.08);
+}

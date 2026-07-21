@@ -998,6 +998,85 @@ const otherSlice = distAvg.slices.find((s) => s.key.startsWith("Other"));
 assert.equal(otherSlice.value, 15, "Other avg is the mean of the merged tail (10,20 → 15), not the sum of averages (30)");
 assert.equal(otherSlice.count, 2, "Other count sums the tail memberships");
 
+// ---- drill-down: pivot exposes the notes behind every number ---------------
+// pv = buildPivot(pdRows, status × priority, count) from above.
+assert.equal(pv.cellRows[1][0].length, 2, "done×high cell exposes its 2 notes for drill-down");
+assert.deepEqual(pv.cellRows[1][0].map((r) => r.id).sort(), ["C.md", "D.md"], "cell rows are the right notes");
+assert.equal(pv.cellRows[2][0].length, 0, "an empty intersection has no drill rows");
+assert.equal(pv.rowKeyRows[1].length, 2, "the 'done' row key exposes all its notes");
+assert.equal(pv.colKeyRows[0].length, 3, "the 'high' column key exposes all its notes");
+assert.equal(pv.allRows.length, 5, "grand-total drill is every matrix note");
+
+// Busiest-first key ordering keeps the biggest buckets (matters under truncation).
+const sortRows = [
+	pdRow("s1.md", { g: "a", p: "x" }),
+	pdRow("s2.md", { g: "b", p: "x" }),
+	pdRow("s3.md", { g: "b", p: "x" }),
+	pdRow("s4.md", { g: "b", p: "x" }),
+];
+const pvLabel = pivot.buildPivot(sortRows, { rowProp: "g", colProp: "p", aggregation: "count", valueExpr: "", sort: "label" });
+assert.deepEqual(pvLabel.rowKeys, ["a", "b"], "label sort orders row keys alphabetically");
+const pvTotal = pivot.buildPivot(sortRows, { rowProp: "g", colProp: "p", aggregation: "count", valueExpr: "", sort: "total" });
+assert.deepEqual(pvTotal.rowKeys, ["b", "a"], "total sort puts the busiest row key first");
+
+// (empty) is forced last even under a total sort that would otherwise rank it high.
+const emptyHeavy = [
+	pdRow("e1.md", { p: "x" }),
+	pdRow("e2.md", { p: "x" }),
+	pdRow("e3.md", { g: "a", p: "x" }),
+];
+const pvEmpty = pivot.buildPivot(emptyHeavy, { rowProp: "g", colProp: "p", aggregation: "count", valueExpr: "", sort: "total" });
+assert.equal(pvEmpty.rowKeys[pvEmpty.rowKeys.length - 1], pivot.PIVOT_EMPTY_KEY, "(empty) stays last even when it's the biggest bucket");
+
+// ---- drill-down: distribution slices carry their rows ----------------------
+const drillDist = dashboard.buildDistribution(pdRows, { groupBy: "status", aggregation: "count", valueExpr: "" });
+const doneSlice = drillDist.slices.find((s) => s.key === "done");
+assert.equal(doneSlice.rows.length, 2, "the 'done' slice carries its 2 notes");
+assert.equal(drillDist.slices.reduce((n, s) => n + s.rows.length, 0), 5, "slice rows partition all notes");
+const drillOther = dashboard.buildDistribution(many, { groupBy: "status", aggregation: "count", valueExpr: "", maxSlices: 5 });
+const drillOtherSlice = drillOther.slices.find((s) => s.key.startsWith("Other"));
+assert.equal(drillOtherSlice.rows.length, 56, "the Other slice carries every folded-in note (60 − 4 head)");
+
+// Display sort orders slices without changing the fold (Other stays the smallest).
+const cntRows = [
+	pdRow("c1.md", { g: "a" }), pdRow("c2.md", { g: "a" }), pdRow("c3.md", { g: "a" }),
+	pdRow("c4.md", { g: "b" }),
+	pdRow("c5.md", { g: "c" }), pdRow("c6.md", { g: "c" }),
+];
+const asc = dashboard.buildDistribution(cntRows, { groupBy: "g", aggregation: "count", valueExpr: "", sort: "value-asc" });
+assert.deepEqual(asc.slices.map((s) => s.key), ["b", "c", "a"], "value-asc sorts smallest slice first");
+const desc = dashboard.buildDistribution(cntRows, { groupBy: "g", aggregation: "count", valueExpr: "", sort: "value" });
+assert.deepEqual(desc.slices.map((s) => s.key), ["a", "c", "b"], "default value sort is largest-first");
+
+// ---- drill-down: KPI cards carry the exact subset they count ---------------
+const drillKpis = dashboard.buildDefaultKpis(pdRows, "status", "done");
+assert.equal(drillKpis[0].rows.length, 5, "Notes KPI drills to all rows");
+assert.equal(drillKpis[1].rows.length, 2, "Done KPI drills to the done rows");
+assert.equal(drillKpis[2].rows.length, 3, "Remaining KPI drills to the not-done rows");
+assert.ok(drillKpis[1].rows.every((r) => ["C.md", "D.md"].includes(r.id)), "Done KPI rows are the done notes");
+
+// A real category literally named "Other (…)" must NOT be confused with the
+// synthesized fold: only the fold carries isOther, so a drill can target it precisely.
+const otherCollide = [
+	pdRow("oc1.md", { g: "Other (legacy)" }),
+	pdRow("oc2.md", { g: "Other (legacy)" }),
+	pdRow("oc3.md", { g: "a" }),
+	pdRow("oc4.md", { g: "b" }),
+	pdRow("oc5.md", { g: "c" }),
+];
+const collideDist = dashboard.buildDistribution(otherCollide, { groupBy: "g", aggregation: "count", valueExpr: "", maxSlices: 3 });
+const flagged = collideDist.slices.filter((s) => s.isOther === true);
+assert.equal(flagged.length, 1, "exactly one slice is the synthesized fold");
+assert.ok(flagged[0].key.startsWith("Other ("), "the fold is the '(N)' bucket");
+const realOther = collideDist.slices.find((s) => s.key === "Other (legacy)");
+assert.ok(realOther && realOther.isOther !== true, "a real 'Other (legacy)' category is not flagged as the fold");
+assert.equal(realOther.rows.length, 2, "the real 'Other (legacy)' slice keeps its own 2 notes");
+
+// ---- stacked chart type + labels -------------------------------------------
+assert.deepEqual(dashboard.DASHBOARD_CHART_TYPES, ["bar", "donut", "stacked"], "stacked joins the chart types");
+assert.equal(dashboard.DASHBOARD_CHART_LABELS.stacked, "Stacked", "stacked has a human label");
+assert.deepEqual(dashboard.DISTRIBUTION_SORTS, ["value", "value-asc", "count", "label"], "distribution sort options");
+
 // ---- gallery markdown edge cases (roundtable findings) ---------------------
 assert.deepEqual(
 	gallery.parseImageRef('![alt](cover.png "My title")'),

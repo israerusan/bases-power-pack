@@ -17,6 +17,11 @@ export const PIVOT_EMPTY_KEY = "(empty)";
  * runaway matrix. Distinct keys past this are dropped and flagged. */
 const DEFAULT_MAX_KEYS = 50;
 
+/** How the row/column keys are ordered: alphabetically, or by descending
+ * membership (most-populated first) so the busy intersections rise to the corner. */
+export const PIVOT_SORTS = ["label", "total"] as const;
+export type PivotSort = (typeof PIVOT_SORTS)[number];
+
 export interface PivotOptions {
 	/** Frontmatter property (or formula) grouping the table's rows. */
 	rowProp: string;
@@ -25,6 +30,8 @@ export interface PivotOptions {
 	aggregation: Aggregation;
 	/** Expression aggregated in each cell. Ignored for `count`; defaults to `1`. */
 	valueExpr: string;
+	/** Key ordering for both axes. Defaults to `"label"`. */
+	sort?: PivotSort;
 	maxRowKeys?: number;
 	maxColKeys?: number;
 }
@@ -36,6 +43,15 @@ export interface PivotModel {
 	cells: string[][];
 	/** Row membership counts, `[rowIndex][colIndex]` — 0 marks an empty cell. */
 	counts: number[][];
+	/** The actual notes in each cell, `[rowIndex][colIndex]` — the drill-down target
+	 * behind every number. Kept so clicking a cell can list its notes. */
+	cellRows: Row[][][];
+	/** The notes in each row key (across all columns), indexed by rowIndex. */
+	rowKeyRows: Row[][];
+	/** The notes in each column key (across all rows), indexed by colIndex. */
+	colKeyRows: Row[][];
+	/** Every note that landed in the matrix — the grand-total drill-down. */
+	allRows: Row[];
 	rowTotals: string[];
 	colTotals: string[];
 	grandTotal: string;
@@ -51,11 +67,21 @@ function keyOf(row: Row, prop: string): string {
 	return raw || PIVOT_EMPTY_KEY;
 }
 
-/** Distinct keys sorted naturally, with the "(empty)" bucket forced to the end. */
-function sortedKeys(keys: Set<string>): string[] {
-	return Array.from(keys).sort((a, b) => {
+/**
+ * Distinct keys ordered for display, with the "(empty)" bucket always forced to
+ * the end. `label` sorts naturally; `total` sorts by descending membership (from
+ * `tally`) so the most-populated keys lead, tie-broken naturally. Ordering by
+ * membership matters because truncation keeps the head — a `total` sort therefore
+ * keeps the biggest buckets rather than the alphabetically-first ones.
+ */
+function sortedKeys(tally: Map<string, number>, sort: PivotSort): string[] {
+	return Array.from(tally.keys()).sort((a, b) => {
 		if (a === PIVOT_EMPTY_KEY) return 1;
 		if (b === PIVOT_EMPTY_KEY) return -1;
+		if (sort === "total") {
+			const diff = (tally.get(b) ?? 0) - (tally.get(a) ?? 0);
+			if (diff !== 0) return diff;
+		}
 		return a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" });
 	});
 }
@@ -66,17 +92,21 @@ export function buildPivot(rows: Row[], options: PivotOptions): PivotModel {
 	const maxColKeys = options.maxColKeys ?? DEFAULT_MAX_KEYS;
 	const aggregation = options.aggregation;
 	const expression = options.valueExpr.trim() || "1";
+	const sort = options.sort ?? "label";
 
-	// Gather the distinct keys FIRST, so truncation keeps the deterministic sorted
-	// head rather than whichever keys happened to be scanned first.
-	const allRowKeys = new Set<string>();
-	const allColKeys = new Set<string>();
+	// Tally the distinct keys FIRST (with their membership counts, so a "total" sort
+	// can order by popularity), so truncation keeps the deterministic sorted head
+	// rather than whichever keys happened to be scanned first.
+	const rowTally = new Map<string, number>();
+	const colTally = new Map<string, number>();
 	for (const row of rows) {
-		allRowKeys.add(keyOf(row, rowProp));
-		allColKeys.add(keyOf(row, colProp));
+		const rk = keyOf(row, rowProp);
+		const ck = keyOf(row, colProp);
+		rowTally.set(rk, (rowTally.get(rk) ?? 0) + 1);
+		colTally.set(ck, (colTally.get(ck) ?? 0) + 1);
 	}
-	const sortedRowKeys = sortedKeys(allRowKeys);
-	const sortedColKeys = sortedKeys(allColKeys);
+	const sortedRowKeys = sortedKeys(rowTally, sort);
+	const sortedColKeys = sortedKeys(colTally, sort);
 	const truncatedRows = sortedRowKeys.length > maxRowKeys;
 	const truncatedCols = sortedColKeys.length > maxColKeys;
 	const rowKeys = truncatedRows ? sortedRowKeys.slice(0, maxRowKeys) : sortedRowKeys;
@@ -116,6 +146,10 @@ export function buildPivot(rows: Row[], options: PivotOptions): PivotModel {
 		colKeys,
 		cells,
 		counts,
+		cellRows: buckets,
+		rowKeyRows: rowBuckets,
+		colKeyRows: colBuckets,
+		allRows: all,
 		rowTotals,
 		colTotals,
 		grandTotal,

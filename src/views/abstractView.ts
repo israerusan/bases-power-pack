@@ -13,8 +13,20 @@ import type { Row } from "../model/row";
 import { PromptModal, ConfirmModal } from "./modals";
 import { coerceFieldInput, formatFieldForEdit } from "../query/inlineEdit";
 import { resolveRowColor } from "../query/colorRules";
+import { formatCardField } from "../query/kanban";
+import { buildMarkdownTable } from "../query/export";
 import { writeRowProperty } from "./viewData";
 import { renderSearchControl } from "./viewChrome";
+
+/** A drill-down request: the notes behind a clicked number, plus how to label the
+ * panel that lists them. Returned lazily by a resolver so the panel can refresh
+ * itself against current data after an edit (see {@link PowerPackView.openDrill}). */
+export interface DrillRequest {
+	title: string;
+	/** Optional second line, e.g. the aggregated value. Defaults to "N notes". */
+	subtitle?: string;
+	rows: Row[];
+}
 
 /** One entry in a view's Export menu — a labelled builder that produces the text
  * to copy. `premium` options are locked (and prompt an upgrade) on the free tier. */
@@ -49,6 +61,13 @@ export abstract class PowerPackView extends ItemView {
 	 * input or the drag target (which would drop or corrupt the write). */
 	private suppressAutoRender = false;
 	private autoRenderPending = false;
+
+	/** The open drill-down panel and the resolver that (re)materialises its rows.
+	 * The resolver is stored — not a row snapshot — so the panel refreshes against
+	 * current data after each render (an edit inside it can move a note out of the
+	 * bucket, and the panel should reflect that). null = no panel open. */
+	private drillResolver: (() => DrillRequest | null) | null = null;
+	private drillEl: HTMLElement | null = null;
 
 	constructor(leaf: WorkspaceLeaf, plugin: BasesPowerPackPlugin) {
 		super(leaf);
@@ -89,6 +108,7 @@ export abstract class PowerPackView extends ItemView {
 		this.searchInputEl = null;
 		this.suppressAutoRender = false;
 		this.autoRenderPending = false;
+		this.closeDrill();
 		this.contentEl.empty();
 	}
 
@@ -428,6 +448,157 @@ export abstract class PowerPackView extends ItemView {
 		box.createEl("p", { text: message });
 		const btn = box.createEl("button", { text: "Retry", cls: "mod-cta" });
 		btn.addEventListener("click", () => void this.render());
+	}
+
+	/**
+	 * Open a drill-down panel listing the notes behind a clicked mark (a pivot cell,
+	 * a dashboard bar, a KPI card…). Pass a *resolver* — a function that returns the
+	 * current rows for the thing that was clicked — rather than a fixed list, so the
+	 * panel can refresh itself after an edit moves a note in or out of the bucket.
+	 * The resolver looks up its rows by stable keys against the view's latest model,
+	 * so it stays correct across re-renders; it returns null when the bucket no
+	 * longer exists (e.g. its column was emptied), which closes the panel.
+	 */
+	protected openDrill(resolver: () => DrillRequest | null): void {
+		this.drillResolver = resolver;
+		const req = resolver();
+		if (!req) {
+			this.closeDrill();
+			return;
+		}
+		this.paintDrill(req, true);
+	}
+
+	/** Re-materialise an open drill panel after a render (call at the tail of a
+	 * view's render()). A no-op when nothing is drilled. */
+	protected restoreDrill(): void {
+		if (!this.drillResolver) return;
+		const req = this.drillResolver();
+		if (!req) {
+			this.closeDrill();
+			return;
+		}
+		this.paintDrill(req, false);
+	}
+
+	protected closeDrill(): void {
+		this.drillResolver = null;
+		this.drillEl?.remove();
+		this.drillEl = null;
+	}
+
+	/**
+	 * Paint (or repaint) the drill panel. It's a sticky bottom sheet appended as the
+	 * last child of the view content: part of normal flow (so it survives no matter
+	 * how the view lays out) but pinned to the bottom of the scrollport while you
+	 * scroll the chart/matrix above it. `focus` moves focus into the panel on the
+	 * initial open (for keyboard + screen-reader users) but not on a background
+	 * refresh, which would otherwise steal focus while you work elsewhere.
+	 */
+	private paintDrill(req: DrillRequest, focus: boolean): void {
+		this.drillEl?.remove();
+		const panel = this.contentEl.createDiv({
+			cls: "bpp-drill",
+			attr: { role: "dialog", "aria-label": req.title },
+		});
+
+		const head = panel.createDiv({ cls: "bpp-drill-head" });
+		const titles = head.createDiv({ cls: "bpp-drill-titles" });
+		titles.createDiv({ cls: "bpp-drill-title", text: req.title });
+		titles.createDiv({
+			cls: "bpp-muted bpp-drill-sub",
+			text: req.subtitle ?? `${req.rows.length} note${req.rows.length === 1 ? "" : "s"}`,
+		});
+
+		const actions = head.createDiv({ cls: "bpp-drill-actions" });
+		const copy = actions.createEl("button", {
+			cls: "bpp-drill-btn",
+			text: "⤓",
+			attr: { "aria-label": "Copy this list as a Markdown table", title: "Copy as Markdown" },
+		});
+		copy.addEventListener("click", () => void this.copyDrill(req));
+		const close = actions.createEl("button", {
+			cls: "bpp-drill-btn bpp-drill-close",
+			text: "✕",
+			attr: { "aria-label": "Close drill-down" },
+		});
+		close.addEventListener("click", () => this.closeDrill());
+
+		panel.addEventListener("keydown", (evt) => {
+			if (evt.key === "Escape") {
+				evt.preventDefault();
+				this.closeDrill();
+			}
+		});
+
+		const list = panel.createDiv({ cls: "bpp-drill-list" });
+		if (req.rows.length === 0) {
+			list.createDiv({ cls: "bpp-empty", text: "No notes here." });
+		} else {
+			for (const row of req.rows) this.renderDrillItem(list, row);
+		}
+
+		this.drillEl = panel;
+		if (focus) {
+			close.focus();
+			panel.scrollIntoView({ block: "nearest" });
+		}
+	}
+
+	/** One note in the drill panel — clickable to open, with the same right-click /
+	 * ⋯ / keyboard action menu every view item has, so you can act without leaving. */
+	private renderDrillItem(list: HTMLElement, row: Row): void {
+		const item = list.createDiv({ cls: "bpp-feed-item bpp-drill-item" });
+		this.applyColorRule(item, row);
+
+		const body = item.createDiv({ cls: "bpp-feed-body" });
+		body.createDiv({ cls: "bpp-feed-title", text: row.name });
+
+		const pills = this.plugin.settings.kanbanCardFields
+			.map((field) => ({ field, value: formatCardField(row, field) }))
+			.filter((f): f is { field: string; value: string } => f.value !== null);
+		if (pills.length > 0) {
+			const pillRow = body.createDiv({ cls: "bpp-feed-pills" });
+			for (const pill of pills) {
+				pillRow.createSpan({ cls: "bpp-pill", text: pill.value, attr: { title: `${pill.field}: ${pill.value}` } });
+			}
+		}
+
+		const openMenu = (anchor: MouseEvent | HTMLElement): void => {
+			if (anchor instanceof MouseEvent) anchor.preventDefault();
+			const menu = new Menu();
+			this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, () => void this.render());
+			this.showMenuAtAnchor(menu, anchor);
+		};
+		item.addEventListener("click", () => this.openRow(row));
+		item.addEventListener("contextmenu", (evt) => openMenu(evt));
+		this.makeItemAccessible(item, row.name, () => this.openRow(row), (anchor) => openMenu(anchor));
+		this.addOverflowButton(item, row.name, openMenu);
+	}
+
+	private async copyDrill(req: DrillRequest): Promise<void> {
+		const fields = ["name", ...this.plugin.settings.kanbanCardFields];
+		await this.copyToClipboard(buildMarkdownTable(req.rows, fields), "list");
+	}
+
+	/**
+	 * Make an element a drill trigger: clickable, focusable, and keyboard-operable
+	 * (Enter / Space) with a button role and label. Used for pivot cells & headers
+	 * and dashboard bars / slices / KPIs so every number is a doorway to its notes.
+	 */
+	protected makeDrillable(el: HTMLElement, label: string, open: () => void): void {
+		el.addClass("bpp-drillable");
+		el.tabIndex = 0;
+		el.setAttribute("role", "button");
+		el.setAttribute("aria-label", label);
+		el.addEventListener("click", () => open());
+		el.addEventListener("keydown", (evt) => {
+			if (evt.target !== el) return;
+			if (evt.key === "Enter" || evt.key === " ") {
+				evt.preventDefault();
+				open();
+			}
+		});
 	}
 
 	/**

@@ -11,8 +11,26 @@ import { isRowDone } from "./kanban";
  * view only paints the result.
  */
 
-export const DASHBOARD_CHART_TYPES = ["bar", "donut"] as const;
+export const DASHBOARD_CHART_TYPES = ["bar", "donut", "stacked"] as const;
 export type DashboardChartType = (typeof DASHBOARD_CHART_TYPES)[number];
+
+/** Human labels for the chart-type toggle / settings dropdown. */
+export const DASHBOARD_CHART_LABELS: Record<DashboardChartType, string> = {
+	bar: "Bars",
+	donut: "Donut",
+	stacked: "Stacked",
+};
+
+/** How the distribution slices are ordered for display. */
+export const DISTRIBUTION_SORTS = ["value", "value-asc", "count", "label"] as const;
+export type DistributionSort = (typeof DISTRIBUTION_SORTS)[number];
+
+export const DISTRIBUTION_SORT_LABELS: Record<DistributionSort, string> = {
+	value: "Value (high→low)",
+	"value-asc": "Value (low→high)",
+	count: "Note count",
+	label: "Name (A→Z)",
+};
 
 /** The label shown for a slice whose group value is missing or empty. */
 export const DASHBOARD_EMPTY_KEY = "(empty)";
@@ -23,8 +41,14 @@ export interface CategorySlice {
 	key: string;
 	/** Aggregated value that drives the bar height / arc size (never negative). */
 	value: number;
-	/** Rows in this slice — for the "N notes" caption. */
+	/** Number of notes in this slice — for the "N notes" caption. */
 	count: number;
+	/** The actual notes in this slice — the drill-down target behind the bar/arc. */
+	rows: Row[];
+	/** True only for the synthesized "Other" fold. Lets a drill target the merged
+	 * bucket precisely, without matching its label text (a real category value could
+	 * itself start with "Other (…)"). */
+	isOther?: boolean;
 }
 
 export interface Distribution {
@@ -41,17 +65,45 @@ export interface DistributionOptions {
 	groupBy: string;
 	aggregation: Aggregation;
 	valueExpr: string;
+	/** Slice ordering for display. Defaults to `"value"` (largest first). */
+	sort?: DistributionSort;
 	maxSlices?: number;
 }
 
+interface ScoredBucket {
+	key: string;
+	rows: Row[];
+	count: number;
+	value: number;
+}
+
+/** Comparator for the requested display order. */
+function sortComparator(sort: DistributionSort): (a: ScoredBucket, b: ScoredBucket) => number {
+	const byLabel = (a: ScoredBucket, b: ScoredBucket): number =>
+		a.key.localeCompare(b.key, undefined, { numeric: true, sensitivity: "base" });
+	switch (sort) {
+		case "value-asc":
+			return (a, b) => a.value - b.value || byLabel(a, b);
+		case "count":
+			return (a, b) => b.count - a.count || byLabel(a, b);
+		case "label":
+			return byLabel;
+		default:
+			return (a, b) => b.value - a.value || byLabel(a, b);
+	}
+}
+
 /**
- * Group rows by a property and aggregate a value per group, returning slices
- * sorted largest-first. Beyond `maxSlices`, the long tail is folded into one
- * "Other" slice so a chart stays readable on a high-cardinality property.
+ * Group rows by a property and aggregate a value per group. Beyond `maxSlices`,
+ * the long tail (always the *lowest-value* categories) is folded into one "Other"
+ * slice so a chart stays readable on a high-cardinality property; the surviving
+ * slices are then ordered by `sort` for display. Every slice carries its rows so
+ * the chart can drill into the notes behind each bar.
  */
 export function buildDistribution(rows: Row[], options: DistributionOptions): Distribution {
 	const maxSlices = Math.max(1, options.maxSlices ?? DEFAULT_MAX_SLICES);
 	const expression = options.valueExpr.trim() || "1";
+	const sort = options.sort ?? "value";
 	const buckets = new Map<string, Row[]>();
 	for (const row of rows) {
 		const key = toStr(row.scope.get(options.groupBy)).trim() || DASHBOARD_EMPTY_KEY;
@@ -71,21 +123,27 @@ export function buildDistribution(rows: Row[], options: DistributionOptions): Di
 	// the combined tail. Summing per-category values would only be right for count /
 	// sum; for avg / min / max / unique it produces a nonsense "Other" (e.g. a sum of
 	// averages), so we aggregate the actual rows instead.
-	const scored = Array.from(buckets.entries()).map(([key, rows]) => ({ key, rows, count: rows.length, value: valueOf(rows) }));
-	scored.sort((a, b) => b.value - a.value || a.key.localeCompare(b.key));
+	const scored: ScoredBucket[] = Array.from(buckets.entries()).map(([key, rows]) => ({ key, rows, count: rows.length, value: valueOf(rows) }));
 
-	const truncated = scored.length > maxSlices;
-	let folded = scored;
+	// Fold by VALUE regardless of the display sort — "Other" must always be the
+	// smallest categories, or a "low→high" / "name" ordering would fold the biggest
+	// buckets away. Then order the survivors for display and append Other last.
+	const byValue = [...scored].sort((a, b) => b.value - a.value || a.key.localeCompare(b.key));
+	const truncated = byValue.length > maxSlices;
+	let head = byValue;
+	let other: ScoredBucket | null = null;
 	if (truncated) {
-		const head = scored.slice(0, maxSlices - 1);
-		const tail = scored.slice(maxSlices - 1);
+		head = byValue.slice(0, maxSlices - 1);
+		const tail = byValue.slice(maxSlices - 1);
 		const tailRows = tail.flatMap((b) => b.rows);
-		// "Other" is appended last regardless of its aggregated value (a re-aggregated
-		// avg could outrank a head slice) — the reader expects the merged bucket at the end.
-		folded = [...head, { key: `Other (${tail.length})`, rows: tailRows, count: tailRows.length, value: valueOf(tailRows) }];
+		other = { key: `Other (${tail.length})`, rows: tailRows, count: tailRows.length, value: valueOf(tailRows) };
 	}
 
-	const slices: CategorySlice[] = folded.map((b) => ({ key: b.key, value: b.value, count: b.count }));
+	const ordered = [...head].sort(sortComparator(sort));
+	// "Other" is appended last regardless of the sort — the reader expects the merged
+	// bucket at the end, not interleaved by its re-aggregated value.
+	const slices: CategorySlice[] = ordered.map((b) => ({ key: b.key, value: b.value, count: b.count, rows: b.rows }));
+	if (other) slices.push({ key: other.key, value: other.value, count: other.count, rows: other.rows, isOther: true });
 	const total = slices.reduce((s, x) => s + x.value, 0);
 	const max = slices.reduce((m, x) => (x.value > m ? x.value : m), 0);
 	return { slices, total, max, truncated };
@@ -96,29 +154,35 @@ export interface Kpi {
 	value: string;
 	/** Optional secondary line, e.g. a percentage under a count. */
 	sub?: string;
+	/** The notes this KPI counts — the drill-down target when the card is clicked. */
+	rows: Row[];
 }
 
 /**
  * The built-in KPI cards shown when no roll-ups are configured: total notes,
  * done, and remaining (with a % done), using the shared done predicate so the
- * figure matches the Kanban / Outline everywhere.
+ * figure matches the Kanban / Outline everywhere. Each card carries the exact
+ * subset it counts so clicking it can list those notes.
  */
 export function buildDefaultKpis(rows: Row[], statusProp: string, doneValue: string): Kpi[] {
+	const doneRows = rows.filter((r) => isRowDone(r, statusProp, doneValue));
+	const remainingRows = rows.filter((r) => !isRowDone(r, statusProp, doneValue));
 	const total = rows.length;
-	const done = rows.reduce((n, r) => n + (isRowDone(r, statusProp, doneValue) ? 1 : 0), 0);
-	const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+	const pct = total > 0 ? Math.round((doneRows.length / total) * 100) : 0;
 	return [
-		{ label: "Notes", value: String(total) },
-		{ label: "Done", value: String(done), sub: `${pct}%` },
-		{ label: "Remaining", value: String(total - done) },
+		{ label: "Notes", value: String(total), rows },
+		{ label: "Done", value: String(doneRows.length), sub: `${pct}%`, rows: doneRows },
+		{ label: "Remaining", value: String(remainingRows.length), rows: remainingRows },
 	];
 }
 
-/** A configured roll-up rendered as a KPI card (its aggregated display value). */
+/** A configured roll-up rendered as a KPI card (its aggregated display value). A
+ * roll-up aggregates the whole set, so its drill-down is all the rows. */
 export function buildRollupKpis(rows: Row[], rollups: Rollup[]): Kpi[] {
 	return rollups.map((rollup) => ({
 		label: rollup.label || rollup.aggregation,
 		value: computeRollup(rollup, rows),
+		rows,
 	}));
 }
 

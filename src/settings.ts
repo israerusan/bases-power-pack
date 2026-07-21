@@ -4,7 +4,15 @@ import type BasesPowerPackPlugin from "./main";
 import { AGGREGATIONS, type Aggregation, type Rollup } from "./query/rollup";
 import { AUTOMATION_ACTION_TYPES, type AutomationActionType, type AutomationRule } from "./query/automation";
 import { type ColorRule } from "./query/colorRules";
-import { DASHBOARD_CHART_TYPES, type DashboardChartType } from "./query/dashboard";
+import {
+	DASHBOARD_CHART_TYPES,
+	DASHBOARD_CHART_LABELS,
+	DISTRIBUTION_SORTS,
+	DISTRIBUTION_SORT_LABELS,
+	type DashboardChartType,
+	type DistributionSort,
+} from "./query/dashboard";
+import { type PivotSort } from "./query/pivot";
 import { FEED_GRANULARITIES, type FeedGranularity } from "./query/feed";
 
 const ACTION_LABELS: Record<AutomationActionType, string> = {
@@ -87,12 +95,20 @@ export interface BasesPowerPackSettings {
 	pivotColProp: string;
 	pivotAggregation: Aggregation;
 	pivotValueExpr: string;
+	/** Axis key ordering: alphabetical, or by busiest-first. */
+	pivotSort: PivotSort;
+	/** Shade each cell by magnitude (a heat-map over the matrix). */
+	pivotHeat: boolean;
 
 	/** Dashboard / analytics (premium) */
 	dashboardGroupBy: string;
 	dashboardAggregation: Aggregation;
 	dashboardValueExpr: string;
 	dashboardChartType: DashboardChartType;
+	/** Slice ordering for the distribution chart. */
+	dashboardSort: DistributionSort;
+	/** Max categories charted before the tail folds into "Other" (0 = show all). */
+	dashboardTopN: number;
 
 	/** Gallery (premium) */
 	galleryImageProp: string;
@@ -153,10 +169,14 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	pivotColProp: "priority",
 	pivotAggregation: "count",
 	pivotValueExpr: "",
+	pivotSort: "label",
+	pivotHeat: false,
 	dashboardGroupBy: "status",
 	dashboardAggregation: "count",
 	dashboardValueExpr: "",
 	dashboardChartType: "bar",
+	dashboardSort: "value",
+	dashboardTopN: 12,
 	galleryImageProp: "cover",
 	activeBasePath: "",
 	savedFilters: [],
@@ -558,6 +578,33 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 				);
 			}
 		);
+		premium(
+			"Pivot axis order",
+			"Order the row/column keys alphabetically, or by busiest-first so the most-populated intersections rise to the top-left. Also flip it from the toolbar.",
+			(setting) => {
+				setting.addDropdown((dd) => {
+					dd.addOption("label", "Name (A→Z)");
+					dd.addOption("total", "Busiest first");
+					dd.setValue(this.plugin.settings.pivotSort);
+					dd.onChange((value) => {
+						this.plugin.settings.pivotSort = value as PivotSort;
+						void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+					});
+				});
+			}
+		);
+		premium(
+			"Pivot heat-map",
+			"Shade each cell by its value so the hot spots pop out. Also toggle it from the toolbar.",
+			(setting) => {
+				setting.addToggle((toggle) =>
+					toggle.setValue(this.plugin.settings.pivotHeat).onChange((value) => {
+						this.plugin.settings.pivotHeat = value;
+						void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+					})
+				);
+			}
+		);
 
 		subHeading("Dashboard");
 		premium(
@@ -604,12 +651,33 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 				);
 			}
 		);
-		premium("Dashboard chart type", "Default chart style for the distribution — you can also flip it from the toolbar.", (setting) => {
+		premium("Dashboard chart type", "Default chart style for the distribution — bars, a donut, or a single stacked bar. You can also flip it from the toolbar.", (setting) => {
 			setting.addDropdown((dd) => {
-				for (const type of DASHBOARD_CHART_TYPES) dd.addOption(type, type === "bar" ? "Bars" : "Donut");
+				for (const type of DASHBOARD_CHART_TYPES) dd.addOption(type, DASHBOARD_CHART_LABELS[type]);
 				dd.setValue(this.plugin.settings.dashboardChartType);
 				dd.onChange((value) => {
 					this.plugin.settings.dashboardChartType = value as DashboardChartType;
+					void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+				});
+			});
+		});
+		premium("Dashboard slice order", "How the distribution slices are ordered. Also flip it from the toolbar.", (setting) => {
+			setting.addDropdown((dd) => {
+				for (const s of DISTRIBUTION_SORTS) dd.addOption(s, DISTRIBUTION_SORT_LABELS[s]);
+				dd.setValue(this.plugin.settings.dashboardSort);
+				dd.onChange((value) => {
+					this.plugin.settings.dashboardSort = value as DistributionSort;
+					void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+				});
+			});
+		});
+		premium("Dashboard categories shown", "How many categories to chart before the smallest fold into “Other”. Also change it from the toolbar.", (setting) => {
+			setting.addDropdown((dd) => {
+				for (const n of ["5", "8", "12", "20"]) dd.addOption(n, n);
+				dd.addOption("0", "All");
+				dd.setValue(String(this.plugin.settings.dashboardTopN));
+				dd.onChange((value) => {
+					this.plugin.settings.dashboardTopN = Number(value) || 0;
 					void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
 				});
 			});
