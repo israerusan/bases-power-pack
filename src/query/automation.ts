@@ -59,7 +59,11 @@ export function coerceLiteral(raw: string): unknown {
 	if (trimmed === "") return "";
 	if (trimmed === "true") return true;
 	if (trimmed === "false") return false;
-	if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
+	// Numify only when the value round-trips exactly. This preserves a zip code
+	// ("02134"), a zero-padded id ("007"), and a long id whose Number() loses
+	// precision ("123456789012345678") as the STRING the user typed, instead of
+	// silently rewriting the note's frontmatter to a different (or truncated) number.
+	if (/^-?\d+(\.\d+)?$/.test(trimmed) && String(Number(trimmed)) === trimmed) return Number(trimmed);
 	return trimmed;
 }
 

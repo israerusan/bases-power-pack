@@ -3,6 +3,59 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.17.0] - 2026-07-21
+
+A **hardening** release: it finishes the 1.16 orientation pass for the four views it
+left behind, fixes a real frontmatter-corruption bug, and cuts wasted work on large
+vaults. Scoped from a four-lens ruthless review (usability, performance,
+maintainability, correctness) plus an adversarial regression pass on the diff. No
+new features.
+
+### Fixed
+- **Bulk edit / Move Rules no longer corrupt string values that look numeric.**
+  Setting a property to a zip code (`02134`), a zero-padded id (`007`), or a long id
+  (`123456789012345678`) wrote a *different* number to your notes — the leading zero
+  gone, or the value silently rounded. These are now kept as the string you typed;
+  only values that round-trip through `Number()` unchanged are stored as numbers.
+- **Rescheduling a `Date`-typed calendar value no longer bloats it.** Dragging a note
+  whose date was stored as a real date object wrote back a `…T00:00:00.000Z`
+  datetime (which could display as the previous day west of UTC). A plain date now
+  stays a plain date; a genuine time like `09:00` is still preserved.
+- **Kanban cards grouped by a formula/computed property can't be corrupted by a
+  move.** Dragging such a card used to write a literal value that shadowed the
+  formula for that one note. The move is now refused with a Notice, matching the
+  existing guards on bulk edit and manual reordering.
+
+### Changed
+- **Calendar, Gantt, Outline, and Gallery now pick their driving property from the
+  toolbar** — the date, start/end, parent, and cover property respectively. An empty
+  view is almost always a wrong-property problem; you now fix it in one click while
+  watching the effect, instead of hunting through settings. (Pivot, Dashboard, Feed,
+  and Kanban already had this.)
+- **Consistent, actionable empty states everywhere.** Calendar / Gantt / Outline
+  replaced their bare grey sentence with the same titled empty state the other views
+  use, with **Clear search** / **Open settings** actions.
+- **The ⋯ actions button is now visible where it was advertised.** On Feed items,
+  Calendar agenda items, and drill-down lists the hint bar promised "⋯ opens
+  actions" but the button never appeared on hover on desktop. It does now.
+- **Dismissed tip bars stay dismissed across restarts.** Previously a waved-away tip
+  came back every time Obsidian relaunched; the dismissal is now remembered.
+- **Undo button added to the Pivot and Dashboard toolbars**, so an edit made from a
+  drill-down panel is reversible without the command palette — matching every other
+  view.
+
+### Performance
+- **Large-vault work on every render is cut sharply.** Setting a column color, WIP
+  limit, or order; adding/removing a column; and switching the group-by no longer
+  drop and rebuild the entire resolved row set — these are presentation-only and now
+  keep the resolve cache (the same optimization Kanban sort/hide-done already used).
+- **The Kanban group-by picker no longer scans every row's frontmatter on every
+  keystroke** — it reads the cached whole-vault key set instead, which also means the
+  picker offers every real property even on an empty or filtered board.
+- **Quick-search parses its query once per filter, not once per row** — the tokens
+  are compiled and lowercased a single time instead of re-splitting the query for
+  every candidate note.
+
 ## [1.16.0] - 2026-07-21
 
 A **usability & orientation** release. Scoped from an LLM round-table critique of

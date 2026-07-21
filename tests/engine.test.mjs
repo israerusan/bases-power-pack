@@ -474,6 +474,26 @@ assert.equal(
 	"reschedule preserves the original time suffix"
 );
 assert.equal(dates.rescheduleDateValue("", "2026-01-05"), "2026-01-05", "reschedule handles an empty original");
+assert.equal(
+	dates.rescheduleDateValue(new Date("2026-01-01T00:00:00.000Z"), "2026-01-05"),
+	"2026-01-05",
+	"reschedule writes a bare date for a Date-typed value (no synthetic midnight suffix)"
+);
+assert.equal(
+	dates.rescheduleDateValue("2026-01-01T00:00:00.000Z", "2026-01-05"),
+	"2026-01-05",
+	"reschedule strips a pure midnight-UTC suffix rather than bloating the date"
+);
+assert.equal(
+	dates.rescheduleDateValue("2026-01-01T09:00:00.000Z", "2026-01-05"),
+	"2026-01-05T09:00:00.000Z",
+	"reschedule keeps a genuine wall-clock time suffix"
+);
+assert.equal(
+	dates.rescheduleDateValue("2026-01-01T00:00:00", "2026-01-05"),
+	"2026-01-05T00:00:00",
+	"reschedule preserves an explicit local-midnight time (only the synthetic ...Z suffix is stripped)"
+);
 assert.equal(dates.startOfWeekIso("2026-01-15"), "2026-01-11", "startOfWeekIso snaps Thu 2026-01-15 back to Sun 01-11");
 assert.equal(dates.startOfWeekIso("2026-01-11"), "2026-01-11", "startOfWeekIso is a no-op on a Sunday");
 assert.deepEqual(
@@ -551,8 +571,18 @@ copySrcTags.push("c");
 assert.deepEqual(copyWrites[0].value, ["a", "b"], "mutating the source afterwards does not change the copied write");
 
 assert.equal(automation.coerceLiteral("42"), 42, "coerceLiteral parses numbers");
+assert.equal(automation.coerceLiteral("-3.5"), -3.5, "coerceLiteral parses negative decimals");
 assert.equal(automation.coerceLiteral("false"), false, "coerceLiteral parses booleans");
 assert.equal(automation.coerceLiteral("open"), "open", "coerceLiteral keeps strings");
+// Round-trip guard: values that would change under Number() stay strings, so a bulk
+// edit / Move Rule can't silently corrupt zip codes, zero-padded ids, or long ids.
+assert.strictEqual(automation.coerceLiteral("02134"), "02134", "coerceLiteral keeps a zero-padded zip code as a string");
+assert.strictEqual(automation.coerceLiteral("007"), "007", "coerceLiteral keeps a zero-padded id as a string");
+assert.strictEqual(
+	automation.coerceLiteral("123456789012345678"),
+	"123456789012345678",
+	"coerceLiteral keeps a precision-losing long id as a string"
+);
 
 // ---- kanban helpers ---------------------------------------------------------
 const kanbanRows = [
@@ -793,6 +823,14 @@ assert.equal(search.rowMatchesText(searchRow, "zzz"), false, "no false positive"
 assert.equal(search.filterRowsByText([searchRow], "").length, 1, "blank query returns all rows (identity)");
 assert.equal(search.filterRowsByText([searchRow], "alpha").length, 1, "filter keeps matching rows");
 assert.equal(search.filterRowsByText([searchRow], "zzz").length, 0, "filter drops non-matching rows");
+// Compiled-token path parity: key:value, tag:, and multi-token AND behave the same
+// through both the single-row and the filter entry points after the compile refactor.
+assert.equal(search.rowMatchesText(searchRow, "owner:ada"), true, "key:value matches a frontmatter property");
+assert.equal(search.rowMatchesText(searchRow, "owner:sam"), false, "key:value rejects a non-matching property value");
+assert.equal(search.rowMatchesText(searchRow, "tag:#urgent"), true, "tag:#x strips the leading # like tag:x");
+assert.equal(search.rowMatchesText(searchRow, "alpha q3"), true, "multi-token query ANDs (both match)");
+assert.equal(search.rowMatchesText(searchRow, "alpha zzz"), false, "multi-token query ANDs (one fails → no match)");
+assert.equal(search.filterRowsByText([searchRow], "owner:ada").length, 1, "filter honours a key:value token");
 
 // 1.11: property-aware tokens — `key:value` filters on frontmatter/formulas.
 assert.equal(search.rowMatchesText(searchRow, "owner:ada"), true, "key:value matches a frontmatter property");

@@ -14,7 +14,7 @@ import {
 } from "../query/hierarchy";
 import { createSeededNote, writeRowProperty } from "./viewData";
 import { PromptModal } from "./modals";
-import { renderContextControls, renderRollupBar } from "./viewChrome";
+import { renderContextControls, renderPropertySelect, renderRollupBar } from "./viewChrome";
 
 export const VIEW_TYPE_HIERARCHY = "bpp-hierarchy-view";
 
@@ -108,12 +108,19 @@ export class HierarchyView extends PowerPackView {
 		const flat = flattenForest(forest, this.collapsed, (id) => orders.get(id) ?? null);
 
 		if (flat.length === 0) {
-			container.createDiv({
-				cls: "bpp-empty",
-				text: this.searchQuery
-					? "No notes match the current search."
-					: `No notes to outline yet. Add "${parentProp}: Projects/My Project.md" to a note's frontmatter to nest it under another.`,
-			});
+			if (this.searchQuery) {
+				this.renderEmptyState(container, {
+					title: "No matches",
+					body: "No notes match the current search.",
+					actions: [{ label: "Clear search", onClick: () => { this.searchQuery = ""; void this.render(); } }],
+				});
+			} else {
+				this.renderEmptyState(container, {
+					title: "Nothing to outline yet",
+					body: `No notes are nested. Pick the parent property in the toolbar, or add "${parentProp}: Projects/My Project.md" to a note's frontmatter to nest it under another.`,
+					actions: [{ label: "Open settings", onClick: () => this.openSettings() }],
+				});
+			}
 			return;
 		}
 
@@ -138,7 +145,13 @@ export class HierarchyView extends PowerPackView {
 		const toolbar = container.createDiv({ cls: "bpp-toolbar" });
 		toolbar.createEl("h3", { text: "Outline" });
 		// (No "Premium" badge: this view only renders for licensed users.)
-		toolbar.createSpan({ cls: "bpp-muted", text: `nested by "${parentProp}"` });
+
+		// The parent property is chosen right here so a flat (empty) outline is fixed in
+		// place. Presentational — keep the resolve cache.
+		renderPropertySelect(toolbar, "Parent", this.plugin.getFrontmatterKeys(), parentProp, (value) => {
+			this.plugin.settings.hierarchyParentProp = value || "parent";
+			void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
+		});
 
 		const group = toolbar.createDiv({ cls: "bpp-segmented" });
 		const expand = group.createEl("button", { text: "Expand all", cls: "bpp-seg-btn" });

@@ -20,26 +20,59 @@ function normalize(value: unknown): string {
 /** `key:value` — key must look like a property name, value must be non-empty. */
 const PROP_TOKEN_RE = /^([A-Za-z_$][\w.$-]*):(.+)$/;
 
-function tokenMatches(row: Row, token: string, extra: string[]): boolean {
-	const m = PROP_TOKEN_RE.exec(token);
-	if (m) {
-		const key = m[1];
-		const value = normalize(m[2]);
-		if (key.toLocaleLowerCase() === "tag" || key.toLocaleLowerCase() === "tags") {
+/** A search token, pre-parsed and pre-lowercased once (not per candidate row). */
+interface CompiledToken {
+	/** Original-case property key for a `key:value` token (scope lookups are case-
+	 * sensitive), or null for a plain-text token. */
+	prop: string | null;
+	/** Lowercased key, for the case-insensitive tag/tags special-case. */
+	propLower: string;
+	/** Lowercased `value` half of a `key:value` token. */
+	value: string;
+	/** Lowercased whole token, the plain-text/fallback haystack needle. */
+	raw: string;
+}
+
+/** Parse + lowercase a query's tokens ONCE, so filtering N rows doesn't re-split
+ * the query and re-lowercase each needle N times (a real cost per keystroke on a
+ * large board). */
+function compileQuery(query: string): CompiledToken[] {
+	return query
+		.trim()
+		.split(/\s+/)
+		.filter(Boolean)
+		.map((token) => {
+			const m = PROP_TOKEN_RE.exec(token);
+			return {
+				prop: m ? m[1] : null,
+				propLower: m ? m[1].toLocaleLowerCase() : "",
+				value: m ? normalize(m[2]) : "",
+				raw: normalize(token),
+			};
+		});
+}
+
+function tokenMatches(row: Row, token: CompiledToken, extra: string[]): boolean {
+	if (token.prop !== null) {
+		if (token.propLower === "tag" || token.propLower === "tags") {
 			// Stored tags are #-stripped, so strip a leading # off the query too
 			// (`tag:#urgent` and `tag:urgent` are the same). A bare `tag:#` has an
 			// empty value and shouldn't match every tagged note.
-			const tagValue = value.replace(/^#/, "");
+			const tagValue = token.value.replace(/^#/, "");
 			if (tagValue && row.note.tags.some((t) => normalize(t).includes(tagValue))) return true;
 		} else {
-			const got = row.scope.get(key);
-			if (got !== undefined && got !== null && normalize(got).includes(value)) return true;
+			const got = row.scope.get(token.prop);
+			if (got !== undefined && got !== null && normalize(got).includes(token.value)) return true;
 		}
 		// Fall through: a literal "key:value" string in a name/path still matches.
 	}
-	const q = normalize(token);
 	const haystacks = [row.name, row.note.path, row.note.folder, ...row.note.tags, ...extra];
-	return haystacks.some((v) => normalize(v).includes(q));
+	return haystacks.some((v) => normalize(v).includes(token.raw));
+}
+
+/** True when a row matches every compiled token (AND). */
+function rowMatchesCompiled(row: Row, tokens: CompiledToken[], extra: string[]): boolean {
+	return tokens.every((token) => tokenMatches(row, token, extra));
 }
 
 /**
@@ -48,13 +81,14 @@ function tokenMatches(row: Row, token: string, extra: string[]): boolean {
  * text haystacks (e.g. the Kanban column value).
  */
 export function rowMatchesText(row: Row, query: string, extra: string[] = []): boolean {
-	const tokens = query.trim().split(/\s+/).filter(Boolean);
+	const tokens = compileQuery(query);
 	if (tokens.length === 0) return true;
-	return tokens.every((token) => tokenMatches(row, token, extra));
+	return rowMatchesCompiled(row, tokens, extra);
 }
 
 /** Narrow rows to those matching the quick-search query (identity for a blank query). */
 export function filterRowsByText(rows: Row[], query: string): Row[] {
-	if (!query.trim()) return rows;
-	return rows.filter((row) => rowMatchesText(row, query));
+	const tokens = compileQuery(query);
+	if (tokens.length === 0) return rows;
+	return rows.filter((row) => rowMatchesCompiled(row, tokens, []));
 }

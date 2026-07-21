@@ -15,7 +15,7 @@ import {
 } from "../query/gantt";
 import { rescheduleDateValue, toIsoDateKey, todayIso } from "../query/dates";
 import { writeRowProperties, writeRowProperty } from "./viewData";
-import { renderContextControls, renderRollupBar } from "./viewChrome";
+import { renderContextControls, renderPropertySelect, renderRollupBar } from "./viewChrome";
 
 export const VIEW_TYPE_GANTT = "bpp-gantt-view";
 
@@ -124,7 +124,18 @@ export class GanttView extends PowerPackView {
 		const toolbar = container.createDiv({ cls: "bpp-toolbar" });
 		toolbar.createEl("h3", { text: "Gantt" });
 		// (No "Premium" badge: this view only renders for licensed users.)
-		toolbar.createSpan({ cls: "bpp-muted", text: `${startProp} → ${endProp}` });
+
+		// Start/end are chosen right here so a wrong-property (empty) timeline is fixed
+		// in place, not via settings. Presentational — keep the resolve cache.
+		const keys = this.plugin.getFrontmatterKeys();
+		renderPropertySelect(toolbar, "Start", keys, startProp, (value) => {
+			this.plugin.settings.ganttStartProp = value || "start";
+			void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
+		});
+		renderPropertySelect(toolbar, "End", keys, endProp, (value) => {
+			this.plugin.settings.ganttEndProp = value || "end";
+			void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
+		});
 
 		const zoom = toolbar.createDiv({ cls: "bpp-segmented" });
 		for (const preset of ZOOM_PRESETS) {
@@ -164,12 +175,19 @@ export class GanttView extends PowerPackView {
 
 		const model = buildGantt(input, 1, MAX_AXIS_DAYS);
 		if (model.bars.length === 0) {
-			container.createDiv({
-				cls: "bpp-empty",
-				text: this.searchQuery
-					? "No notes match the current search."
-					: `No notes with a "${startProp}" date found. Add "${startProp}: 2026-01-01" to a note's frontmatter to place it on the timeline.`,
-			});
+			if (this.searchQuery) {
+				this.renderEmptyState(container, {
+					title: "No matches",
+					body: "No notes match the current search.",
+					actions: [{ label: "Clear search", onClick: () => { this.searchQuery = ""; void this.render(); } }],
+				});
+			} else {
+				this.renderEmptyState(container, {
+					title: "Nothing on the timeline yet",
+					body: `No notes have a "${startProp}" date. Pick the start property in the toolbar, or add "${startProp}: 2026-01-01" to a note's frontmatter to place it here.`,
+					actions: [{ label: "Open settings", onClick: () => this.openSettings() }],
+				});
+			}
 			return;
 		}
 

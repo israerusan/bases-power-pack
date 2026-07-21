@@ -4,7 +4,7 @@ import { PowerPackView } from "./abstractView";
 import { formatCardField } from "../query/kanban";
 import { parseImageRef } from "../query/gallery";
 import { filterRowsByText } from "../query/search";
-import { renderContextControls } from "./viewChrome";
+import { renderContextControls, renderPropertySelect } from "./viewChrome";
 
 export const VIEW_TYPE_GALLERY = "bpp-gallery-view";
 
@@ -92,7 +92,17 @@ export class GalleryView extends PowerPackView {
 	private renderToolbar(container: HTMLElement): void {
 		const toolbar = container.createDiv({ cls: "bpp-toolbar" });
 		toolbar.createEl("h3", { text: "Gallery" });
-		toolbar.createSpan({ cls: "bpp-muted", text: `cover: "${this.plugin.settings.galleryImageProp}"` });
+		// The cover-image property is chosen right here. Presentational — keep the cache.
+		renderPropertySelect(
+			toolbar,
+			"Cover",
+			this.plugin.getFrontmatterKeys(),
+			this.plugin.settings.galleryImageProp,
+			(value) => {
+				this.plugin.settings.galleryImageProp = value || "cover";
+				void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
+			}
+		);
 		this.renderUndoButton(toolbar);
 		this.renderManagedSearch(toolbar);
 	}

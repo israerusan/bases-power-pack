@@ -1032,8 +1032,14 @@
 .bpp-cal-event:hover .bpp-overflow,
 .bpp-gantt-row:hover .bpp-overflow,
 .bpp-tree-row:hover .bpp-overflow,
+.bpp-feed-item:hover .bpp-overflow,
+.bpp-agenda-item:hover .bpp-overflow,
+.bpp-drill-item:hover .bpp-overflow,
 .bpp-card:focus-within .bpp-overflow,
 .bpp-tree-row:focus-within .bpp-overflow,
+.bpp-feed-item:focus-within .bpp-overflow,
+.bpp-agenda-item:focus-within .bpp-overflow,
+.bpp-drill-item:focus-within .bpp-overflow,
 .bpp-overflow:focus-visible {
   opacity: 1;
 }

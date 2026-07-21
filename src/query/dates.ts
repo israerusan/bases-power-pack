@@ -37,9 +37,20 @@ export function toIsoDateKey(value: unknown): string | null {
  * written.
  */
 export function rescheduleDateValue(original: unknown, newIso: string): string {
+	// A bare calendar date stored as a real Date serializes to `...T00:00:00.000Z`.
+	// Carrying that synthetic midnight-UTC suffix onto the new date would bloat a
+	// plain `YYYY-MM-DD` into a datetime — and, west of UTC, display as the previous
+	// day. So a Date value (or any value whose only suffix is midnight-UTC) writes a
+	// bare date; a genuine wall-clock time like `T09:00` is still preserved.
+	if (original instanceof Date) return newIso;
 	const raw = original === undefined || original === null ? "" : toStr(original);
 	const m = raw.match(/^\d{4}-\d{2}-\d{2}(.*)$/);
-	return newIso + (m ? m[1] : "");
+	const suffix = m ? m[1] : "";
+	// Only the synthetic UTC-midnight suffix a serialized Date produces (`T00:00:00.000Z`)
+	// is stripped — the `Z` is required, so an explicit wall-clock time the user typed
+	// (including a local `T00:00`) is preserved, not silently collapsed to a bare date.
+	if (/^T00:00(:00)?(\.0+)?Z$/.test(suffix)) return newIso;
+	return newIso + suffix;
 }
 
 /** Day-of-week for a day number, 0 = Sunday. Epoch day 0 (1970-01-01) is Thursday. */

@@ -139,7 +139,7 @@ export class KanbanView extends PowerPackView {
 		]);
 
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
-		this.renderLiteControls(container, resolved.rows);
+		this.renderLiteControls(container);
 		renderRollupBar(container, this.plugin, resolved.rows);
 		this.renderHintBar(container, "kanban", "Drag cards to change status • ⋯ on a card or column for more actions • Undo reverses the last change");
 
@@ -365,7 +365,9 @@ export class KanbanView extends PowerPackView {
 		const existing = map[groupBy] ?? [];
 		if (!existing.some((n) => n.toLocaleLowerCase() === name.toLocaleLowerCase())) {
 			map[groupBy] = [...existing, name];
-			await this.plugin.saveSettings();
+			// Presentational: an empty column changes no note, so keep the resolve cache
+			// (matches setSortBy / setHideDone) instead of re-resolving the whole vault.
+			await this.plugin.saveSettings({ invalidateResolved: false });
 		}
 		await this.render();
 	}
@@ -375,7 +377,7 @@ export class KanbanView extends PowerPackView {
 		const next = (map[groupBy] ?? []).filter((n) => n !== name);
 		if (next.length > 0) map[groupBy] = next;
 		else delete map[groupBy];
-		await this.plugin.saveSettings();
+		await this.plugin.saveSettings({ invalidateResolved: false });
 		await this.render();
 	}
 
@@ -589,7 +591,7 @@ export class KanbanView extends PowerPackView {
 		const next = [...orderedNames];
 		[next[idx], next[to]] = [next[to], next[idx]];
 		this.plugin.settings.kanbanColumnOrder[groupBy] = next;
-		await this.plugin.saveSettings();
+		await this.plugin.saveSettings({ invalidateResolved: false });
 		await this.render();
 	}
 
@@ -611,7 +613,7 @@ export class KanbanView extends PowerPackView {
 		const map = this.plugin.settings.kanbanWipLimits;
 		if (limit === null) delete map[columnName];
 		else map[columnName] = limit;
-		await this.plugin.saveSettings();
+		await this.plugin.saveSettings({ invalidateResolved: false });
 		await this.render();
 	}
 
@@ -619,7 +621,7 @@ export class KanbanView extends PowerPackView {
 		const map = this.plugin.settings.kanbanColorOverrides;
 		if (hue === null) delete map[columnName];
 		else map[columnName] = String(hue);
-		await this.plugin.saveSettings();
+		await this.plugin.saveSettings({ invalidateResolved: false });
 		await this.render();
 	}
 
@@ -748,29 +750,33 @@ export class KanbanView extends PowerPackView {
 		await this.render();
 	}
 
-	private collectGroupByOptions(rows: Row[], current: string): string[] {
-		const set = new Set<string>();
-		for (const row of rows) {
-			for (const key of Object.keys(row.note.frontmatter)) set.add(key);
-		}
-		if (current) set.add(current);
-		return [...set].sort((a, b) => a.localeCompare(b));
+	/** Group-by options come from the cached whole-vault frontmatter key set (not a
+	 * per-render scan of the resolved rows). This is O(1) per render instead of
+	 * O(rows × keys) on every keystroke, and — because it isn't limited to
+	 * currently-shown rows — the picker still offers every real property on an empty
+	 * or heavily-filtered board, so a user is never stranded without a way to switch. */
+	private collectGroupByOptions(current: string): string[] {
+		const keys = this.plugin.getFrontmatterKeys();
+		if (!current || keys.includes(current)) return keys;
+		return [...keys, current].sort((a, b) => a.localeCompare(b));
 	}
 
-	private renderLiteControls(container: HTMLElement, rows: Row[]): void {
+	private renderLiteControls(container: HTMLElement): void {
 		const controls = container.createDiv({ cls: "bpp-lite-controls" });
 
 		const groupBy = this.plugin.settings.kanbanGroupBy || "status";
 		const groupWrap = controls.createDiv({ cls: "bpp-lite-control" });
 		groupWrap.createSpan({ cls: "bpp-muted", text: "Group by" });
 		const groupSelect = groupWrap.createEl("select", { cls: "bpp-lite-select" });
-		for (const option of this.collectGroupByOptions(rows, groupBy)) {
+		for (const option of this.collectGroupByOptions(groupBy)) {
 			const el = groupSelect.createEl("option", { text: option, value: option });
 			if (option === groupBy) el.selected = true;
 		}
 		groupSelect.addEventListener("change", () => {
 			this.plugin.settings.kanbanGroupBy = groupSelect.value || "status";
-			void this.plugin.saveSettings().then(() => this.render());
+			// Re-grouping re-buckets already-resolved rows; it doesn't change which notes
+			// resolve, so keep the resolve cache (big-vault win on every group-by switch).
+			void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
 		});
 
 		this.renderManagedSearch(controls);
@@ -859,7 +865,7 @@ export class KanbanView extends PowerPackView {
 	): Promise<void> {
 		const next = reorderColumns(orderedNames, moved, target);
 		this.plugin.settings.kanbanColumnOrder[groupBy] = next;
-		await this.plugin.saveSettings();
+		await this.plugin.saveSettings({ invalidateResolved: false });
 		await this.render();
 	}
 
@@ -875,6 +881,16 @@ export class KanbanView extends PowerPackView {
 		// — no Move Rules fire (else a "set completed = today" rule would re-stamp on
 		// an ordinary in-place drop). Compare the note's actual current value.
 		if (toStr(row.scope.get(key)) === columnName) return;
+
+		// Refuse to move a card when the group-by is a computed field — a `file.*`
+		// accessor or a base formula. Writing a literal `frontmatter[key]` would shadow
+		// the formula for that one note (silently converting a computed value to a hard
+		// value), exactly what applyBulk / applyCardReorder already prevent.
+		const resolved = await this.plugin.getResolvedView();
+		if (COMPUTED_FILE_PROPS.has(key) || Object.prototype.hasOwnProperty.call(resolved.def.formulas ?? {}, key)) {
+			new Notice(`"${key}" is a computed/formula field — cards grouped by it can't be moved here.`);
+			return;
+		}
 
 		// WIP enforcement: block a move that would push the target past its limit.
 		// Count the target column's TRUE membership (base/filter-scoped, ignoring

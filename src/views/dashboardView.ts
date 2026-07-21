@@ -193,6 +193,8 @@ export class DashboardView extends PowerPackView {
 			});
 		}
 
+		// A drill-panel edit is undoable — expose it in the toolbar like every other view.
+		this.renderUndoButton(toolbar);
 		this.renderManagedSearch(toolbar);
 	}
 

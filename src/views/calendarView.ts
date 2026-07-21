@@ -16,7 +16,7 @@ import {
 import { shiftIso } from "../query/gantt";
 import { createSeededNote, writeRowProperty } from "./viewData";
 import { PromptModal } from "./modals";
-import { renderContextControls, renderRollupBar } from "./viewChrome";
+import { renderContextControls, renderPropertySelect, renderRollupBar } from "./viewChrome";
 
 export const VIEW_TYPE_CALENDAR = "bpp-calendar-view";
 
@@ -96,12 +96,19 @@ export class CalendarView extends PowerPackView {
 		// (Agenda renders its own, search-aware). Teach the driving property on a
 		// genuinely empty calendar, matching the other three views' empty states.
 		if (byDay.size === 0 && this.mode !== "agenda") {
-			container.createDiv({
-				cls: "bpp-empty",
-				text: this.searchQuery
-					? "No notes match the current search."
-					: `No notes with a "${dateProp}" date yet. Add "${dateProp}: 2026-01-01" to a note's frontmatter, or hover a day and click + to create one.`,
-			});
+			if (this.searchQuery) {
+				this.renderEmptyState(container, {
+					title: "No matches",
+					body: "No notes match the current search.",
+					actions: [{ label: "Clear search", onClick: () => { this.searchQuery = ""; void this.render(); } }],
+				});
+			} else {
+				this.renderEmptyState(container, {
+					title: "No dated notes yet",
+					body: `Nothing has a "${dateProp}" date. Pick the date property in the toolbar, add "${dateProp}: 2026-01-01" to a note, or hover a day and click + to create one.`,
+					actions: [{ label: "Open settings", onClick: () => this.openSettings() }],
+				});
+			}
 		}
 	}
 
@@ -135,7 +142,13 @@ export class CalendarView extends PowerPackView {
 		});
 		nav.createSpan({ cls: "bpp-cal-label", text: this.periodLabel() });
 
-		toolbar.createSpan({ cls: "bpp-muted", text: `dates from "${dateProp}"` });
+		// The date property is chosen right here — an empty calendar is almost always a
+		// wrong-property problem, so the fix is one click in the toolbar, not a trip to
+		// settings. Re-bucketing is presentational, so keep the resolve cache.
+		renderPropertySelect(toolbar, "Dates from", this.plugin.getFrontmatterKeys(), dateProp, (value) => {
+			this.plugin.settings.calendarDateProp = value || "due";
+			void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
+		});
 
 		this.renderUndoButton(toolbar);
 		this.renderManagedSearch(toolbar);

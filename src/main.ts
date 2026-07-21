@@ -575,6 +575,7 @@ export default class BasesPowerPackPlugin extends Plugin {
 		if (!Number.isInteger(this.settings.dashboardTopN) || this.settings.dashboardTopN < 0)
 			this.settings.dashboardTopN = DEFAULT_SETTINGS.dashboardTopN;
 		this.settings.galleryImageProp = coerceProp(this.settings.galleryImageProp, DEFAULT_SETTINGS.galleryImageProp);
+		this.settings.dismissedHints = sanitizeStringArray(this.settings.dismissedHints, []);
 	}
 
 	// Serialize writes: overlapping saveData calls (e.g. per-keystroke license

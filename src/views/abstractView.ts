@@ -18,10 +18,6 @@ import { buildMarkdownTable } from "../query/export";
 import { writeRowProperty } from "./viewData";
 import { renderSearchControl } from "./viewChrome";
 
-/** Hint keys dismissed this session — a hint bar stays gone once its ✕ is clicked,
- * for the life of the app (not persisted), so a tip doesn't nag on every render. */
-const dismissedHints = new Set<string>();
-
 /** A drill-down request: the notes behind a clicked number, plus how to label the
  * panel that lists them. Returned lazily by a resolver so the panel can refresh
  * itself against current data after an edit (see {@link PowerPackView.openDrill}). */
@@ -463,11 +459,11 @@ export abstract class PowerPackView extends ItemView {
 	/**
 	 * A subtle, dismissable one-line tip bar (💡) shown above a view's content — the
 	 * discoverable coaching for a feature that isn't obvious. Dismissal is per-key and
-	 * lasts the session (see {@link dismissedHints}), so a tip a user has waved away
-	 * never reappears until the next launch.
+	 * PERSISTED (settings.dismissedHints), so a tip a returning power user has already
+	 * waved away stays gone across restarts instead of re-nagging on every launch.
 	 */
 	protected renderHintBar(container: HTMLElement, key: string, text: string): void {
-		if (dismissedHints.has(key)) return;
+		if (this.plugin.settings.dismissedHints.includes(key)) return;
 		const bar = container.createDiv({ cls: "bpp-hint" });
 		bar.createSpan({ cls: "bpp-hint-icon", text: "💡", attr: { "aria-hidden": "true" } });
 		bar.createSpan({ cls: "bpp-hint-text", text });
@@ -477,7 +473,11 @@ export abstract class PowerPackView extends ItemView {
 			attr: { "aria-label": "Dismiss tip" },
 		});
 		dismiss.addEventListener("click", () => {
-			dismissedHints.add(key);
+			if (!this.plugin.settings.dismissedHints.includes(key)) {
+				this.plugin.settings.dismissedHints.push(key);
+				// Presentational preference — no need to drop the resolve cache.
+				void this.plugin.saveSettings({ invalidateResolved: false });
+			}
 			bar.remove();
 		});
 	}

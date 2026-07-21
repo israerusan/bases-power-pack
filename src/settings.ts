@@ -130,6 +130,10 @@ export interface BasesPowerPackSettings {
 	/** Rule-based color coding (premium): ordered expression→color rules applied to
 	 * cards / events / bars across every view. First matching rule wins. */
 	colorRules: ColorRule[];
+
+	/** Keys of the in-view tip bars (💡) a user has dismissed, persisted so a tip that
+	 * was waved away stays gone across restarts instead of re-nagging every launch. */
+	dismissedHints: string[];
 }
 
 export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
@@ -183,6 +187,7 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	automations: [],
 	kanbanColorOverrides: {},
 	colorRules: [],
+	dismissedHints: [],
 };
 
 export function genId(prefix: string): string {

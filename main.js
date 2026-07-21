@@ -3362,31 +3362,42 @@ function normalize(value) {
   return toStr(value).trim().toLocaleLowerCase();
 }
 var PROP_TOKEN_RE = /^([A-Za-z_$][\w.$-]*):(.+)$/;
+function compileQuery(query) {
+  return query.trim().split(/\s+/).filter(Boolean).map((token) => {
+    const m = PROP_TOKEN_RE.exec(token);
+    return {
+      prop: m ? m[1] : null,
+      propLower: m ? m[1].toLocaleLowerCase() : "",
+      value: m ? normalize(m[2]) : "",
+      raw: normalize(token)
+    };
+  });
+}
 function tokenMatches(row, token, extra) {
-  const m = PROP_TOKEN_RE.exec(token);
-  if (m) {
-    const key = m[1];
-    const value = normalize(m[2]);
-    if (key.toLocaleLowerCase() === "tag" || key.toLocaleLowerCase() === "tags") {
-      const tagValue = value.replace(/^#/, "");
+  if (token.prop !== null) {
+    if (token.propLower === "tag" || token.propLower === "tags") {
+      const tagValue = token.value.replace(/^#/, "");
       if (tagValue && row.note.tags.some((t) => normalize(t).includes(tagValue))) return true;
     } else {
-      const got = row.scope.get(key);
-      if (got !== void 0 && got !== null && normalize(got).includes(value)) return true;
+      const got = row.scope.get(token.prop);
+      if (got !== void 0 && got !== null && normalize(got).includes(token.value)) return true;
     }
   }
-  const q = normalize(token);
   const haystacks = [row.name, row.note.path, row.note.folder, ...row.note.tags, ...extra];
-  return haystacks.some((v) => normalize(v).includes(q));
+  return haystacks.some((v) => normalize(v).includes(token.raw));
 }
-function rowMatchesText(row, query, extra = []) {
-  const tokens = query.trim().split(/\s+/).filter(Boolean);
-  if (tokens.length === 0) return true;
+function rowMatchesCompiled(row, tokens, extra) {
   return tokens.every((token) => tokenMatches(row, token, extra));
 }
+function rowMatchesText(row, query, extra = []) {
+  const tokens = compileQuery(query);
+  if (tokens.length === 0) return true;
+  return rowMatchesCompiled(row, tokens, extra);
+}
 function filterRowsByText(rows, query) {
-  if (!query.trim()) return rows;
-  return rows.filter((row) => rowMatchesText(row, query));
+  const tokens = compileQuery(query);
+  if (tokens.length === 0) return rows;
+  return rows.filter((row) => rowMatchesCompiled(row, tokens, []));
 }
 
 // src/query/ranking.ts
@@ -3618,9 +3629,12 @@ function toIsoDateKey(value) {
   return `${yy}-${mm}-${dd}`;
 }
 function rescheduleDateValue(original, newIso) {
+  if (original instanceof Date) return newIso;
   const raw = original === void 0 || original === null ? "" : toStr(original);
   const m = raw.match(/^\d{4}-\d{2}-\d{2}(.*)$/);
-  return newIso + (m ? m[1] : "");
+  const suffix = m ? m[1] : "";
+  if (/^T00:00(:00)?(\.0+)?Z$/.test(suffix)) return newIso;
+  return newIso + suffix;
 }
 function weekdayOf(dayNumber) {
   return (dayNumber % 7 + 7 + 4) % 7;
@@ -4243,7 +4257,6 @@ function renderRollupBar(container, plugin, rows) {
 }
 
 // src/views/abstractView.ts
-var dismissedHints = /* @__PURE__ */ new Set();
 var PowerPackView = class extends import_obsidian4.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -4602,11 +4615,11 @@ var PowerPackView = class extends import_obsidian4.ItemView {
   /**
    * A subtle, dismissable one-line tip bar (💡) shown above a view's content — the
    * discoverable coaching for a feature that isn't obvious. Dismissal is per-key and
-   * lasts the session (see {@link dismissedHints}), so a tip a user has waved away
-   * never reappears until the next launch.
+   * PERSISTED (settings.dismissedHints), so a tip a returning power user has already
+   * waved away stays gone across restarts instead of re-nagging on every launch.
    */
   renderHintBar(container, key, text) {
-    if (dismissedHints.has(key)) return;
+    if (this.plugin.settings.dismissedHints.includes(key)) return;
     const bar = container.createDiv({ cls: "bpp-hint" });
     bar.createSpan({ cls: "bpp-hint-icon", text: "\u{1F4A1}", attr: { "aria-hidden": "true" } });
     bar.createSpan({ cls: "bpp-hint-text", text });
@@ -4616,7 +4629,10 @@ var PowerPackView = class extends import_obsidian4.ItemView {
       attr: { "aria-label": "Dismiss tip" }
     });
     dismiss.addEventListener("click", () => {
-      dismissedHints.add(key);
+      if (!this.plugin.settings.dismissedHints.includes(key)) {
+        this.plugin.settings.dismissedHints.push(key);
+        void this.plugin.saveSettings({ invalidateResolved: false });
+      }
       bar.remove();
     });
   }
@@ -4822,7 +4838,7 @@ function coerceLiteral(raw) {
   if (trimmed === "") return "";
   if (trimmed === "true") return true;
   if (trimmed === "false") return false;
-  if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
+  if (/^-?\d+(\.\d+)?$/.test(trimmed) && String(Number(trimmed)) === trimmed) return Number(trimmed);
   return trimmed;
 }
 function nowStamp(now) {
@@ -4989,7 +5005,7 @@ var KanbanView = class extends PowerPackView {
       { label: "Export as CSV", premium: true, build: () => buildCsv(this.lastVisibleRows, this.exportFields(groupBy)) }
     ]);
     renderContextControls(container, this.plugin, resolved, () => void this.render());
-    this.renderLiteControls(container, resolved.rows);
+    this.renderLiteControls(container);
     renderRollupBar(container, this.plugin, resolved.rows);
     this.renderHintBar(container, "kanban", "Drag cards to change status \u2022 \u22EF on a card or column for more actions \u2022 Undo reverses the last change");
     const extraColumns = (_a = this.plugin.settings.kanbanExtraColumns[groupBy]) != null ? _a : [];
@@ -5184,7 +5200,7 @@ var KanbanView = class extends PowerPackView {
     const existing = (_a = map[groupBy]) != null ? _a : [];
     if (!existing.some((n) => n.toLocaleLowerCase() === name.toLocaleLowerCase())) {
       map[groupBy] = [...existing, name];
-      await this.plugin.saveSettings();
+      await this.plugin.saveSettings({ invalidateResolved: false });
     }
     await this.render();
   }
@@ -5194,7 +5210,7 @@ var KanbanView = class extends PowerPackView {
     const next = ((_a = map[groupBy]) != null ? _a : []).filter((n) => n !== name);
     if (next.length > 0) map[groupBy] = next;
     else delete map[groupBy];
-    await this.plugin.saveSettings();
+    await this.plugin.saveSettings({ invalidateResolved: false });
     await this.render();
   }
   /**
@@ -5355,7 +5371,7 @@ var KanbanView = class extends PowerPackView {
     const next = [...orderedNames];
     [next[idx], next[to]] = [next[to], next[idx]];
     this.plugin.settings.kanbanColumnOrder[groupBy] = next;
-    await this.plugin.saveSettings();
+    await this.plugin.saveSettings({ invalidateResolved: false });
     await this.render();
   }
   // ---- menu actions ---------------------------------------------------------
@@ -5374,14 +5390,14 @@ var KanbanView = class extends PowerPackView {
     const map = this.plugin.settings.kanbanWipLimits;
     if (limit === null) delete map[columnName];
     else map[columnName] = limit;
-    await this.plugin.saveSettings();
+    await this.plugin.saveSettings({ invalidateResolved: false });
     await this.render();
   }
   async setColumnColor(columnName, hue) {
     const map = this.plugin.settings.kanbanColorOverrides;
     if (hue === null) delete map[columnName];
     else map[columnName] = String(hue);
-    await this.plugin.saveSettings();
+    await this.plugin.saveSettings({ invalidateResolved: false });
     await this.render();
   }
   renameColumnValue(groupBy, columnName) {
@@ -5470,27 +5486,29 @@ var KanbanView = class extends PowerPackView {
     new import_obsidian5.Notice(`Updated "${prop}" on ${ok} note${ok === 1 ? "" : "s"}.`);
     await this.render();
   }
-  collectGroupByOptions(rows, current) {
-    const set = /* @__PURE__ */ new Set();
-    for (const row of rows) {
-      for (const key of Object.keys(row.note.frontmatter)) set.add(key);
-    }
-    if (current) set.add(current);
-    return [...set].sort((a, b) => a.localeCompare(b));
+  /** Group-by options come from the cached whole-vault frontmatter key set (not a
+   * per-render scan of the resolved rows). This is O(1) per render instead of
+   * O(rows × keys) on every keystroke, and — because it isn't limited to
+   * currently-shown rows — the picker still offers every real property on an empty
+   * or heavily-filtered board, so a user is never stranded without a way to switch. */
+  collectGroupByOptions(current) {
+    const keys = this.plugin.getFrontmatterKeys();
+    if (!current || keys.includes(current)) return keys;
+    return [...keys, current].sort((a, b) => a.localeCompare(b));
   }
-  renderLiteControls(container, rows) {
+  renderLiteControls(container) {
     const controls = container.createDiv({ cls: "bpp-lite-controls" });
     const groupBy = this.plugin.settings.kanbanGroupBy || "status";
     const groupWrap = controls.createDiv({ cls: "bpp-lite-control" });
     groupWrap.createSpan({ cls: "bpp-muted", text: "Group by" });
     const groupSelect = groupWrap.createEl("select", { cls: "bpp-lite-select" });
-    for (const option of this.collectGroupByOptions(rows, groupBy)) {
+    for (const option of this.collectGroupByOptions(groupBy)) {
       const el = groupSelect.createEl("option", { text: option, value: option });
       if (option === groupBy) el.selected = true;
     }
     groupSelect.addEventListener("change", () => {
       this.plugin.settings.kanbanGroupBy = groupSelect.value || "status";
-      void this.plugin.saveSettings().then(() => this.render());
+      void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
     });
     this.renderManagedSearch(controls);
     const sortWrap = controls.createDiv({ cls: "bpp-lite-control" });
@@ -5560,7 +5578,7 @@ var KanbanView = class extends PowerPackView {
   async reorderColumn(groupBy, orderedNames, moved, target) {
     const next = reorderColumns(orderedNames, moved, target);
     this.plugin.settings.kanbanColumnOrder[groupBy] = next;
-    await this.plugin.saveSettings();
+    await this.plugin.saveSettings({ invalidateResolved: false });
     await this.render();
   }
   /**
@@ -5570,12 +5588,17 @@ var KanbanView = class extends PowerPackView {
    * re-triggers another rule.
    */
   async moveRowToColumn(row, groupBy, columnName) {
-    var _a;
+    var _a, _b;
     const key = groupBy || "status";
     if (toStr(row.scope.get(key)) === columnName) return;
+    const resolved = await this.plugin.getResolvedView();
+    if (COMPUTED_FILE_PROPS.has(key) || Object.prototype.hasOwnProperty.call((_a = resolved.def.formulas) != null ? _a : {}, key)) {
+      new import_obsidian5.Notice(`"${key}" is a computed/formula field \u2014 cards grouped by it can't be moved here.`);
+      return;
+    }
     if (this.plugin.settings.kanbanBlockOverWip) {
       const limit = limitFor(this.plugin.settings.kanbanWipLimits, columnName);
-      const targetCount = ((_a = this.lastColumnRows.get(columnName)) != null ? _a : []).length;
+      const targetCount = ((_b = this.lastColumnRows.get(columnName)) != null ? _b : []).length;
       if (dropWouldExceed(targetCount, limit)) {
         new import_obsidian5.Notice(`"${columnName}" is at its WIP limit (${limit}). Move blocked.`);
         await this.render();
@@ -5789,7 +5812,8 @@ var DEFAULT_SETTINGS = {
   cardFormula: "",
   automations: [],
   kanbanColorOverrides: {},
-  colorRules: []
+  colorRules: [],
+  dismissedHints: []
 };
 function genId(prefix) {
   const c = window.crypto;
@@ -6611,10 +6635,22 @@ var CalendarView = class extends PowerPackView {
     else if (this.mode === "week") this.renderWeek(container, byDay, dateProp);
     else this.renderMonth(container, byDay, dateProp);
     if (byDay.size === 0 && this.mode !== "agenda") {
-      container.createDiv({
-        cls: "bpp-empty",
-        text: this.searchQuery ? "No notes match the current search." : `No notes with a "${dateProp}" date yet. Add "${dateProp}: 2026-01-01" to a note's frontmatter, or hover a day and click + to create one.`
-      });
+      if (this.searchQuery) {
+        this.renderEmptyState(container, {
+          title: "No matches",
+          body: "No notes match the current search.",
+          actions: [{ label: "Clear search", onClick: () => {
+            this.searchQuery = "";
+            void this.render();
+          } }]
+        });
+      } else {
+        this.renderEmptyState(container, {
+          title: "No dated notes yet",
+          body: `Nothing has a "${dateProp}" date. Pick the date property in the toolbar, add "${dateProp}: 2026-01-01" to a note, or hover a day and click + to create one.`,
+          actions: [{ label: "Open settings", onClick: () => this.openSettings() }]
+        });
+      }
     }
   }
   // ---- toolbar --------------------------------------------------------------
@@ -6641,7 +6677,10 @@ var CalendarView = class extends PowerPackView {
       void this.render();
     });
     nav.createSpan({ cls: "bpp-cal-label", text: this.periodLabel() });
-    toolbar.createSpan({ cls: "bpp-muted", text: `dates from "${dateProp}"` });
+    renderPropertySelect(toolbar, "Dates from", this.plugin.getFrontmatterKeys(), dateProp, (value) => {
+      this.plugin.settings.calendarDateProp = value || "due";
+      void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
+    });
     this.renderUndoButton(toolbar);
     this.renderManagedSearch(toolbar);
   }
@@ -6975,7 +7014,15 @@ var GanttView = class extends PowerPackView {
     const endProp = this.plugin.settings.ganttEndProp || "end";
     const toolbar = container.createDiv({ cls: "bpp-toolbar" });
     toolbar.createEl("h3", { text: "Gantt" });
-    toolbar.createSpan({ cls: "bpp-muted", text: `${startProp} \u2192 ${endProp}` });
+    const keys = this.plugin.getFrontmatterKeys();
+    renderPropertySelect(toolbar, "Start", keys, startProp, (value) => {
+      this.plugin.settings.ganttStartProp = value || "start";
+      void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
+    });
+    renderPropertySelect(toolbar, "End", keys, endProp, (value) => {
+      this.plugin.settings.ganttEndProp = value || "end";
+      void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
+    });
     const zoom = toolbar.createDiv({ cls: "bpp-segmented" });
     for (const preset of ZOOM_PRESETS) {
       const btn = zoom.createEl("button", { text: preset.label, cls: "bpp-seg-btn" });
@@ -7009,10 +7056,22 @@ var GanttView = class extends PowerPackView {
     });
     const model = buildGantt(input, 1, MAX_AXIS_DAYS);
     if (model.bars.length === 0) {
-      container.createDiv({
-        cls: "bpp-empty",
-        text: this.searchQuery ? "No notes match the current search." : `No notes with a "${startProp}" date found. Add "${startProp}: 2026-01-01" to a note's frontmatter to place it on the timeline.`
-      });
+      if (this.searchQuery) {
+        this.renderEmptyState(container, {
+          title: "No matches",
+          body: "No notes match the current search.",
+          actions: [{ label: "Clear search", onClick: () => {
+            this.searchQuery = "";
+            void this.render();
+          } }]
+        });
+      } else {
+        this.renderEmptyState(container, {
+          title: "Nothing on the timeline yet",
+          body: `No notes have a "${startProp}" date. Pick the start property in the toolbar, or add "${startProp}: 2026-01-01" to a note's frontmatter to place it here.`,
+          actions: [{ label: "Open settings", onClick: () => this.openSettings() }]
+        });
+      }
       return;
     }
     this.renderChart(container, model, rowByPath, startProp, endProp);
@@ -7564,10 +7623,22 @@ var HierarchyView = class extends PowerPackView {
       return (_a2 = orders.get(id)) != null ? _a2 : null;
     });
     if (flat.length === 0) {
-      container.createDiv({
-        cls: "bpp-empty",
-        text: this.searchQuery ? "No notes match the current search." : `No notes to outline yet. Add "${parentProp}: Projects/My Project.md" to a note's frontmatter to nest it under another.`
-      });
+      if (this.searchQuery) {
+        this.renderEmptyState(container, {
+          title: "No matches",
+          body: "No notes match the current search.",
+          actions: [{ label: "Clear search", onClick: () => {
+            this.searchQuery = "";
+            void this.render();
+          } }]
+        });
+      } else {
+        this.renderEmptyState(container, {
+          title: "Nothing to outline yet",
+          body: `No notes are nested. Pick the parent property in the toolbar, or add "${parentProp}: Projects/My Project.md" to a note's frontmatter to nest it under another.`,
+          actions: [{ label: "Open settings", onClick: () => this.openSettings() }]
+        });
+      }
       return;
     }
     this.renderRootDropZone(container, parentProp);
@@ -7586,7 +7657,10 @@ var HierarchyView = class extends PowerPackView {
   renderToolbar(container, parentProp) {
     const toolbar = container.createDiv({ cls: "bpp-toolbar" });
     toolbar.createEl("h3", { text: "Outline" });
-    toolbar.createSpan({ cls: "bpp-muted", text: `nested by "${parentProp}"` });
+    renderPropertySelect(toolbar, "Parent", this.plugin.getFrontmatterKeys(), parentProp, (value) => {
+      this.plugin.settings.hierarchyParentProp = value || "parent";
+      void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
+    });
     const group = toolbar.createDiv({ cls: "bpp-segmented" });
     const expand = group.createEl("button", { text: "Expand all", cls: "bpp-seg-btn" });
     expand.addEventListener("click", () => {
@@ -8118,6 +8192,7 @@ var PivotView = class extends PowerPackView {
         build: () => this.lastModel ? pivotToCsv(this.lastModel, s.pivotRowProp, s.pivotColProp) : ""
       }
     ]);
+    this.renderUndoButton(toolbar);
     this.renderManagedSearch(toolbar);
   }
   /** Persist a toolbar choice without dropping the resolved-view cache — these are
@@ -8539,6 +8614,7 @@ var DashboardView = class extends PowerPackView {
         this.persist();
       });
     }
+    this.renderUndoButton(toolbar);
     this.renderManagedSearch(toolbar);
   }
   persist() {
@@ -8838,7 +8914,16 @@ var GalleryView = class extends PowerPackView {
   renderToolbar(container) {
     const toolbar = container.createDiv({ cls: "bpp-toolbar" });
     toolbar.createEl("h3", { text: "Gallery" });
-    toolbar.createSpan({ cls: "bpp-muted", text: `cover: "${this.plugin.settings.galleryImageProp}"` });
+    renderPropertySelect(
+      toolbar,
+      "Cover",
+      this.plugin.getFrontmatterKeys(),
+      this.plugin.settings.galleryImageProp,
+      (value) => {
+        this.plugin.settings.galleryImageProp = value || "cover";
+        void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
+      }
+    );
     this.renderUndoButton(toolbar);
     this.renderManagedSearch(toolbar);
   }
@@ -9522,6 +9607,7 @@ var BasesPowerPackPlugin = class extends import_obsidian12.Plugin {
     if (!Number.isInteger(this.settings.dashboardTopN) || this.settings.dashboardTopN < 0)
       this.settings.dashboardTopN = DEFAULT_SETTINGS.dashboardTopN;
     this.settings.galleryImageProp = coerceProp(this.settings.galleryImageProp, DEFAULT_SETTINGS.galleryImageProp);
+    this.settings.dismissedHints = sanitizeStringArray(this.settings.dismissedHints, []);
   }
   async saveSettings(opts) {
     if ((opts == null ? void 0 : opts.invalidateResolved) !== false) this.invalidateResolved();

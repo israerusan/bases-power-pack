@@ -181,6 +181,9 @@ export class PivotView extends PowerPackView {
 				build: () => (this.lastModel ? pivotToCsv(this.lastModel, s.pivotRowProp, s.pivotColProp) : ""),
 			},
 		]);
+		// A drill-panel edit (rename / delete / edit field) is undoable — expose it here
+		// too, not only in the command palette, matching every other view's toolbar.
+		this.renderUndoButton(toolbar);
 		this.renderManagedSearch(toolbar);
 	}
 
