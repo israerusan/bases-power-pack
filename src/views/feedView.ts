@@ -66,14 +66,36 @@ export class FeedView extends PowerPackView {
 
 		this.renderToolbar(container);
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
+		this.renderHintBar(
+			container,
+			"feed",
+			"Click an entry to open it • ⋯ opens actions • Change day/week/month grouping from the toolbar"
+		);
 
 		const rows = filterRowsByText(resolved.rows, this.searchQuery);
 		this.lastRows = rows;
 		if (rows.length === 0) {
-			container.createDiv({
-				cls: "bpp-empty",
-				text: this.searchQuery ? "No notes match the current search." : "No notes to show yet.",
-			});
+			if (this.searchQuery) {
+				this.renderEmptyState(container, {
+					title: "No matches",
+					body: "No notes match the current search.",
+					actions: [
+						{
+							label: "Clear search",
+							onClick: () => {
+								this.searchQuery = "";
+								void this.render();
+							},
+						},
+					],
+				});
+			} else {
+				this.renderEmptyState(container, {
+					title: "Nothing on the timeline yet",
+					body: `The feed groups notes by "${this.plugin.settings.feedDateProp}". Notes with no date collect in an Undated section — if it's empty, add a date property or change the Date control.`,
+					actions: [{ label: "Open settings", onClick: () => this.openSettings() }],
+				});
+			}
 			return;
 		}
 

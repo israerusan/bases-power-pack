@@ -84,14 +84,36 @@ export class DashboardView extends PowerPackView {
 
 		this.renderToolbar(container);
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
+		this.renderHintBar(
+			container,
+			"dashboard",
+			"Click a KPI, bar, or chart segment to open the matching notes • Switch chart type from the toolbar"
+		);
 
 		const rows = filterRowsByText(resolved.rows, this.searchQuery);
 		this.lastRows = rows;
 		if (rows.length === 0) {
-			container.createDiv({
-				cls: "bpp-empty",
-				text: this.searchQuery ? "No notes match the current search." : "No notes to summarize yet.",
-			});
+			if (this.searchQuery) {
+				this.renderEmptyState(container, {
+					title: "No matches",
+					body: "No notes match the current search.",
+					actions: [
+						{
+							label: "Clear search",
+							onClick: () => {
+								this.searchQuery = "";
+								void this.render();
+							},
+						},
+					],
+				});
+			} else {
+				this.renderEmptyState(container, {
+					title: "Nothing to summarize yet",
+					body: `The dashboard groups notes by "${this.plugin.settings.dashboardGroupBy}". Add that property to some notes, or open settings to group by a different one.`,
+					actions: [{ label: "Open settings", onClick: () => this.openSettings() }],
+				});
+			}
 			this.restoreDrill();
 			return;
 		}

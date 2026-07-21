@@ -6,6 +6,17 @@ Advanced database views and automation on top of Obsidian's native **Bases** fea
 
 ---
 
+## 2-minute quick start
+
+1. Run **Open Kanban view (Lite)** from the command palette (or click the ribbon icon) to open the board.
+2. Add `status: To Do` to a few notes' frontmatter so they show up as cards.
+3. Drag a card to another column — the `status` frontmatter is rewritten for you.
+4. Click the **⋯** on a card for edit / rename / delete actions.
+5. Use the toolbar **search** to filter cards and **⤓ Export** to copy the board out.
+6. Premium adds the **Calendar, Gantt, Outline, Pivot, Dashboard, Gallery, and Feed** views.
+
+---
+
 ## Lite vs. Premium
 
 | Feature | Lite (free) | Premium (~$29 one-time) |

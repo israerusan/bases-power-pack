@@ -78,6 +78,11 @@ export class CalendarView extends PowerPackView {
 		const dateProp = this.plugin.settings.calendarDateProp || "due";
 
 		this.renderToolbar(container, dateProp);
+		this.renderHintBar(
+			container,
+			"calendar",
+			"Drag an event to another day to reschedule • Hover a day and click + to add a note • ⋯ opens actions"
+		);
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
 		renderRollupBar(container, this.plugin, resolved.rows);
 

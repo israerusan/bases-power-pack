@@ -3,6 +3,48 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.16.0] - 2026-07-21
+
+A **usability & orientation** release. Scoped from an LLM round-table critique of
+the whole product (codex + hermes reached consensus), the single insight was:
+*"This isn't a capability problem — it's a 'the user can't see the path' problem."*
+The plugin is feature-rich to the point of hiding itself. This release makes the
+next meaningful action obvious in every empty, locked, and settings state — no new
+features, just a clear path through the ones already here.
+
+### Changed
+- **All 8 views are now discoverable.** The 7 premium view commands were hidden
+  from the command palette for unlicensed users — the exact people who need to
+  learn the views exist. They're now always visible; opening one without a license
+  shows that view's built-in "what this unlocks" screen instead of nothing.
+  (Programmatic `.base` access via the public API stays license-gated.)
+- **First-run onboarding.** The empty Kanban board is now a "Start here" surface —
+  it explains that Power Pack groups notes by a property and offers **Choose
+  another property** and the add-column tile, instead of a dead-end sentence. A
+  "Getting started" callout now leads the settings tab.
+- **Settings tab decluttered.** Each premium view's settings live in a collapsible
+  section (collapsed by default). Free users see a one-line summary per view
+  instead of a wall of ~30 greyed-out locked controls. Six presentation controls
+  that duplicated in-view toolbar buttons (pivot axis/heat, dashboard
+  chart/order/count, feed grouping) were removed from settings — set them from the
+  toolbar where you see the effect.
+- **Clearer Premium funnel.** The license screen now states exactly what Premium
+  includes (all 7 views + formulas, roll-ups, saved filters, automation, color
+  rules, CSV export, `.base`). Locked-view calls to action are consistent.
+- **In-view tip bars.** Each view shows a subtle, dismissible one-line hint teaching
+  its non-obvious interactions (drag to reschedule/resize/reparent, ⋯ menus,
+  click-to-drill). Dismissed tips stay gone for the session.
+- **Actionable empty states across every view.** Pivot / Dashboard / Gallery / Feed
+  no longer just shrug ("No notes to show yet") — each names the property it needs
+  and offers **Clear search** / **Open settings**. (The gallery no longer implies
+  missing cover images, which it handles with placeholders.)
+- **Specific license feedback.** A rejected key now reports *why* ("Invalid license
+  signature", "License is for a different product", …) in settings and the "Verify
+  license key" notice, instead of a generic "no valid license".
+- **Better error recovery.** A view that fails to load now shows a reassuring
+  message ("Your notes were not changed"), **Retry** + **Open settings**, and the
+  raw error tucked into a collapsed "Technical details" — not a raw exception.
+
 ## [1.15.0] - 2026-07-21
 
 A **drill-down** release: the analytical views stop being dead ends. Pivot and

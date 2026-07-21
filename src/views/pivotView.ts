@@ -62,14 +62,37 @@ export class PivotView extends PowerPackView {
 
 		this.renderToolbar(container);
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
+		this.renderHintBar(
+			container,
+			"pivot",
+			"Click any cell or total to open the notes behind it • Flip axis order and heat-map from the toolbar"
+		);
 
 		const rows = filterRowsByText(resolved.rows, this.searchQuery);
 		if (rows.length === 0) {
 			this.lastModel = null; // so Export / drill can't reference a stale, no-longer-shown matrix
-			container.createDiv({
-				cls: "bpp-empty",
-				text: this.searchQuery ? "No notes match the current search." : "No notes to pivot yet.",
-			});
+			if (this.searchQuery) {
+				this.renderEmptyState(container, {
+					title: "No matches",
+					body: "No notes match the current search.",
+					actions: [
+						{
+							label: "Clear search",
+							onClick: () => {
+								this.searchQuery = "";
+								void this.render();
+							},
+						},
+					],
+				});
+			} else {
+				const s = this.plugin.settings;
+				this.renderEmptyState(container, {
+					title: "Nothing to pivot yet",
+					body: `Pick a row and column property (currently row "${s.pivotRowProp}" × column "${s.pivotColProp}") that your notes actually use, or open settings to change them.`,
+					actions: [{ label: "Open settings", onClick: () => this.openSettings() }],
+				});
+			}
 			this.restoreDrill();
 			return;
 		}

@@ -18,6 +18,10 @@ import { buildMarkdownTable } from "../query/export";
 import { writeRowProperty } from "./viewData";
 import { renderSearchControl } from "./viewChrome";
 
+/** Hint keys dismissed this session — a hint bar stays gone once its ✕ is clicked,
+ * for the life of the app (not persisted), so a tip doesn't nag on every render. */
+const dismissedHints = new Set<string>();
+
 /** A drill-down request: the notes behind a clicked number, plus how to label the
  * panel that lists them. Returned lazily by a resolver so the panel can refresh
  * itself against current data after an edit (see {@link PowerPackView.openDrill}). */
@@ -444,10 +448,60 @@ export abstract class PowerPackView extends ItemView {
 	 * view — instead of a silent blank pane. */
 	protected renderErrorState(container: HTMLElement, message: string): void {
 		const box = container.createDiv({ cls: "bpp-error", attr: { role: "alert" } });
-		box.createEl("h3", { text: "⚠ Couldn't load this view" });
-		box.createEl("p", { text: message });
-		const btn = box.createEl("button", { text: "Retry", cls: "mod-cta" });
-		btn.addEventListener("click", () => void this.render());
+		box.createEl("h3", { text: "This view couldn't load" });
+		box.createEl("p", { text: "Your notes were not changed." });
+		const actions = box.createDiv({ cls: "bpp-error-actions" });
+		const retry = actions.createEl("button", { text: "Retry", cls: "mod-cta" });
+		retry.addEventListener("click", () => void this.render());
+		const settings = actions.createEl("button", { text: "Open settings" });
+		settings.addEventListener("click", () => this.openSettings());
+		const details = box.createEl("details", { cls: "bpp-error-details" });
+		details.createEl("summary", { text: "Technical details" });
+		details.createEl("pre", { text: message });
+	}
+
+	/**
+	 * A subtle, dismissable one-line tip bar (💡) shown above a view's content — the
+	 * discoverable coaching for a feature that isn't obvious. Dismissal is per-key and
+	 * lasts the session (see {@link dismissedHints}), so a tip a user has waved away
+	 * never reappears until the next launch.
+	 */
+	protected renderHintBar(container: HTMLElement, key: string, text: string): void {
+		if (dismissedHints.has(key)) return;
+		const bar = container.createDiv({ cls: "bpp-hint" });
+		bar.createSpan({ cls: "bpp-hint-icon", text: "💡", attr: { "aria-hidden": "true" } });
+		bar.createSpan({ cls: "bpp-hint-text", text });
+		const dismiss = bar.createEl("button", {
+			cls: "bpp-hint-dismiss",
+			text: "✕",
+			attr: { "aria-label": "Dismiss tip" },
+		});
+		dismiss.addEventListener("click", () => {
+			dismissedHints.add(key);
+			bar.remove();
+		});
+	}
+
+	/**
+	 * A friendly empty state: an optional title, a body line, and optional action
+	 * buttons (the first styled as the primary CTA). Dependency-free — callers pass
+	 * plain click handlers — so any view can offer a "there's nothing here yet, do
+	 * this" surface instead of a blank pane.
+	 */
+	protected renderEmptyState(
+		container: HTMLElement,
+		opts: { title?: string; body: string; actions?: Array<{ label: string; onClick: () => void }> }
+	): void {
+		const box = container.createDiv({ cls: "bpp-emptystate" });
+		if (opts.title) box.createDiv({ cls: "bpp-emptystate-title", text: opts.title });
+		box.createDiv({ cls: "bpp-emptystate-body", text: opts.body });
+		if (opts.actions?.length) {
+			const row = box.createDiv({ cls: "bpp-emptystate-actions" });
+			opts.actions.forEach((action, i) => {
+				const btn = row.createEl("button", { text: action.label, cls: i === 0 ? "mod-cta" : undefined });
+				btn.addEventListener("click", () => action.onClick());
+			});
+		}
 	}
 
 	/**
@@ -621,7 +675,10 @@ export abstract class PowerPackView extends ItemView {
 			const ul = box.createEl("ul", { cls: "bpp-upgrade-features" });
 			for (const f of features) ul.createEl("li", { text: f });
 		}
-		const btn = box.createEl("button", { text: "Unlock Power Pack — enter your license key", cls: "mod-cta" });
-		btn.addEventListener("click", () => this.openSettings());
+		const actions = box.createDiv({ cls: "bpp-upgrade-actions" });
+		const buy = actions.createEl("button", { text: "Get Premium — ~$29 one-time", cls: "mod-cta" });
+		buy.addEventListener("click", () => this.openSettings());
+		const enter = actions.createEl("button", { text: "Already purchased? Enter your license key" });
+		enter.addEventListener("click", () => this.openSettings());
 	}
 }

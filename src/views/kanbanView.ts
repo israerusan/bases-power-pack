@@ -141,6 +141,7 @@ export class KanbanView extends PowerPackView {
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
 		this.renderLiteControls(container, resolved.rows);
 		renderRollupBar(container, this.plugin, resolved.rows);
+		this.renderHintBar(container, "kanban", "Drag cards to change status • ⋯ on a card or column for more actions • Undo reverses the last change");
 
 		const extraColumns = this.plugin.settings.kanbanExtraColumns[groupBy] ?? [];
 		const columns = buildKanbanColumns(resolved.rows, {
@@ -173,13 +174,36 @@ export class KanbanView extends PowerPackView {
 		const rowById = new Map(resolved.rows.map((row) => [row.id, row]));
 
 		if (columns.length === 0) {
-			board.createDiv({
-				cls: "bpp-empty",
-				text: this.searchQuery || this.hideDoneColumn
-					? "No cards match the current lite filters."
-					: `No notes with a "${groupBy}" property found. Add "${groupBy}: To Do" to a note's frontmatter, or add a column below.`,
-			});
-			if (!this.searchQuery) this.renderAddColumnTile(board, groupBy);
+			if (this.searchQuery || this.hideDoneColumn) {
+				const actions: Array<{ label: string; onClick: () => void }> = [];
+				if (this.searchQuery) {
+					actions.push({
+						label: "Clear search",
+						onClick: () => {
+							this.searchQuery = "";
+							void this.render();
+						},
+					});
+				}
+				if (this.hideDoneColumn) {
+					actions.push({ label: "Show done", onClick: () => void this.setHideDone(false) });
+				}
+				this.renderEmptyState(board, {
+					title: "No cards match",
+					body: "No cards match the current filters.",
+					actions,
+				});
+				// A "hide done"-only empty board (no search) can still be built on — keep
+				// the add-column tile so adding a column doesn't require un-hiding Done first.
+				if (!this.searchQuery) this.renderAddColumnTile(board, groupBy);
+			} else {
+				this.renderEmptyState(board, {
+					title: "Start here",
+					body: `Power Pack groups your notes by the "${groupBy}" property. Add "${groupBy}: To Do" to a note's frontmatter, or add a column below to begin.`,
+					actions: [{ label: "Choose another property", onClick: () => this.openSettings() }],
+				});
+				this.renderAddColumnTile(board, groupBy);
+			}
 			return;
 		}
 

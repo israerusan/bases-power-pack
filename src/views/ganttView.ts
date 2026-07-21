@@ -141,6 +141,12 @@ export class GanttView extends PowerPackView {
 		this.renderUndoButton(toolbar);
 		this.renderManagedSearch(toolbar);
 
+		this.renderHintBar(
+			container,
+			"gantt",
+			"Drag a bar to move it • Drag its right edge to resize • Use the Today button to jump back to now"
+		);
+
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
 		renderRollupBar(container, this.plugin, resolved.rows);
 

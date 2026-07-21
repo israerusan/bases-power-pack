@@ -2031,3 +2031,151 @@ th.bpp-drillable:hover {
 .bpp-arc-drill:hover {
   filter: brightness(1.08);
 }
+
+/* ============================================================================
+   Usability release: hint bar, empty state, error actions, grouped settings
+   sections, start-here callout, premium summary card, and upgrade CTA row.
+   Theme-aware and unobtrusive; built on the shared tokens above.
+   ============================================================================ */
+
+/* ---- Dismissable hint bar (💡) -------------------------------------------- */
+.bpp-hint {
+  display: flex;
+  align-items: center;
+  gap: var(--bpp-space-4);
+  font-size: var(--bpp-font-sm);
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  border-radius: var(--bpp-radius-md);
+  padding: var(--bpp-space-3) var(--bpp-space-5);
+  margin-bottom: var(--bpp-space-5);
+}
+.bpp-hint-icon {
+  flex: 0 0 auto;
+  line-height: 1;
+}
+.bpp-hint-text {
+  flex: 1;
+  min-width: 0;
+}
+.bpp-hint-dismiss {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 var(--bpp-space-2);
+  border-radius: var(--bpp-radius-sm);
+  transition: color var(--bpp-transition), background-color var(--bpp-transition);
+}
+.bpp-hint-dismiss:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+/* ---- Empty state ---------------------------------------------------------- */
+.bpp-emptystate {
+  text-align: center;
+  padding: var(--bpp-space-6);
+  color: var(--text-muted);
+}
+.bpp-emptystate-title {
+  font-size: 1.1em;
+  font-weight: 600;
+  color: var(--text-normal);
+  margin-bottom: var(--bpp-space-3);
+}
+.bpp-emptystate-body {
+  color: var(--text-muted);
+  max-width: 44ch;
+  margin: 0 auto;
+}
+.bpp-emptystate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bpp-space-4);
+  justify-content: center;
+  margin-top: var(--bpp-space-5);
+}
+
+/* ---- Error surface: actions row + collapsible technical details ----------- */
+.bpp-error-actions {
+  display: flex;
+  gap: var(--bpp-space-4);
+  justify-content: center;
+}
+.bpp-error-details {
+  margin-top: var(--bpp-space-5);
+  text-align: left;
+}
+.bpp-error-details summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--bpp-font-sm);
+}
+.bpp-error-details pre {
+  font-size: var(--bpp-font-sm);
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  overflow-x: auto;
+  margin-top: var(--bpp-space-3);
+}
+
+/* ---- Grouped settings sections (a <details> per section) ------------------ */
+.bpp-settings-section {
+  border-top: 1px solid var(--background-modifier-border);
+  margin-top: var(--bpp-space-6);
+  padding-top: var(--bpp-space-3);
+}
+.bpp-settings-summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: var(--bpp-space-3) 0;
+}
+
+/* ---- "Start here" callout box --------------------------------------------- */
+.bpp-start-here {
+  background: hsl(var(--accent-h, 220) var(--accent-s, 70%) var(--accent-l, 50%) / 0.08);
+  border-left: 3px solid var(--interactive-accent);
+  border-radius: var(--bpp-radius-md);
+  padding: var(--bpp-space-5);
+  margin-bottom: var(--bpp-space-6);
+}
+.bpp-start-here-title {
+  font-weight: 600;
+  font-size: var(--font-ui-medium);
+}
+.bpp-start-here-steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bpp-space-3);
+  margin: var(--bpp-space-4) 0 0;
+  padding-left: var(--bpp-space-6);
+}
+
+/* ---- Premium summary card ------------------------------------------------- */
+.bpp-premium-summary {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--bpp-radius-md);
+  padding: var(--bpp-space-5);
+  color: var(--text-muted);
+}
+.bpp-premium-summary-cta {
+  margin-top: var(--bpp-space-4);
+}
+
+/* ---- Upgrade CTA row (two buttons on the money screen) -------------------- */
+.bpp-upgrade-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--bpp-space-4);
+  justify-content: center;
+  margin-top: var(--bpp-space-5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bpp-hint-dismiss {
+    transition: none;
+  }
+}

@@ -1,6 +1,6 @@
 {
 	"name": "bases-power-pack",
-	"version": "1.15.0",
+	"version": "1.16.0",
 	"description": "Advanced database views and automation on top of Bases — kanban, calendar, Gantt, roll-ups, formulas, and saved filters.",
 	"main": "main.js",
 	"type": "module",

@@ -1,19 +1,16 @@
 import { App, PluginSettingTab, Setting, type TextComponent } from "obsidian";
 import { FolderSuggest, StringSuggest } from "./views/inputSuggest";
 import type BasesPowerPackPlugin from "./main";
+import { VIEW_TYPE_KANBAN } from "./views/kanbanView";
 import { AGGREGATIONS, type Aggregation, type Rollup } from "./query/rollup";
 import { AUTOMATION_ACTION_TYPES, type AutomationActionType, type AutomationRule } from "./query/automation";
 import { type ColorRule } from "./query/colorRules";
 import {
-	DASHBOARD_CHART_TYPES,
-	DASHBOARD_CHART_LABELS,
-	DISTRIBUTION_SORTS,
-	DISTRIBUTION_SORT_LABELS,
 	type DashboardChartType,
 	type DistributionSort,
 } from "./query/dashboard";
 import { type PivotSort } from "./query/pivot";
-import { FEED_GRANULARITIES, type FeedGranularity } from "./query/feed";
+import { type FeedGranularity } from "./query/feed";
 
 const ACTION_LABELS: Record<AutomationActionType, string> = {
 	set: "Set to value",
@@ -206,6 +203,31 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 		const { containerEl } = this;
 		containerEl.empty();
 
+		// ---- Start here ------------------------------------------------------
+		// A one-time orientation callout shown to every user, above the License
+		// section, so a first run has an obvious next step.
+		const startHere = containerEl.createDiv({ cls: "bpp-start-here" });
+		// A styled div rather than a heading element — the obsidianmd settings-tab
+		// lint rule reserves real headings for Setting().setHeading().
+		startHere.createDiv({ cls: "bpp-start-here-title", text: "Getting started" });
+		const startSteps = startHere.createDiv({ cls: "bpp-start-here-steps" });
+		startSteps.createEl("div", {
+			text: "1. Open the Kanban board from the ribbon or the “Open Kanban view (Lite)” command.",
+		});
+		startSteps.createEl("div", {
+			text: "2. Group cards by a frontmatter property (default: status).",
+		});
+		startSteps.createEl("div", {
+			text: "3. Add e.g. “status: To Do” to a note, then drag cards between columns.",
+		});
+		startSteps.createEl("div", {
+			text: "4. Right-click or use the ⋯ button on cards and columns for more actions; Undo reverses the last change.",
+		});
+		const startBtn = startHere.createEl("button", { text: "Open Kanban board", cls: "mod-cta" });
+		startBtn.addEventListener("click", () => {
+			void this.plugin.activateView(VIEW_TYPE_KANBAN);
+		});
+
 		// ---- License ---------------------------------------------------------
 		new Setting(containerEl).setName("License").setHeading();
 
@@ -235,14 +257,26 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 				text: `✅ Premium active${this.plugin.settings.licenseEmail ? ` (${this.plugin.settings.licenseEmail})` : ""}.`,
 			});
 		} else {
-			status.createEl("p", {
-				text: "🔓 Lite tier active. Upgrade to unlock the calendar, Gantt, roll-ups, formulas, and saved filters.",
-			});
-			const link = status.createEl("a", {
+			status
+				.createDiv({ cls: "bpp-premium-summary" })
+				.setText(
+					"Premium (~$29 one-time) unlocks 7 more views — Calendar, Gantt, Outline, Pivot, Dashboard, Gallery, and Feed — plus formulas, roll-ups, saved filters, Move Rules automation, rule-based color coding, CSV export, and .base integration. Verified offline; no account required."
+				);
+			const cta = status.createDiv({ cls: "bpp-premium-summary-cta" });
+			const link = cta.createEl("a", {
 				text: "Get Bases Power Pack premium",
 				href: this.plugin.settings.purchaseUrl,
 			});
 			link.setAttr("target", "_blank");
+		}
+
+		// Explain WHY a supplied key was rejected, rather than silently staying Lite.
+		if (!this.plugin.settings.isPro && this.plugin.settings.licenseKey && this.plugin.licenseError) {
+			const reason = this.plugin.licenseError;
+			status.createEl("p", {
+				cls: "bpp-license-error",
+				text: `Key not accepted: ${typeof reason === "string" ? reason : ""}`,
+			});
 		}
 
 		// (The purchase URL is an author/config concern, not a buyer setting — it's
@@ -344,8 +378,13 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 		// ---- Premium ---------------------------------------------------------
 		new Setting(containerEl).setName("Premium").setHeading();
 
-		const premium = (name: string, desc: string, render: (setting: Setting) => void): boolean => {
-			const setting = new Setting(containerEl).setName(name).setDesc(desc);
+		const premiumIn = (
+			parent: HTMLElement,
+			name: string,
+			desc: string,
+			render: (setting: Setting) => void
+		): boolean => {
+			const setting = new Setting(parent).setName(name).setDesc(desc);
 			if (!this.plugin.settings.isPro) {
 				setting.settingEl.addClass("bpp-setting-locked");
 				setting.descEl.appendText(" (Premium)");
@@ -355,8 +394,28 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			return true;
 		};
 
+		const premium = (name: string, desc: string, render: (setting: Setting) => void): boolean =>
+			premiumIn(containerEl, name, desc, render);
+
 		const subHeading = (name: string): void => {
 			new Setting(containerEl).setName(name).setHeading();
+		};
+
+		// Each premium view's settings live inside a collapsed disclosure. Lite users
+		// see a one-line description instead of a wall of locked controls; Pro users
+		// get the real controls built into the <details>.
+		const viewSection = (
+			title: string,
+			liteSummary: string,
+			build: (parent: HTMLElement) => void
+		): void => {
+			const details = containerEl.createEl("details", { cls: "bpp-settings-section" });
+			details.createEl("summary", { cls: "bpp-settings-summary", text: title });
+			if (!this.plugin.settings.isPro) {
+				details.createDiv({ cls: "bpp-premium-summary" }).setText(liteSummary);
+			} else {
+				build(details);
+			}
 		};
 
 		// Active base (real Bases integration) — shared by every view.
@@ -378,354 +437,338 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			}
 		);
 
-		subHeading("Calendar");
-		premium(
-			"Calendar date property",
-			"Frontmatter date property used to place notes on the calendar.",
-			(setting) => {
-				setting.addText((text) =>
-					this.keySuggest(text).setValue(this.plugin.settings.calendarDateProp).onChange((value) => {
-						this.plugin.settings.calendarDateProp = value.trim() || "due";
-						void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-					})
+		viewSection(
+			"Calendar",
+			"Places notes on a month, week, or agenda calendar by a frontmatter date property. Premium.",
+			(parent) => {
+				premiumIn(
+					parent,
+					"Calendar date property",
+					"Frontmatter date property used to place notes on the calendar.",
+					(setting) => {
+						setting.addText((text) =>
+							this.keySuggest(text).setValue(this.plugin.settings.calendarDateProp).onChange((value) => {
+								this.plugin.settings.calendarDateProp = value.trim() || "due";
+								void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+							})
+						);
+					}
+				);
+
+				premiumIn(
+					parent,
+					"Calendar color property",
+					"Frontmatter property whose value tints each calendar event with a stable color. Leave blank for no coloring.",
+					(setting) => {
+						setting.addText((text) =>
+							this.keySuggest(text)
+								.setPlaceholder("status")
+								.setValue(this.plugin.settings.calendarColorProp)
+								.onChange((value) => {
+									this.plugin.settings.calendarColorProp = value.trim();
+									void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+								})
+						);
+					}
+				);
+
+				premiumIn(
+					parent,
+					"Calendar quick-add folder",
+					"Optional folder for notes created by clicking a day (leave blank for the vault root).",
+					(setting) => {
+						setting.addText((text) =>
+							this.folderSuggest(text).setValue(this.plugin.settings.calendarQuickAddFolder).onChange((value) => {
+								this.plugin.settings.calendarQuickAddFolder = value.trim();
+								void this.plugin.saveSettings();
+							})
+						);
+					}
 				);
 			}
 		);
 
-		premium(
-			"Calendar color property",
-			"Frontmatter property whose value tints each calendar event with a stable color. Leave blank for no coloring.",
-			(setting) => {
-				setting.addText((text) =>
-					this.keySuggest(text)
-						.setPlaceholder("status")
-						.setValue(this.plugin.settings.calendarColorProp)
-						.onChange((value) => {
-							this.plugin.settings.calendarColorProp = value.trim();
+		viewSection(
+			"Gantt",
+			"Lays out notes as a timeline of bars with start and end dates, progress fill, and milestones. Premium.",
+			(parent) => {
+				premiumIn(parent, "Gantt start property", "Frontmatter date property for the start of each Gantt bar.", (setting) => {
+					setting.addText((text) =>
+						this.keySuggest(text).setValue(this.plugin.settings.ganttStartProp).onChange((value) => {
+							this.plugin.settings.ganttStartProp = value.trim() || "start";
 							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
 						})
-				);
-			}
-		);
-
-		premium(
-			"Calendar quick-add folder",
-			"Optional folder for notes created by clicking a day (leave blank for the vault root).",
-			(setting) => {
-				setting.addText((text) =>
-					this.folderSuggest(text).setValue(this.plugin.settings.calendarQuickAddFolder).onChange((value) => {
-						this.plugin.settings.calendarQuickAddFolder = value.trim();
-						void this.plugin.saveSettings();
-					})
-				);
-			}
-		);
-
-		subHeading("Gantt");
-		premium("Gantt start property", "Frontmatter date property for the start of each Gantt bar.", (setting) => {
-			setting.addText((text) =>
-				this.keySuggest(text).setValue(this.plugin.settings.ganttStartProp).onChange((value) => {
-					this.plugin.settings.ganttStartProp = value.trim() || "start";
-					void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-				})
-			);
-		});
-
-		premium("Gantt end property", "Frontmatter date property for the end of each Gantt bar (optional).", (setting) => {
-			setting.addText((text) =>
-				this.keySuggest(text).setValue(this.plugin.settings.ganttEndProp).onChange((value) => {
-					this.plugin.settings.ganttEndProp = value.trim() || "end";
-					void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-				})
-			);
-		});
-
-		premium(
-			"Gantt progress property",
-			"Frontmatter number (0–100) that fills each Gantt bar to show completion.",
-			(setting) => {
-				setting.addText((text) =>
-					this.keySuggest(text)
-						.setPlaceholder("progress")
-						.setValue(this.plugin.settings.ganttProgressProp)
-						.onChange((value) => {
-							this.plugin.settings.ganttProgressProp = value.trim();
-							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-						})
-				);
-			}
-		);
-
-		premium(
-			"Gantt milestone property",
-			"Notes where this frontmatter value is truthy render as a diamond milestone instead of a bar.",
-			(setting) => {
-				setting.addText((text) =>
-					this.keySuggest(text)
-						.setPlaceholder("milestone")
-						.setValue(this.plugin.settings.ganttMilestoneProp)
-						.onChange((value) => {
-							this.plugin.settings.ganttMilestoneProp = value.trim();
-							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-						})
-				);
-			}
-		);
-
-		subHeading("Outline");
-		premium(
-			"Outline parent property",
-			"Frontmatter property holding the vault-relative path of a note's parent (builds the Outline tree).",
-			(setting) => {
-				setting.addText((text) =>
-					this.keySuggest(text)
-						.setPlaceholder("parent")
-						.setValue(this.plugin.settings.hierarchyParentProp)
-						.onChange((value) => {
-							this.plugin.settings.hierarchyParentProp = value.trim() || "parent";
-							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-						})
-				);
-			}
-		);
-
-		premium(
-			"Outline order property",
-			"Optional numeric frontmatter property for sibling order in the Outline. Blank falls back to sorting by name.",
-			(setting) => {
-				setting.addText((text) =>
-					this.keySuggest(text)
-						.setPlaceholder("order")
-						.setValue(this.plugin.settings.hierarchyOrderProp)
-						.onChange((value) => {
-							this.plugin.settings.hierarchyOrderProp = value.trim();
-							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-						})
-				);
-			}
-		);
-
-		premium(
-			"Outline quick-add folder",
-			"Optional folder for child notes created from the Outline (leave blank for the vault root).",
-			(setting) => {
-				setting.addText((text) =>
-					this.folderSuggest(text).setValue(this.plugin.settings.hierarchyQuickAddFolder).onChange((value) => {
-						this.plugin.settings.hierarchyQuickAddFolder = value.trim();
-						void this.plugin.saveSettings();
-					})
-				);
-			}
-		);
-
-		subHeading("Pivot");
-		premium(
-			"Pivot row property",
-			"Frontmatter property (or formula) that groups the pivot table's rows.",
-			(setting) => {
-				setting.addText((text) =>
-					this.keySuggest(text)
-						.setPlaceholder("status")
-						.setValue(this.plugin.settings.pivotRowProp)
-						.onChange((value) => {
-							this.plugin.settings.pivotRowProp = value.trim() || "status";
-							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-						})
-				);
-			}
-		);
-		premium(
-			"Pivot column property",
-			"Frontmatter property (or formula) that groups the pivot table's columns.",
-			(setting) => {
-				setting.addText((text) =>
-					this.keySuggest(text)
-						.setPlaceholder("priority")
-						.setValue(this.plugin.settings.pivotColProp)
-						.onChange((value) => {
-							this.plugin.settings.pivotColProp = value.trim() || "priority";
-							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-						})
-				);
-			}
-		);
-		premium(
-			"Pivot aggregation",
-			"How each cell aggregates its notes. count tallies notes; the others aggregate the value expression below.",
-			(setting) => {
-				setting.addDropdown((dd) => {
-					for (const agg of AGGREGATIONS) dd.addOption(agg, agg);
-					dd.setValue(this.plugin.settings.pivotAggregation);
-					dd.onChange((value) => {
-						this.plugin.settings.pivotAggregation = value as Aggregation;
-						void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-					});
+					);
 				});
-			}
-		);
-		premium(
-			"Pivot value expression",
-			'Expression aggregated in each cell for non-count aggregations, e.g. hours or done / total. Ignored for count.',
-			(setting) => {
-				setting.addText((text) =>
-					this.keySuggest(text)
-						.setPlaceholder("hours")
-						.setValue(this.plugin.settings.pivotValueExpr)
-						.onChange((value) => {
-							this.plugin.settings.pivotValueExpr = value.trim();
+
+				premiumIn(parent, "Gantt end property", "Frontmatter date property for the end of each Gantt bar (optional).", (setting) => {
+					setting.addText((text) =>
+						this.keySuggest(text).setValue(this.plugin.settings.ganttEndProp).onChange((value) => {
+							this.plugin.settings.ganttEndProp = value.trim() || "end";
 							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
 						})
-				);
-			}
-		);
-		premium(
-			"Pivot axis order",
-			"Order the row/column keys alphabetically, or by busiest-first so the most-populated intersections rise to the top-left. Also flip it from the toolbar.",
-			(setting) => {
-				setting.addDropdown((dd) => {
-					dd.addOption("label", "Name (A→Z)");
-					dd.addOption("total", "Busiest first");
-					dd.setValue(this.plugin.settings.pivotSort);
-					dd.onChange((value) => {
-						this.plugin.settings.pivotSort = value as PivotSort;
-						void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-					});
+					);
 				});
-			}
-		);
-		premium(
-			"Pivot heat-map",
-			"Shade each cell by its value so the hot spots pop out. Also toggle it from the toolbar.",
-			(setting) => {
-				setting.addToggle((toggle) =>
-					toggle.setValue(this.plugin.settings.pivotHeat).onChange((value) => {
-						this.plugin.settings.pivotHeat = value;
-						void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-					})
+
+				premiumIn(
+					parent,
+					"Gantt progress property",
+					"Frontmatter number (0–100) that fills each Gantt bar to show completion.",
+					(setting) => {
+						setting.addText((text) =>
+							this.keySuggest(text)
+								.setPlaceholder("progress")
+								.setValue(this.plugin.settings.ganttProgressProp)
+								.onChange((value) => {
+									this.plugin.settings.ganttProgressProp = value.trim();
+									void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+								})
+						);
+					}
+				);
+
+				premiumIn(
+					parent,
+					"Gantt milestone property",
+					"Notes where this frontmatter value is truthy render as a diamond milestone instead of a bar.",
+					(setting) => {
+						setting.addText((text) =>
+							this.keySuggest(text)
+								.setPlaceholder("milestone")
+								.setValue(this.plugin.settings.ganttMilestoneProp)
+								.onChange((value) => {
+									this.plugin.settings.ganttMilestoneProp = value.trim();
+									void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+								})
+						);
+					}
 				);
 			}
 		);
 
-		subHeading("Dashboard");
-		premium(
-			"Dashboard group-by property",
-			"Frontmatter property (or formula) the distribution chart groups notes by.",
-			(setting) => {
-				setting.addText((text) =>
-					this.keySuggest(text)
-						.setPlaceholder("status")
-						.setValue(this.plugin.settings.dashboardGroupBy)
-						.onChange((value) => {
-							this.plugin.settings.dashboardGroupBy = value.trim() || "status";
-							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-						})
+		viewSection(
+			"Outline",
+			"Shows notes as a nested tree from a parent property, with per-branch progress roll-ups. Premium.",
+			(parent) => {
+				premiumIn(
+					parent,
+					"Outline parent property",
+					"Frontmatter property holding the vault-relative path of a note's parent (builds the Outline tree).",
+					(setting) => {
+						setting.addText((text) =>
+							this.keySuggest(text)
+								.setPlaceholder("parent")
+								.setValue(this.plugin.settings.hierarchyParentProp)
+								.onChange((value) => {
+									this.plugin.settings.hierarchyParentProp = value.trim() || "parent";
+									void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+								})
+						);
+					}
 				);
-			}
-		);
-		premium(
-			"Dashboard aggregation",
-			"How the chart aggregates each category. count tallies notes; the others aggregate the value expression below.",
-			(setting) => {
-				setting.addDropdown((dd) => {
-					for (const agg of AGGREGATIONS) dd.addOption(agg, agg);
-					dd.setValue(this.plugin.settings.dashboardAggregation);
-					dd.onChange((value) => {
-						this.plugin.settings.dashboardAggregation = value as Aggregation;
-						void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-					});
-				});
-			}
-		);
-		premium(
-			"Dashboard value expression",
-			"Expression aggregated per category for non-count aggregations, e.g. hours. Ignored for count.",
-			(setting) => {
-				setting.addText((text) =>
-					this.keySuggest(text)
-						.setPlaceholder("hours")
-						.setValue(this.plugin.settings.dashboardValueExpr)
-						.onChange((value) => {
-							this.plugin.settings.dashboardValueExpr = value.trim();
-							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-						})
-				);
-			}
-		);
-		premium("Dashboard chart type", "Default chart style for the distribution — bars, a donut, or a single stacked bar. You can also flip it from the toolbar.", (setting) => {
-			setting.addDropdown((dd) => {
-				for (const type of DASHBOARD_CHART_TYPES) dd.addOption(type, DASHBOARD_CHART_LABELS[type]);
-				dd.setValue(this.plugin.settings.dashboardChartType);
-				dd.onChange((value) => {
-					this.plugin.settings.dashboardChartType = value as DashboardChartType;
-					void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-				});
-			});
-		});
-		premium("Dashboard slice order", "How the distribution slices are ordered. Also flip it from the toolbar.", (setting) => {
-			setting.addDropdown((dd) => {
-				for (const s of DISTRIBUTION_SORTS) dd.addOption(s, DISTRIBUTION_SORT_LABELS[s]);
-				dd.setValue(this.plugin.settings.dashboardSort);
-				dd.onChange((value) => {
-					this.plugin.settings.dashboardSort = value as DistributionSort;
-					void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-				});
-			});
-		});
-		premium("Dashboard categories shown", "How many categories to chart before the smallest fold into “Other”. Also change it from the toolbar.", (setting) => {
-			setting.addDropdown((dd) => {
-				for (const n of ["5", "8", "12", "20"]) dd.addOption(n, n);
-				dd.addOption("0", "All");
-				dd.setValue(String(this.plugin.settings.dashboardTopN));
-				dd.onChange((value) => {
-					this.plugin.settings.dashboardTopN = Number(value) || 0;
-					void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-				});
-			});
-		});
 
-		subHeading("Gallery");
-		premium(
-			"Gallery cover property",
-			"Frontmatter property holding each card's cover image — a vault path, wikilink, markdown image, or URL.",
-			(setting) => {
-				setting.addText((text) =>
-					this.keySuggest(text)
-						.setPlaceholder("cover")
-						.setValue(this.plugin.settings.galleryImageProp)
-						.onChange((value) => {
-							this.plugin.settings.galleryImageProp = value.trim() || "cover";
-							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-						})
+				premiumIn(
+					parent,
+					"Outline order property",
+					"Optional numeric frontmatter property for sibling order in the Outline. Blank falls back to sorting by name.",
+					(setting) => {
+						setting.addText((text) =>
+							this.keySuggest(text)
+								.setPlaceholder("order")
+								.setValue(this.plugin.settings.hierarchyOrderProp)
+								.onChange((value) => {
+									this.plugin.settings.hierarchyOrderProp = value.trim();
+									void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+								})
+						);
+					}
+				);
+
+				premiumIn(
+					parent,
+					"Outline quick-add folder",
+					"Optional folder for child notes created from the Outline (leave blank for the vault root).",
+					(setting) => {
+						setting.addText((text) =>
+							this.folderSuggest(text).setValue(this.plugin.settings.hierarchyQuickAddFolder).onChange((value) => {
+								this.plugin.settings.hierarchyQuickAddFolder = value.trim();
+								void this.plugin.saveSettings();
+							})
+						);
+					}
 				);
 			}
 		);
 
-		subHeading("Feed");
-		premium(
-			"Feed date property",
-			"What the timeline groups notes by — a frontmatter date property, or file.mtime / file.ctime for a modified / created activity stream.",
-			(setting) => {
-				setting.addText((text) =>
-					this.keySuggest(text)
-						.setPlaceholder("file.mtime")
-						.setValue(this.plugin.settings.feedDateProp)
-						.onChange((value) => {
-							this.plugin.settings.feedDateProp = value.trim() || "file.mtime";
-							void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-						})
+		viewSection(
+			"Pivot",
+			"Cross-tabulates notes into a matrix of two properties with a chosen aggregation. Premium.",
+			(parent) => {
+				premiumIn(
+					parent,
+					"Pivot row property",
+					"Frontmatter property (or formula) that groups the pivot table's rows.",
+					(setting) => {
+						setting.addText((text) =>
+							this.keySuggest(text)
+								.setPlaceholder("status")
+								.setValue(this.plugin.settings.pivotRowProp)
+								.onChange((value) => {
+									this.plugin.settings.pivotRowProp = value.trim() || "status";
+									void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+								})
+						);
+					}
+				);
+				premiumIn(
+					parent,
+					"Pivot column property",
+					"Frontmatter property (or formula) that groups the pivot table's columns.",
+					(setting) => {
+						setting.addText((text) =>
+							this.keySuggest(text)
+								.setPlaceholder("priority")
+								.setValue(this.plugin.settings.pivotColProp)
+								.onChange((value) => {
+									this.plugin.settings.pivotColProp = value.trim() || "priority";
+									void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+								})
+						);
+					}
+				);
+				premiumIn(
+					parent,
+					"Pivot aggregation",
+					"How each cell aggregates its notes. count tallies notes; the others aggregate the value expression below.",
+					(setting) => {
+						setting.addDropdown((dd) => {
+							for (const agg of AGGREGATIONS) dd.addOption(agg, agg);
+							dd.setValue(this.plugin.settings.pivotAggregation);
+							dd.onChange((value) => {
+								this.plugin.settings.pivotAggregation = value as Aggregation;
+								void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+							});
+						});
+					}
+				);
+				premiumIn(
+					parent,
+					"Pivot value expression",
+					'Expression aggregated in each cell for non-count aggregations, e.g. hours or done / total. Ignored for count.',
+					(setting) => {
+						setting.addText((text) =>
+							this.keySuggest(text)
+								.setPlaceholder("hours")
+								.setValue(this.plugin.settings.pivotValueExpr)
+								.onChange((value) => {
+									this.plugin.settings.pivotValueExpr = value.trim();
+									void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+								})
+						);
+					}
 				);
 			}
 		);
-		premium("Feed grouping", "Bucket the feed by day, week, or month. You can also flip this from the toolbar.", (setting) => {
-			setting.addDropdown((dd) => {
-				for (const g of FEED_GRANULARITIES) dd.addOption(g, g.charAt(0).toUpperCase() + g.slice(1));
-				dd.setValue(this.plugin.settings.feedGranularity);
-				dd.onChange((value) => {
-					this.plugin.settings.feedGranularity = value as FeedGranularity;
-					void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
-				});
-			});
-		});
+
+		viewSection(
+			"Dashboard",
+			"Charts the distribution of notes across a property as bars, a donut, or a stacked bar. Premium.",
+			(parent) => {
+				premiumIn(
+					parent,
+					"Dashboard group-by property",
+					"Frontmatter property (or formula) the distribution chart groups notes by.",
+					(setting) => {
+						setting.addText((text) =>
+							this.keySuggest(text)
+								.setPlaceholder("status")
+								.setValue(this.plugin.settings.dashboardGroupBy)
+								.onChange((value) => {
+									this.plugin.settings.dashboardGroupBy = value.trim() || "status";
+									void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+								})
+						);
+					}
+				);
+				premiumIn(
+					parent,
+					"Dashboard aggregation",
+					"How the chart aggregates each category. count tallies notes; the others aggregate the value expression below.",
+					(setting) => {
+						setting.addDropdown((dd) => {
+							for (const agg of AGGREGATIONS) dd.addOption(agg, agg);
+							dd.setValue(this.plugin.settings.dashboardAggregation);
+							dd.onChange((value) => {
+								this.plugin.settings.dashboardAggregation = value as Aggregation;
+								void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+							});
+						});
+					}
+				);
+				premiumIn(
+					parent,
+					"Dashboard value expression",
+					"Expression aggregated per category for non-count aggregations, e.g. hours. Ignored for count.",
+					(setting) => {
+						setting.addText((text) =>
+							this.keySuggest(text)
+								.setPlaceholder("hours")
+								.setValue(this.plugin.settings.dashboardValueExpr)
+								.onChange((value) => {
+									this.plugin.settings.dashboardValueExpr = value.trim();
+									void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+								})
+						);
+					}
+				);
+			}
+		);
+
+		viewSection(
+			"Gallery",
+			"Shows notes as a grid of cards with cover images. Premium.",
+			(parent) => {
+				premiumIn(
+					parent,
+					"Gallery cover property",
+					"Frontmatter property holding each card's cover image — a vault path, wikilink, markdown image, or URL.",
+					(setting) => {
+						setting.addText((text) =>
+							this.keySuggest(text)
+								.setPlaceholder("cover")
+								.setValue(this.plugin.settings.galleryImageProp)
+								.onChange((value) => {
+									this.plugin.settings.galleryImageProp = value.trim() || "cover";
+									void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+								})
+						);
+					}
+				);
+			}
+		);
+
+		viewSection(
+			"Feed",
+			"Groups notes into a chronological timeline by day, week, or month. Premium.",
+			(parent) => {
+				premiumIn(
+					parent,
+					"Feed date property",
+					"What the timeline groups notes by — a frontmatter date property, or file.mtime / file.ctime for a modified / created activity stream.",
+					(setting) => {
+						setting.addText((text) =>
+							this.keySuggest(text)
+								.setPlaceholder("file.mtime")
+								.setValue(this.plugin.settings.feedDateProp)
+								.onChange((value) => {
+									this.plugin.settings.feedDateProp = value.trim() || "file.mtime";
+									void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+								})
+						);
+					}
+				);
+			}
+		);
 
 		subHeading("Kanban (premium)");
 		premium(

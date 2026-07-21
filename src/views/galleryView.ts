@@ -57,13 +57,31 @@ export class GalleryView extends PowerPackView {
 
 		this.renderToolbar(container);
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
+		this.renderHintBar(container, "gallery", "Click a card to open the note • ⋯ opens edit / rename / delete");
 
 		const rows = filterRowsByText(resolved.rows, this.searchQuery);
 		if (rows.length === 0) {
-			container.createDiv({
-				cls: "bpp-empty",
-				text: this.searchQuery ? "No notes match the current search." : "No notes to show yet.",
-			});
+			if (this.searchQuery) {
+				this.renderEmptyState(container, {
+					title: "No matches",
+					body: "No notes match the current search.",
+					actions: [
+						{
+							label: "Clear search",
+							onClick: () => {
+								this.searchQuery = "";
+								void this.render();
+							},
+						},
+					],
+				});
+			} else {
+				this.renderEmptyState(container, {
+					title: "No notes to show",
+					body: "This view has no notes yet. Add notes (or adjust your active base / saved filter) to populate the gallery. Notes without a cover image get a neat placeholder.",
+					actions: [{ label: "Open settings", onClick: () => this.openSettings() }],
+				});
+			}
 			return;
 		}
 

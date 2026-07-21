@@ -84,6 +84,9 @@ export interface BasesPowerPackApi {
 
 export default class BasesPowerPackPlugin extends Plugin {
 	settings: BasesPowerPackSettings = DEFAULT_SETTINGS;
+	/** Reason the current license key is invalid (from the verifier), or "" when the
+	 * key is empty or valid. In-memory only; the settings tab reads it. */
+	licenseError = "";
 	/** In-memory undo stack for the frontmatter writes every view makes. */
 	readonly undo = new UndoManager();
 	private api: BasesPowerPackApi | null = null;
@@ -229,7 +232,12 @@ export default class BasesPowerPackPlugin extends Plugin {
 			callback: async () => {
 				await this.refreshLicense();
 				this.refreshViews();
-				new Notice(this.settings.isPro ? "Premium active." : "Lite tier (no valid license).");
+				const message = this.settings.isPro
+					? "Premium active."
+					: this.licenseError
+						? `License: ${this.licenseError}`
+						: "Lite tier (no valid license).";
+				new Notice(message);
 			},
 		});
 
@@ -449,7 +457,6 @@ export default class BasesPowerPackPlugin extends Plugin {
 	}
 
 	private premiumCommand(checking: boolean, viewType: string): boolean {
-		if (!this.settings.isPro) return false;
 		if (!checking) void this.activateView(viewType);
 		return true;
 	}
@@ -496,10 +503,12 @@ export default class BasesPowerPackPlugin extends Plugin {
 		if (!this.settings.licenseKey) {
 			this.settings.isPro = false;
 			this.settings.licenseEmail = "";
+			this.licenseError = "";
 		} else {
 			const result = LicenseManager.verify(this.settings.licenseKey);
 			this.settings.isPro = result.valid;
 			this.settings.licenseEmail = result.email ?? "";
+			this.licenseError = result.valid ? "" : result.error ?? "";
 		}
 		const changed = before !== this.settings.isPro || beforeEmail !== this.settings.licenseEmail;
 		if (changed || persistUnchanged) await this.saveSettings();

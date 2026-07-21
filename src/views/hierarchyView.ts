@@ -79,6 +79,11 @@ export class HierarchyView extends PowerPackView {
 		const doneProp = this.plugin.settings.kanbanGroupBy || "status";
 
 		this.renderToolbar(container, parentProp);
+		this.renderHintBar(
+			container,
+			"outline",
+			"Drag a row onto another to reparent it • Drop on the top strip to make it top-level • ⋯ opens actions"
+		);
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
 		renderRollupBar(container, this.plugin, resolved.rows);
 
