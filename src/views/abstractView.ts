@@ -326,7 +326,7 @@ export abstract class PowerPackView extends ItemView {
 		openMenu: (anchor: MouseEvent | HTMLElement) => void
 	): HTMLButtonElement {
 		const btn = parent.createEl("button", {
-			cls: "bpp-overflow",
+			cls: "bpp-overflow clickable-icon",
 			text: "⋯",
 			attr: { "aria-label": `Actions: ${label}`, "aria-haspopup": "menu" },
 		});
@@ -347,7 +347,7 @@ export abstract class PowerPackView extends ItemView {
 	protected addExportButton(container: HTMLElement, options: ExportOption[]): void {
 		if (options.length === 0) return;
 		const btn = container.createEl("button", {
-			cls: "bpp-seg-btn bpp-export-btn",
+			cls: "bpp-export-btn",
 			text: "⤓ Export",
 			attr: { "aria-label": "Export this view", "aria-haspopup": "menu" },
 		});
@@ -390,7 +390,7 @@ export abstract class PowerPackView extends ItemView {
 		if (!this.plugin.undo.canUndo()) return;
 		const label = this.plugin.undo.peekLabel();
 		const btn = container.createEl("button", {
-			cls: "bpp-seg-btn bpp-undo-btn",
+			cls: "bpp-undo-btn",
 			text: "↶ Undo",
 			attr: { "aria-label": label ? `Undo: ${label}` : "Undo last change" },
 		});
@@ -566,13 +566,13 @@ export abstract class PowerPackView extends ItemView {
 
 		const actions = head.createDiv({ cls: "bpp-drill-actions" });
 		const copy = actions.createEl("button", {
-			cls: "bpp-drill-btn",
+			cls: "bpp-drill-btn clickable-icon",
 			text: "⤓",
 			attr: { "aria-label": "Copy this list as a Markdown table", title: "Copy as Markdown" },
 		});
 		copy.addEventListener("click", () => void this.copyDrill(req));
 		const close = actions.createEl("button", {
-			cls: "bpp-drill-btn bpp-drill-close",
+			cls: "bpp-drill-btn bpp-drill-close clickable-icon",
 			text: "✕",
 			attr: { "aria-label": "Close drill-down" },
 		});

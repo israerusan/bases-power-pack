@@ -3,6 +3,31 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.18.0] - 2026-07-21
+
+A **native-match UI polish** release: the plugin's custom controls now reuse
+Obsidian's own component classes and design variables, so they read as first-party
+UI instead of "plugin UI." No new features, no behavior changes — just refinement.
+Scoped from a five-lens control-by-control audit against Obsidian's native
+conventions, then an adversarial diff review.
+
+### Changed
+- **Dropdowns are now native.** Every `<select>` (group-by, sort, aggregation, chart
+  type, and the Calendar/Gantt/Outline/Gallery property pickers, plus the saved-filter
+  switcher) uses Obsidian's `dropdown` styling — the same chevron, fill, border, and
+  height as the rest of the app, instead of a bare browser select.
+- **Icon buttons are now native.** The calendar ‹ › / Today nav, the ⋯ action button
+  on every item, and the drill-panel copy/close buttons use Obsidian's `clickable-icon`
+  treatment (consistent hover, color, and target size).
+- **Toolbar Undo and Export** render as proper native buttons rather than faint
+  segmented-control text.
+- **Spacing tracks the app.** The plugin's internal spacing and radius tokens now alias
+  Obsidian's native size scale (with safe fallbacks), so density and corner rounding
+  follow the app instead of hardcoded pixels.
+- **Settings** premium summaries read as native description text instead of boxed
+  cards, and the view search field drops its redundant label (the placeholder labels
+  it, matching Obsidian search inputs).
+
 ## [1.17.0] - 2026-07-21
 
 A **hardening** release: it finishes the 1.16 orientation pass for the four views it

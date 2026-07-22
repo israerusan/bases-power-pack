@@ -146,7 +146,7 @@ export class GanttView extends PowerPackView {
 				void this.render();
 			});
 		}
-		const todayBtn = toolbar.createEl("button", { text: "Today", cls: "bpp-seg-btn" });
+		const todayBtn = toolbar.createEl("button", { text: "Today" });
 		todayBtn.addEventListener("click", () => this.scrollToToday());
 
 		this.renderUndoButton(toolbar);

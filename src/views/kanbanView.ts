@@ -271,7 +271,7 @@ export class KanbanView extends PowerPackView {
 			// An empty user-added column can be removed — no notes are affected.
 			if (column.rows.length === 0 && extraColumns.includes(column.name)) {
 				const removeButton = actions.createEl("button", {
-					cls: "bpp-column-remove",
+					cls: "bpp-column-remove clickable-icon",
 					text: "×",
 					attr: { "aria-label": `Remove column ${column.name}` },
 				});
@@ -767,7 +767,7 @@ export class KanbanView extends PowerPackView {
 		const groupBy = this.plugin.settings.kanbanGroupBy || "status";
 		const groupWrap = controls.createDiv({ cls: "bpp-lite-control" });
 		groupWrap.createSpan({ cls: "bpp-muted", text: "Group by" });
-		const groupSelect = groupWrap.createEl("select", { cls: "bpp-lite-select" });
+		const groupSelect = groupWrap.createEl("select", { cls: "bpp-lite-select dropdown" });
 		for (const option of this.collectGroupByOptions(groupBy)) {
 			const el = groupSelect.createEl("option", { text: option, value: option });
 			if (option === groupBy) el.selected = true;
@@ -783,7 +783,7 @@ export class KanbanView extends PowerPackView {
 
 		const sortWrap = controls.createDiv({ cls: "bpp-lite-control" });
 		sortWrap.createSpan({ cls: "bpp-muted", text: "Sort" });
-		const sortSelect = sortWrap.createEl("select", { cls: "bpp-lite-select" });
+		const sortSelect = sortWrap.createEl("select", { cls: "bpp-lite-select dropdown" });
 		for (const option of SORT_OPTIONS) {
 			const el = sortSelect.createEl("option", { text: option.label, value: option.value });
 			if (option.value === this.sortBy) el.selected = true;

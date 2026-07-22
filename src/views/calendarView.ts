@@ -131,9 +131,9 @@ export class CalendarView extends PowerPackView {
 		addMode("agenda", "Agenda");
 
 		const nav = toolbar.createDiv({ cls: "bpp-cal-nav" });
-		const prev = nav.createEl("button", { text: "‹", attr: { "aria-label": "Previous" } });
-		const today = nav.createEl("button", { text: "Today", cls: "bpp-seg-btn" });
-		const next = nav.createEl("button", { text: "›", attr: { "aria-label": "Next" } });
+		const prev = nav.createEl("button", { cls: "clickable-icon", text: "‹", attr: { "aria-label": "Previous" } });
+		const today = nav.createEl("button", { text: "Today" });
+		const next = nav.createEl("button", { cls: "clickable-icon", text: "›", attr: { "aria-label": "Next" } });
 		prev.addEventListener("click", () => this.shift(-1));
 		next.addEventListener("click", () => this.shift(1));
 		today.addEventListener("click", () => {

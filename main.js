@@ -4194,11 +4194,11 @@ function formatNumber(n) {
 // src/views/viewChrome.ts
 function renderSearchControl(container, current, onInput) {
   const wrap = container.createDiv({ cls: "bpp-lite-control" });
-  wrap.createSpan({ cls: "bpp-muted", text: "Search" });
   const input = wrap.createEl("input", {
     type: "search",
     cls: "bpp-lite-input",
-    placeholder: "Filter notes\u2026"
+    placeholder: "Filter notes\u2026",
+    attr: { "aria-label": "Search" }
   });
   input.value = current;
   input.addEventListener("input", () => onInput(input.value));
@@ -4207,7 +4207,7 @@ function renderSearchControl(container, current, onInput) {
 function renderSelect(container, label, options, current, onChange) {
   const wrap = container.createDiv({ cls: "bpp-lite-control" });
   wrap.createSpan({ cls: "bpp-muted", text: label });
-  const select = wrap.createEl("select", { cls: "bpp-lite-select" });
+  const select = wrap.createEl("select", { cls: "bpp-lite-select dropdown" });
   for (const opt of options) {
     const optionEl = select.createEl("option", { text: opt.label, value: opt.value });
     if (opt.value === current) optionEl.selected = true;
@@ -4235,7 +4235,7 @@ function renderContextControls(container, plugin, resolved, onChange) {
   const filters = plugin.settings.savedFilters;
   if (filters.length === 0) return;
   bar.createSpan({ cls: "bpp-muted bpp-context-filter-label", text: "Filter:" });
-  const select = bar.createEl("select", { cls: "bpp-filter-select" });
+  const select = bar.createEl("select", { cls: "bpp-filter-select dropdown" });
   select.createEl("option", { text: "None", value: "" });
   for (const f of filters) {
     const opt = select.createEl("option", { text: f.name, value: f.id });
@@ -4490,7 +4490,7 @@ var PowerPackView = class extends import_obsidian4.ItemView {
    */
   addOverflowButton(parent, label, openMenu) {
     const btn = parent.createEl("button", {
-      cls: "bpp-overflow",
+      cls: "bpp-overflow clickable-icon",
       text: "\u22EF",
       attr: { "aria-label": `Actions: ${label}`, "aria-haspopup": "menu" }
     });
@@ -4510,7 +4510,7 @@ var PowerPackView = class extends import_obsidian4.ItemView {
   addExportButton(container, options) {
     if (options.length === 0) return;
     const btn = container.createEl("button", {
-      cls: "bpp-seg-btn bpp-export-btn",
+      cls: "bpp-export-btn",
       text: "\u2913 Export",
       attr: { "aria-label": "Export this view", "aria-haspopup": "menu" }
     });
@@ -4551,7 +4551,7 @@ var PowerPackView = class extends import_obsidian4.ItemView {
     if (!this.plugin.undo.canUndo()) return;
     const label = this.plugin.undo.peekLabel();
     const btn = container.createEl("button", {
-      cls: "bpp-seg-btn bpp-undo-btn",
+      cls: "bpp-undo-btn",
       text: "\u21B6 Undo",
       attr: { "aria-label": label ? `Undo: ${label}` : "Undo last change" }
     });
@@ -4714,13 +4714,13 @@ var PowerPackView = class extends import_obsidian4.ItemView {
     });
     const actions = head.createDiv({ cls: "bpp-drill-actions" });
     const copy = actions.createEl("button", {
-      cls: "bpp-drill-btn",
+      cls: "bpp-drill-btn clickable-icon",
       text: "\u2913",
       attr: { "aria-label": "Copy this list as a Markdown table", title: "Copy as Markdown" }
     });
     copy.addEventListener("click", () => void this.copyDrill(req));
     const close = actions.createEl("button", {
-      cls: "bpp-drill-btn bpp-drill-close",
+      cls: "bpp-drill-btn bpp-drill-close clickable-icon",
       text: "\u2715",
       attr: { "aria-label": "Close drill-down" }
     });
@@ -5117,7 +5117,7 @@ var KanbanView = class extends PowerPackView {
       );
       if (column.rows.length === 0 && extraColumns.includes(column.name)) {
         const removeButton = actions.createEl("button", {
-          cls: "bpp-column-remove",
+          cls: "bpp-column-remove clickable-icon",
           text: "\xD7",
           attr: { "aria-label": `Remove column ${column.name}` }
         });
@@ -5501,7 +5501,7 @@ var KanbanView = class extends PowerPackView {
     const groupBy = this.plugin.settings.kanbanGroupBy || "status";
     const groupWrap = controls.createDiv({ cls: "bpp-lite-control" });
     groupWrap.createSpan({ cls: "bpp-muted", text: "Group by" });
-    const groupSelect = groupWrap.createEl("select", { cls: "bpp-lite-select" });
+    const groupSelect = groupWrap.createEl("select", { cls: "bpp-lite-select dropdown" });
     for (const option of this.collectGroupByOptions(groupBy)) {
       const el = groupSelect.createEl("option", { text: option, value: option });
       if (option === groupBy) el.selected = true;
@@ -5513,7 +5513,7 @@ var KanbanView = class extends PowerPackView {
     this.renderManagedSearch(controls);
     const sortWrap = controls.createDiv({ cls: "bpp-lite-control" });
     sortWrap.createSpan({ cls: "bpp-muted", text: "Sort" });
-    const sortSelect = sortWrap.createEl("select", { cls: "bpp-lite-select" });
+    const sortSelect = sortWrap.createEl("select", { cls: "bpp-lite-select dropdown" });
     for (const option of SORT_OPTIONS) {
       const el = sortSelect.createEl("option", { text: option.label, value: option.value });
       if (option.value === this.sortBy) el.selected = true;
@@ -6667,9 +6667,9 @@ var CalendarView = class extends PowerPackView {
     addMode("week", "Week");
     addMode("agenda", "Agenda");
     const nav = toolbar.createDiv({ cls: "bpp-cal-nav" });
-    const prev = nav.createEl("button", { text: "\u2039", attr: { "aria-label": "Previous" } });
-    const today = nav.createEl("button", { text: "Today", cls: "bpp-seg-btn" });
-    const next = nav.createEl("button", { text: "\u203A", attr: { "aria-label": "Next" } });
+    const prev = nav.createEl("button", { cls: "clickable-icon", text: "\u2039", attr: { "aria-label": "Previous" } });
+    const today = nav.createEl("button", { text: "Today" });
+    const next = nav.createEl("button", { cls: "clickable-icon", text: "\u203A", attr: { "aria-label": "Next" } });
     prev.addEventListener("click", () => this.shift(-1));
     next.addEventListener("click", () => this.shift(1));
     today.addEventListener("click", () => {
@@ -7032,7 +7032,7 @@ var GanttView = class extends PowerPackView {
         void this.render();
       });
     }
-    const todayBtn = toolbar.createEl("button", { text: "Today", cls: "bpp-seg-btn" });
+    const todayBtn = toolbar.createEl("button", { text: "Today" });
     todayBtn.addEventListener("click", () => this.scrollToToday());
     this.renderUndoButton(toolbar);
     this.renderManagedSearch(toolbar);

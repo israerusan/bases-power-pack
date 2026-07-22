@@ -14,11 +14,13 @@ export function renderSearchControl(
 	onInput: (value: string) => void
 ): HTMLInputElement {
 	const wrap = container.createDiv({ cls: "bpp-lite-control" });
-	wrap.createSpan({ cls: "bpp-muted", text: "Search" });
+	// No external "Search" caption: a native search field labels itself with its
+	// placeholder, and the bare <input> already inherits Obsidian's input chrome.
 	const input = wrap.createEl("input", {
 		type: "search",
 		cls: "bpp-lite-input",
 		placeholder: "Filter notes…",
+		attr: { "aria-label": "Search" },
 	});
 	input.value = current;
 	input.addEventListener("input", () => onInput(input.value));
@@ -38,7 +40,9 @@ export function renderSelect(
 ): HTMLSelectElement {
 	const wrap = container.createDiv({ cls: "bpp-lite-control" });
 	wrap.createSpan({ cls: "bpp-muted", text: label });
-	const select = wrap.createEl("select", { cls: "bpp-lite-select" });
+	// The native "dropdown" class gives the select Obsidian's chevron, fill, border,
+	// and input height so it reads as first-party (bpp-lite-select only adds min-width).
+	const select = wrap.createEl("select", { cls: "bpp-lite-select dropdown" });
 	for (const opt of options) {
 		const optionEl = select.createEl("option", { text: opt.label, value: opt.value });
 		if (opt.value === current) optionEl.selected = true;
@@ -89,7 +93,7 @@ export function renderContextControls(
 	if (filters.length === 0) return;
 
 	bar.createSpan({ cls: "bpp-muted bpp-context-filter-label", text: "Filter:" });
-	const select = bar.createEl("select", { cls: "bpp-filter-select" });
+	const select = bar.createEl("select", { cls: "bpp-filter-select dropdown" });
 	select.createEl("option", { text: "None", value: "" });
 	for (const f of filters) {
 		const opt = select.createEl("option", { text: f.name, value: f.id });

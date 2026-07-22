@@ -10,24 +10,27 @@
 .bpp-view,
 .bpp-upgrade,
 .modal .bpp-view {
-  /* spacing scale */
-  --bpp-space-1: 2px;
-  --bpp-space-2: 4px;
-  --bpp-space-3: 6px;
-  --bpp-space-4: 8px;
-  --bpp-space-5: 12px;
-  --bpp-space-6: 16px;
-  /* radii */
-  --bpp-radius-sm: 4px;
+  /* spacing scale — aliased to Obsidian's native size scale so it tracks the app's
+     density; literal fallbacks keep it working if a build predates a given var. */
+  --bpp-space-1: var(--size-2-1, 2px);
+  --bpp-space-2: var(--size-2-2, 4px);
+  --bpp-space-3: var(--size-2-3, 6px);
+  --bpp-space-4: var(--size-4-2, 8px);
+  --bpp-space-5: var(--size-4-3, 12px);
+  --bpp-space-6: var(--size-4-4, 16px);
+  /* radii — native where an exact step exists (md has no native equivalent) */
+  --bpp-radius-sm: var(--radius-s, 4px);
   --bpp-radius-md: 6px;
-  --bpp-radius-lg: 8px;
+  --bpp-radius-lg: var(--radius-m, 8px);
   --bpp-radius-pill: 999px;
   /* type scale */
   --bpp-font-xs: 0.7em;
   --bpp-font-sm: 0.78em;
   --bpp-font-md: 0.85em;
   --bpp-font-lg: 0.9em;
-  /* elevation — restrained, theme-aware (softer on dark) */
+  /* elevation — restrained, theme-aware (softer on dark). Kept as bespoke literals:
+     Obsidian's --shadow-s/-l are menu/modal-weight and would make a resting kanban card
+     float like a popover, which is the opposite of the intended flat card language. */
   --bpp-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.06);
   --bpp-shadow-2: 0 2px 8px rgba(0, 0, 0, 0.12);
   --bpp-shadow-drag: 0 6px 18px rgba(0, 0, 0, 0.22);
@@ -201,18 +204,12 @@
   color: var(--interactive-accent);
 }
 
+/* .clickable-icon owns the square target, muted color, and hover background; keep the
+   destructive red tint on hover so it still reads as "remove". */
 .bpp-column-remove {
-  width: 24px;
-  height: 24px;
-  border-radius: 999px;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
   font-size: 1.1em;
   line-height: 1;
-  cursor: pointer;
 }
-
 .bpp-column-remove:hover {
   color: var(--text-error);
 }
@@ -1015,14 +1012,10 @@
 /* ---- Per-item overflow (⋯) action button -------------------------------- */
 /* A keyboard- and touch-reachable path to each item's context menu. Subtle on
    fine pointers (revealed on hover/focus), always visible on touch. */
+/* .clickable-icon owns bg / color / radius / padding / hover; this rule only adds the
+   plugin-specific reveal behavior (hidden until the item is hovered/focused). */
 .bpp-overflow {
   flex: 0 0 auto;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  border-radius: 4px;
-  padding: 0 4px;
   line-height: 1;
   font-size: 1.1em;
   opacity: 0;
@@ -1042,11 +1035,6 @@
 .bpp-drill-item:focus-within .bpp-overflow,
 .bpp-overflow:focus-visible {
   opacity: 1;
-}
-
-.bpp-overflow:hover {
-  background: var(--background-modifier-hover);
-  color: var(--text-normal);
 }
 
 @media (hover: none) {
@@ -1437,21 +1425,19 @@
 .bpp-lite-select:focus-visible,
 .bpp-filter-select:focus-visible,
 .bpp-undo-btn:focus-visible,
+.bpp-export-btn:focus-visible,
 .bpp-lite-btn:focus-visible {
   outline: 2px solid var(--interactive-accent);
   outline-offset: 2px;
 }
 
-/* ---- Undo button gets its own identity (was borrowing .bpp-seg-btn) -------- */
-.bpp-undo-btn {
-  border-radius: var(--bpp-radius-sm);
-  transition: background-color var(--bpp-transition), color var(--bpp-transition);
-}
-/* .bpp-seg-btn sets border:none, so hover reads as a background + color shift, not
-   a border-color that would never paint. */
-.bpp-undo-btn:hover {
-  background: var(--background-modifier-hover);
-  color: var(--bpp-accent-select);
+/* ---- Undo + Export: native toolbar buttons (no longer the .bpp-seg-btn ghost),
+   kept compact so they sit tidily beside the segmented controls. Native button chrome
+   supplies the background, hover, and radius. -------------------------------- */
+.bpp-undo-btn,
+.bpp-export-btn {
+  padding: var(--size-4-1, 4px) var(--size-4-2, 8px);
+  font-size: var(--font-ui-small);
 }
 
 /* ---- Unify the previously-instant button hovers with the shared timing ---- */
@@ -1928,6 +1914,8 @@ th.bpp-drillable:hover {
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--bpp-radius-lg) var(--bpp-radius-lg) 0 0;
+  /* Upward shadow — the sheet is anchored to the BOTTOM, so it must lift away from the
+     content above it (a downward drop shadow would read as detached). */
   box-shadow: 0 -6px 18px rgba(0, 0, 0, 0.18);
   z-index: 5;
 }
@@ -1956,18 +1944,9 @@ th.bpp-drillable:hover {
   gap: var(--bpp-space-2);
   flex-shrink: 0;
 }
+/* .clickable-icon owns bg / color / radius / padding / hover. */
 .bpp-drill-btn {
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  border-radius: var(--bpp-radius-sm);
-  padding: 2px 6px;
-  color: var(--text-muted);
   line-height: 1.2;
-}
-.bpp-drill-btn:hover {
-  background: var(--background-modifier-hover);
-  color: var(--text-normal);
 }
 .bpp-drill-list {
   overflow-y: auto;
@@ -2160,12 +2139,12 @@ th.bpp-drillable:hover {
   padding-left: var(--bpp-space-6);
 }
 
-/* ---- Premium summary card ------------------------------------------------- */
+/* ---- Premium summary — native settings-description text, not a boxed card
+   (Obsidian never frames explanatory copy in a settings tab). ---------------- */
 .bpp-premium-summary {
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--bpp-radius-md);
-  padding: var(--bpp-space-5);
+  padding: 0;
   color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
 }
 .bpp-premium-summary-cta {
   margin-top: var(--bpp-space-4);
