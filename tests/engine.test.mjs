@@ -677,6 +677,36 @@ assert.deepEqual(kanban.reorderColumns(["a", "b", "c"], "c", "a"), ["c", "a", "b
 assert.deepEqual(kanban.reorderColumns(["a", "b", "c"], "a", "a"), ["a", "b", "c"], "reorderColumns is a no-op onto itself");
 assert.deepEqual(kanban.reorderColumns(["a", "b", "c"], "a", "z"), ["a", "b", "c"], "reorderColumns leaves order unchanged for an unknown target");
 
+// Default "manual" sort is drag-aware (the fix that makes reorder work out of the
+// box): unranked cards keep their natural/insertion order, and once ranks exist
+// the cards sort by rank ascending with any still-unranked card falling to the end.
+const mkCard = (name, extra = {}) =>
+	rowmod.makeRow({ path: `M/${name}.md`, name, folder: "M", ext: "md", tags: [], ctime: 0, mtime: 0, size: 0, frontmatter: { status: "active", ...extra } }, {});
+const unranked = [mkCard("One"), mkCard("Two"), mkCard("Three")];
+assert.deepEqual(
+	kanban.buildKanbanColumns(unranked, { groupBy: "status", sortBy: "manual" })[0].rows.map((r) => r.name),
+	["One", "Two", "Three"],
+	'manual sort with no ranks preserves natural (insertion) order — an untouched board is unchanged'
+);
+const ranked = [mkCard("One", { rank: 3000 }), mkCard("Two", { rank: 1000 }), mkCard("Three", { rank: 2000 })];
+assert.deepEqual(
+	kanban.buildKanbanColumns(ranked, { groupBy: "status", sortBy: "manual" })[0].rows.map((r) => r.name),
+	["Two", "Three", "One"],
+	"manual sort orders hand-ranked cards ascending by rank"
+);
+const mixed = [mkCard("NoRankA"), mkCard("Ranked", { rank: 500 }), mkCard("NoRankB")];
+assert.deepEqual(
+	kanban.buildKanbanColumns(mixed, { groupBy: "status", sortBy: "manual" })[0].rows.map((r) => r.name),
+	["Ranked", "NoRankA", "NoRankB"],
+	"manual sort puts ranked cards first, unranked keep their natural order at the end"
+);
+// The legacy "rank" value (from boards saved before the merge) resolves to the same order.
+assert.deepEqual(
+	kanban.buildKanbanColumns(ranked, { groupBy: "status", sortBy: "rank" })[0].rows.map((r) => r.name),
+	["Two", "Three", "One"],
+	'the legacy "rank" sort value behaves identically to the merged "manual" sort'
+);
+
 // 1.11: due-chip status — pure so the card state is tested, not eyeballed.
 assert.equal(kanban.dueStatus("2026-01-10", "2026-01-15"), "overdue", "a past date is overdue");
 assert.equal(kanban.dueStatus("2026-01-15", "2026-01-15"), "soon", "today counts as due soon");

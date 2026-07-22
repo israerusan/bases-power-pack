@@ -63,7 +63,7 @@ export interface BasesPowerPackSettings {
 	 * (rather than merely flagged). */
 	kanbanBlockOverWip: boolean;
 	/** Frontmatter property holding a card's manual rank, written by drag-to-reorder
-	 * in the "Manual (drag)" sort. */
+	 * in the default "Manual" sort. */
 	kanbanRankProp: string;
 
 	/** Feed / timeline (premium) */
@@ -368,7 +368,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Manual order property")
 			.setDesc(
-				'Numeric frontmatter property written when you hand-order cards. Choose the "Manual (drag)" sort on the board, then drag a card between two others to reorder it.'
+				'Numeric frontmatter property written when you hand-order cards. With the default "Manual" sort, drag a card between two others to reorder it — its position is saved here.'
 			)
 			.addText((text) =>
 				this.keySuggest(text)

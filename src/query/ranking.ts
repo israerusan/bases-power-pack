@@ -1,7 +1,7 @@
 import { toNumber } from "../engine/expression";
 
 /**
- * Manual card ordering. When the Kanban "Manual (drag)" sort is active, each card
+ * Manual card ordering. Under the Kanban "Manual" sort (the default), each card
  * carries a numeric `rank` frontmatter property and cards render in ascending
  * rank order. Dragging a card between two others computes a new rank that sorts
  * strictly between its neighbours — normally a single write, falling back to a

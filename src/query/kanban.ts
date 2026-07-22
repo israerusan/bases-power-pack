@@ -126,7 +126,16 @@ function matchesSearch(row: Row, search: string, columnName: string): boolean {
 
 function sortRows(rows: Row[], sortBy: KanbanSort, rankProp: string): Row[] {
 	const copy = [...rows];
-	if (sortBy === "manual") return copy;
+	// "manual" (the default) and the legacy "rank" value are the same hand-order:
+	// cards carrying a numeric rank sort ascending, and cards never dragged (no
+	// rank) keep their natural base/vault order at the end. The sort is stable, so
+	// an untouched board looks exactly as it did before — every card unranked →
+	// every comparison 0 → insertion order preserved — until the first drag assigns
+	// ranks. This is what makes drag-to-reorder work in the default view.
+	if (sortBy === "manual" || sortBy === "rank") {
+		copy.sort((a, b) => compareRankValue(a.scope.get(rankProp), b.scope.get(rankProp)));
+		return copy;
+	}
 	copy.sort((a, b) => compareRows(a, b, sortBy, rankProp));
 	return copy;
 }

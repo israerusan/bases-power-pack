@@ -3513,7 +3513,10 @@ function matchesSearch(row, search, columnName) {
 }
 function sortRows(rows, sortBy, rankProp) {
   const copy = [...rows];
-  if (sortBy === "manual") return copy;
+  if (sortBy === "manual" || sortBy === "rank") {
+    copy.sort((a, b) => compareRankValue(a.scope.get(rankProp), b.scope.get(rankProp)));
+    return copy;
+  }
   copy.sort((a, b) => compareRows(a, b, sortBy, rankProp));
   return copy;
 }
@@ -4916,8 +4919,11 @@ var DND_TREE = "application/x-bpp-tree";
 // src/views/kanbanView.ts
 var VIEW_TYPE_KANBAN = "bpp-kanban-view";
 var SORT_OPTIONS = [
-  { value: "manual", label: "Default order" },
-  { value: "rank", label: "Manual (drag)" },
+  // The default. Drag a card between two others to hand-order it — the position is
+  // saved to a `rank` property. (The old board split this into "Default order" +
+  // "Manual (drag)"; a saved "rank" now resolves to this single mode, which behaves
+  // identically, so the two are merged into one discoverable option.)
+  { value: "manual", label: "Manual \u2014 drag to reorder" },
   { value: "name-asc", label: "Name \u2191" },
   { value: "name-desc", label: "Name \u2193" },
   { value: "due-asc", label: "Due date" },
@@ -4943,10 +4949,11 @@ var KanbanView = class extends PowerPackView {
   get rankProp() {
     return this.plugin.settings.kanbanRankProp || "rank";
   }
-  /** Manual drag-to-reorder is live only in the "Manual (drag)" sort — otherwise
-   * another sort governs the order and a hand-set rank would be invisible. */
+  /** Manual drag-to-reorder is live in the hand-order sort — "manual" (the
+   * default) or the legacy "rank" alias — but not while a name/due/priority sort
+   * governs the order, where a hand-set rank would be invisible. */
   get reorderEnabled() {
-    return this.sortBy === "rank";
+    return this.sortBy === "manual" || this.sortBy === "rank";
   }
   /** Sort + hide-done are persisted per group-by property, so the board reopens
    * exactly as you left it (they were session-only fields before 1.11). */
@@ -5007,7 +5014,7 @@ var KanbanView = class extends PowerPackView {
     renderContextControls(container, this.plugin, resolved, () => void this.render());
     this.renderLiteControls(container);
     renderRollupBar(container, this.plugin, resolved.rows);
-    this.renderHintBar(container, "kanban", "Drag cards to change status \u2022 \u22EF on a card or column for more actions \u2022 Undo reverses the last change");
+    this.renderHintBar(container, "kanban", "Drag a card between two others to reorder it \u2022 Drag to another column to change status \u2022 \u22EF for more actions \u2022 Undo reverses the last change");
     const extraColumns = (_a = this.plugin.settings.kanbanExtraColumns[groupBy]) != null ? _a : [];
     const columns = buildKanbanColumns(resolved.rows, {
       groupBy,
@@ -5925,7 +5932,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
       })
     );
     new import_obsidian6.Setting(containerEl).setName("Manual order property").setDesc(
-      'Numeric frontmatter property written when you hand-order cards. Choose the "Manual (drag)" sort on the board, then drag a card between two others to reorder it.'
+      'Numeric frontmatter property written when you hand-order cards. With the default "Manual" sort, drag a card between two others to reorder it \u2014 its position is saved here.'
     ).addText(
       (text) => this.keySuggest(text).setPlaceholder("rank").setValue(this.plugin.settings.kanbanRankProp).onChange((value) => {
         this.plugin.settings.kanbanRankProp = value.trim() || "rank";

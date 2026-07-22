@@ -30,8 +30,11 @@ import { DND_COLUMN, DND_ROW } from "./dnd";
 export const VIEW_TYPE_KANBAN = "bpp-kanban-view";
 
 const SORT_OPTIONS: Array<{ value: KanbanSort; label: string }> = [
-	{ value: "manual", label: "Default order" },
-	{ value: "rank", label: "Manual (drag)" },
+	// The default. Drag a card between two others to hand-order it — the position is
+	// saved to a `rank` property. (The old board split this into "Default order" +
+	// "Manual (drag)"; a saved "rank" now resolves to this single mode, which behaves
+	// identically, so the two are merged into one discoverable option.)
+	{ value: "manual", label: "Manual — drag to reorder" },
 	{ value: "name-asc", label: "Name ↑" },
 	{ value: "name-desc", label: "Name ↓" },
 	{ value: "due-asc", label: "Due date" },
@@ -64,10 +67,11 @@ export class KanbanView extends PowerPackView {
 		return this.plugin.settings.kanbanRankProp || "rank";
 	}
 
-	/** Manual drag-to-reorder is live only in the "Manual (drag)" sort — otherwise
-	 * another sort governs the order and a hand-set rank would be invisible. */
+	/** Manual drag-to-reorder is live in the hand-order sort — "manual" (the
+	 * default) or the legacy "rank" alias — but not while a name/due/priority sort
+	 * governs the order, where a hand-set rank would be invisible. */
 	private get reorderEnabled(): boolean {
-		return this.sortBy === "rank";
+		return this.sortBy === "manual" || this.sortBy === "rank";
 	}
 
 	/** Sort + hide-done are persisted per group-by property, so the board reopens
@@ -141,7 +145,7 @@ export class KanbanView extends PowerPackView {
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
 		this.renderLiteControls(container);
 		renderRollupBar(container, this.plugin, resolved.rows);
-		this.renderHintBar(container, "kanban", "Drag cards to change status • ⋯ on a card or column for more actions • Undo reverses the last change");
+		this.renderHintBar(container, "kanban", "Drag a card between two others to reorder it • Drag to another column to change status • ⋯ for more actions • Undo reverses the last change");
 
 		const extraColumns = this.plugin.settings.kanbanExtraColumns[groupBy] ?? [];
 		const columns = buildKanbanColumns(resolved.rows, {
@@ -323,7 +327,7 @@ export class KanbanView extends PowerPackView {
 					if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
 				});
 				card.addEventListener("dragend", () => card.removeClass("is-dragging"));
-				// Manual (drag) sort: each card is a precise drop target so a drag lands
+				// Hand-order sort: each card is a precise drop target so a drag lands
 				// BETWEEN two cards, writing a rank that sorts it there.
 				if (this.reorderEnabled) this.wireCardReorder(card, row, column.name, groupBy);
 				card.addEventListener("click", () => this.openRow(row));

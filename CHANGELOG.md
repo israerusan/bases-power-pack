@@ -3,6 +3,29 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.19.0] - 2026-07-22
+
+A **fix**: drag-to-reorder cards now works out of the box. The capability shipped
+in 1.14.0 but was hidden behind a separate **"Manual (drag)"** sort — so anyone
+who dragged a card on the default board found that nothing reordered, because the
+default **"Default order"** sort never wired the card drop-targets. The two sorts
+are now merged into one default **"Manual"** order that you can just drag.
+
+### Fixed
+- **Dragging a card between two others reorders it — in the default view.** The
+  default **Manual** sort is now drag-aware: drop a card between two others (or on
+  the top/bottom half of a card) and its position is saved to the numeric `rank`
+  property, exactly as the old "Manual (drag)" sort did. Never-dragged cards keep
+  their natural base/vault order until you move one, so an untouched board looks
+  unchanged. Boards saved on the old **Manual (drag)** sort resolve to the same
+  merged mode with no change in behavior.
+
+### Changed
+- **The Kanban Sort dropdown loses its confusing duplicate.** "Default order" and
+  "Manual (drag)" — which read as two different things but only one of which let
+  you drag — are collapsed into a single **"Manual — drag to reorder"** option
+  (the default). The name/due/priority/recently-changed sorts are unchanged.
+
 ## [1.18.0] - 2026-07-21
 
 A **native-match UI polish** release: the plugin's custom controls now reuse
