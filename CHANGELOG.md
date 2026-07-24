@@ -3,6 +3,35 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.21.0] - 2026-07-24
+
+A **Kanban feel** release: swimlanes are now free, and the board gains the polish
+that best-in-class boards have — cover images, native hover previews, inline
+renaming, tag-chip filtering, and collapsible columns. All additive; a board with
+none of the new properties configured looks and behaves exactly as before.
+
+### Changed
+- **Swimlanes are now free.** The second-group-by banding that shipped in 1.20.0
+  is no longer Premium — pick a lane property from the board's **Swimlanes**
+  control or in settings. (Premium still covers the Calendar, Gantt, Outline,
+  Pivot, Dashboard, Gallery and Feed views, `.base` integration, formulas,
+  roll-ups, saved filters, Move Rules, rule-based color, and CSV export.)
+
+### Added
+- **Cover images on cards.** Set a **Card image property** (a path, `[[wikilink]]`,
+  markdown image, or URL — the same forms the Gallery accepts) and each card shows
+  a cover at the top. Blank = no covers.
+- **Native hover preview.** Hovering a card triggers Obsidian's built-in Page
+  Preview popover — peek at a note without opening it.
+- **Inline renaming.** Rename a note from its card without a modal — the hover **✎**,
+  **F2**, or the card menu — and rename a **column** by double-clicking its header
+  (still confirmed for large rewrites, and it carries the column's color/order/WIP
+  across the rename).
+- **Tag-chip filtering.** Click a tag chip on any card to filter the board to that
+  tag (keyboard-operable too).
+- **Collapsible columns.** Collapse a column to a narrow strip (chevron or column
+  menu) to focus the board; it still accepts drops, and the state is remembered.
+
 ## [1.20.0] - 2026-07-24
 
 The Kanban board grows the capabilities the mainstream board still lacks —

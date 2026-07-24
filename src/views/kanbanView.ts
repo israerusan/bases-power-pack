@@ -1,4 +1,4 @@
-import { Menu, Notice } from "obsidian";
+import { Menu, Notice, normalizePath, type HoverPopover } from "obsidian";
 import { COMPUTED_FILE_PROPS, type RawNote, type Row } from "../model/row";
 import { PowerPackView } from "./abstractView";
 import {
@@ -85,13 +85,15 @@ export class KanbanView extends PowerPackView {
 	/** The swimlane keys shown in the last render, in display order — the target set
 	 * for the card menu's "Move to lane" items. Empty on a flat board. */
 	private lastLaneKeys: string[] = [];
+	/** Satisfies Obsidian's HoverParent so card hover can drive the core Page Preview
+	 * popover (the "hover-link" trigger in renderCard). */
+	hoverPopover: HoverPopover | null = null;
 	/** Edge auto-scroll driver for mouse (HTML5) drags over the board. */
 	private boardScroller: DragScroller | null = null;
 
-	/** The swimlane (second group-by) property, or "" when off. Premium only — the
-	 * flat board is the free tier; horizontal bands are an advanced view. */
+	/** The swimlane (second group-by) property, or "" when off. Free — horizontal
+	 * bands split the board by a second property (the flat board is "None"). */
 	private get swimlaneProp(): string {
-		if (!this.plugin.settings.isPro) return "";
 		const p = (this.plugin.settings.kanbanSwimlaneBy || "").trim();
 		// A lane property equal to the column group-by is degenerate (one card per
 		// cell) — treat it as "off" rather than render a broken board.
@@ -283,8 +285,8 @@ export class KanbanView extends PowerPackView {
 			laneKey: null,
 		};
 
-		// Premium swimlanes: a second group-by splits the board into horizontal bands.
-		// Delegated to a dedicated builder so the free flat board below is untouched.
+		// Swimlanes: a second group-by splits the board into horizontal bands.
+		// Delegated to a dedicated builder so the flat board below is untouched.
 		if (swimProp) {
 			this.renderSwimlaneBoard(board, resolved.rows, columns, columnRows, {
 				groupBy,
@@ -326,8 +328,35 @@ export class KanbanView extends PowerPackView {
 				this.openColumnMenu(evt, column.name, groupBy, removable, orderedNames)
 			);
 			if (overWip) col.addClass("is-over-wip");
+
+			// Collapse: a collapsed column shrinks to a narrow strip (its body hidden).
+			// The chevron toggles it; state is persisted per column value. The drop
+			// target stays, so a card can still be dropped onto a collapsed column.
+			const collapsed = this.plugin.settings.kanbanCollapsedColumns[column.name] === true;
+			if (collapsed) col.addClass("is-collapsed");
+			const collapseBtn = colHead.createEl("button", {
+				cls: "bpp-col-collapse clickable-icon",
+				attr: {
+					"aria-label": `${collapsed ? "Expand" : "Collapse"} column ${column.name}`,
+					"aria-expanded": String(!collapsed),
+					title: collapsed ? "Expand column" : "Collapse column",
+				},
+			});
+			collapseBtn.createSpan({ text: collapsed ? "▸" : "▾", attr: { "aria-hidden": "true" } });
+			collapseBtn.addEventListener("click", (evt) => {
+				evt.stopPropagation();
+				void this.toggleColumnCollapse(column.name);
+			});
+
 			const colLabel = colHead.createDiv({ cls: "bpp-kanban-column-label" });
-			colLabel.createSpan({ text: column.name });
+			const nameSpan = colLabel.createSpan({ cls: "bpp-kanban-column-name", text: column.name });
+			// Inline rename: double-click the column name (conflict-free — the header has
+			// no single-click action). Routes through applyColumnRename, which confirms a
+			// large rewrite and carries color/order/WIP identity across the rename.
+			nameSpan.addEventListener("dblclick", (evt) => {
+				evt.stopPropagation();
+				this.beginColumnRename(nameSpan, column.name, groupBy);
+			});
 			const count = colLabel.createSpan({
 				cls: "bpp-count",
 				text: formatWipCount(trueCount, wipLimit),
@@ -364,6 +393,10 @@ export class KanbanView extends PowerPackView {
 				removeButton.addEventListener("click", () => void this.removeExtraColumn(groupBy, column.name));
 			}
 
+			// A collapsed column hides its body (roll-ups + cards); the header strip and
+			// its drop target remain, so you can still drop a card onto it to move it here.
+			if (collapsed) continue;
+
 			// Per-column roll-ups (premium): the same configured aggregations as the
 			// board-wide bar, computed over just this column's true membership — so a
 			// WIP cap can be read by weight ("Doing 6/8 · 21 pts"), not card count.
@@ -398,10 +431,34 @@ export class KanbanView extends PowerPackView {
 		if (this.selected.has(row.id)) card.addClass("is-selected");
 		this.applyColorRule(card, row);
 		card.draggable = true;
+
+		// Cover image (free): a resolved cover from the configured image property sits
+		// at the top of the card. An absent or unresolvable ref simply shows no cover —
+		// the guard on a non-null src means we never emit a broken <img>.
+		const coverSrc = this.coverImageSrc(row, this.plugin.settings.kanbanCardImageProp);
+		if (coverSrc) {
+			card.addClass("has-cover");
+			card.createEl("img", {
+				cls: "bpp-card-cover",
+				attr: { src: coverSrc, alt: "", loading: "lazy", draggable: "false" },
+			});
+		}
+
 		const openMenu = (a: MouseEvent | HTMLElement): void =>
 			this.openCardMenu(a, row, ctx.groupBy, ctx.orderedNames, columnName, ctx.laneKey);
 		const head = card.createDiv({ cls: "bpp-card-head" });
-		head.createDiv({ cls: "bpp-card-title", text: row.name });
+		const titleEl = head.createDiv({ cls: "bpp-card-title", text: row.name });
+		// Inline rename: a hover ✎ affordance (plus F2 when focused and the ⋯ menu),
+		// so renaming the note never requires a modal. Single-click still opens.
+		const renameBtn = head.createEl("button", {
+			cls: "bpp-card-rename clickable-icon",
+			attr: { "aria-label": `Rename ${row.name}`, title: "Rename note" },
+		});
+		renameBtn.createSpan({ text: "✎", attr: { "aria-hidden": "true" } });
+		renameBtn.addEventListener("click", (evt) => {
+			evt.stopPropagation();
+			this.beginTitleRename(card, titleEl, row);
+		});
 		this.addOverflowButton(head, row.name, openMenu);
 		// Row-level (not column-level) so a `done: true` card in a non-Done
 		// column mutes its overdue chip too — matching the Calendar's overdue rule.
@@ -445,8 +502,84 @@ export class KanbanView extends PowerPackView {
 		// Focusable + Enter-to-open + Shift+F10/ContextMenu-to-menu (keyboard path).
 		this.makeItemAccessible(card, row.name, () => this.openRow(row), openMenu);
 		card.addEventListener("contextmenu", (evt) => openMenu(evt));
+		// F2 renames the note in place when the card (not a nested input) is focused.
+		card.addEventListener("keydown", (evt) => {
+			if (evt.target === card && evt.key === "F2") {
+				evt.preventDefault();
+				this.beginTitleRename(card, titleEl, row);
+			}
+		});
+		// Native hover preview via the core Page Preview plugin (the "feels native" touch).
+		card.addEventListener("mouseover", (event) => {
+			this.app.workspace.trigger("hover-link", {
+				event,
+				source: "bpp-kanban",
+				hoverParent: this,
+				targetEl: card,
+				linktext: row.id,
+				sourcePath: row.id,
+			});
+		});
 		// Touch: long-press to pick up and drag (mouse keeps the HTML5 path above).
 		this.touch?.attach(card, row.id);
+	}
+
+	/**
+	 * Rename a card's note in place: swap the title for an input, commit on Enter/blur
+	 * via {@link fileFor} + `fileManager.renameFile`, Escape cancels. Background
+	 * re-renders are held during the edit (beginInteraction) so a vault change can't
+	 * yank the input, exactly like {@link beginInlineEdit}.
+	 */
+	private beginTitleRename(card: HTMLElement, titleEl: HTMLElement, row: Row): void {
+		const file = this.fileFor(row);
+		if (!file) return;
+		const original = file.basename;
+		card.draggable = false;
+		titleEl.empty();
+		titleEl.addClass("is-editing");
+		const input = titleEl.createEl("input", { cls: "bpp-inline-edit bpp-title-edit", type: "text" });
+		input.value = original;
+		input.focus();
+		input.select();
+		this.beginInteraction();
+
+		let settled = false;
+		const finish = (): void => {
+			this.endInteraction();
+			card.draggable = true;
+		};
+		const commit = async (): Promise<void> => {
+			if (settled) return;
+			settled = true;
+			const next = input.value.trim();
+			finish();
+			if (!next || next === original) {
+				await this.render();
+				return;
+			}
+			const parent = file.parent?.path ? `${file.parent.path}/` : "";
+			const target = normalizePath(`${parent}${next}.${file.extension}`);
+			try {
+				await this.app.fileManager.renameFile(file, target);
+				this.plugin.invalidateSnapshot();
+			} catch (error) {
+				new Notice(`Rename failed: ${String(error)}`);
+			}
+			await this.render();
+		};
+		input.addEventListener("click", (event) => event.stopPropagation());
+		input.addEventListener("keydown", (event) => {
+			if (event.key === "Enter") {
+				event.preventDefault();
+				void commit();
+			} else if (event.key === "Escape") {
+				event.preventDefault();
+				settled = true;
+				finish();
+				void this.render();
+			}
+		});
+		input.addEventListener("blur", () => void commit());
 	}
 
 	private renderAddColumnTile(board: HTMLElement, groupBy: string): void {
@@ -492,6 +625,63 @@ export class KanbanView extends PowerPackView {
 		else delete map[groupBy];
 		await this.plugin.saveSettings({ invalidateResolved: false });
 		await this.render();
+	}
+
+	/** Collapse or expand a column (persisted per column value, like WIP limits). */
+	private async toggleColumnCollapse(columnName: string): Promise<void> {
+		const map = this.plugin.settings.kanbanCollapsedColumns;
+		if (map[columnName]) delete map[columnName];
+		else map[columnName] = true;
+		// Presentational — the resolved rows don't change, so keep the cache.
+		await this.plugin.saveSettings({ invalidateResolved: false });
+		await this.render();
+	}
+
+	/**
+	 * Rename a column in place: swap the header label for an input, then route the
+	 * committed value through {@link applyColumnRename} (which confirms a large
+	 * frontmatter rewrite and carries the column's color/order/WIP identity across).
+	 * Escape cancels. Used by the header double-click and the column menu.
+	 */
+	private beginColumnRename(labelSpan: HTMLElement, columnName: string, groupBy: string): void {
+		// Disable the header's HTML5 drag while editing, else a mouse text-selection
+		// inside the input hijacks into a column-reorder drag (a re-render — which every
+		// exit path triggers — recreates the header with drag restored). The swimlane
+		// header isn't draggable, so this is a no-op there.
+		const dragEl = labelSpan.closest<HTMLElement>('[draggable="true"]');
+		if (dragEl) dragEl.draggable = false;
+		labelSpan.empty();
+		labelSpan.addClass("is-editing");
+		const input = labelSpan.createEl("input", { cls: "bpp-inline-edit bpp-col-title-edit", type: "text" });
+		input.value = columnName;
+		input.focus();
+		input.select();
+		this.beginInteraction();
+
+		let settled = false;
+		const commit = async (): Promise<void> => {
+			if (settled) return;
+			settled = true;
+			const next = input.value.trim();
+			this.endInteraction();
+			// Restore the header first (removes the input and refreshes lastColumnRows,
+			// which applyColumnRename reads to scope the rewrite to this board's rows).
+			await this.render();
+			if (next && next !== columnName) this.applyColumnRename(groupBy, columnName, next);
+		};
+		input.addEventListener("click", (event) => event.stopPropagation());
+		input.addEventListener("keydown", (event) => {
+			if (event.key === "Enter") {
+				event.preventDefault();
+				void commit();
+			} else if (event.key === "Escape") {
+				event.preventDefault();
+				settled = true;
+				this.endInteraction();
+				void this.render();
+			}
+		});
+		input.addEventListener("blur", () => void commit());
 	}
 
 	/**
@@ -569,7 +759,27 @@ export class KanbanView extends PowerPackView {
 			const parts = Array.isArray(value)
 				? value.map((v) => toStr(v)).filter(Boolean)
 				: display.split(",").map((s) => s.trim()).filter(Boolean);
-			for (const part of parts) line.createSpan({ cls: "bpp-chip bpp-chip-tag", text: part });
+			for (const part of parts) {
+				// A tag chip filters the board (like Base Board): click sets the quick
+				// search to this tag. stopPropagation so it never triggers the line's
+				// click-to-edit or the card's click-to-open.
+				const chip = line.createSpan({ cls: "bpp-chip bpp-chip-tag is-clickable", text: part });
+				chip.setAttr("title", `Filter board by "${part}"`);
+				chip.setAttr("role", "button");
+				chip.setAttr("tabindex", "0");
+				const filter = (evt: Event): void => {
+					evt.stopPropagation();
+					this.searchQuery = part;
+					void this.render();
+				};
+				chip.addEventListener("click", filter);
+				chip.addEventListener("keydown", (evt) => {
+					if (evt.key === "Enter" || evt.key === " ") {
+						evt.preventDefault();
+						filter(evt);
+					}
+				});
+			}
 			if (parts.length > 0) return;
 		}
 
@@ -745,6 +955,16 @@ export class KanbanView extends PowerPackView {
 		menu.addItem((i) =>
 			i.setTitle("Set WIP limit…").setIcon("gauge").onClick(() => this.setWipLimit(columnName))
 		);
+		// Collapse is flat-board only (swimlane share a header); offer it there.
+		if (!this.swimlaneProp) {
+			const isCollapsed = this.plugin.settings.kanbanCollapsedColumns[columnName] === true;
+			menu.addItem((i) =>
+				i
+					.setTitle(isCollapsed ? "Expand column" : "Collapse column")
+					.setIcon(isCollapsed ? "chevrons-up-down" : "chevrons-down-up")
+					.onClick(() => void this.toggleColumnCollapse(columnName))
+			);
+		}
 
 		// Keyboard/touch column reorder (drag is otherwise the only path).
 		const idx = orderedNames.indexOf(columnName);
@@ -906,6 +1126,11 @@ export class KanbanView extends PowerPackView {
 			wip[to] = wip[from];
 			delete wip[from];
 		}
+		const collapsed = this.plugin.settings.kanbanCollapsedColumns;
+		if (collapsed[from] !== undefined) {
+			collapsed[to] = collapsed[from];
+			delete collapsed[from];
+		}
 		await this.plugin.saveSettings();
 		new Notice(`Renamed "${from}" → "${to}" on ${ok} note${ok === 1 ? "" : "s"}.`);
 		await this.render();
@@ -991,27 +1216,25 @@ export class KanbanView extends PowerPackView {
 		}
 		sortSelect.addEventListener("change", () => void this.setSortBy(sortSelect.value as KanbanSort));
 
-		// Swimlanes (premium): a second group-by that splits the board into horizontal
+		// Swimlanes (free): a second group-by that splits the board into horizontal
 		// bands. "None" is the flat board. A lane can't be the column group-by itself.
-		if (this.plugin.settings.isPro) {
-			const swimWrap = controls.createDiv({ cls: "bpp-lite-control" });
-			swimWrap.createSpan({ cls: "bpp-muted", text: "Swimlanes" });
-			const swimSelect = swimWrap.createEl("select", { cls: "bpp-lite-select dropdown" });
-			const current = this.swimlaneProp;
-			const none = swimSelect.createEl("option", { text: "None", value: "" });
-			if (!current) none.selected = true;
-			for (const option of this.collectGroupByOptions(current)) {
-				if (option === groupBy) continue;
-				const el = swimSelect.createEl("option", { text: option, value: option });
-				if (option === current) el.selected = true;
-			}
-			swimSelect.addEventListener("change", () => {
-				this.plugin.settings.kanbanSwimlaneBy = swimSelect.value.trim();
-				// Re-banding re-buckets already-resolved rows; it doesn't change which
-				// notes resolve, so keep the resolve cache.
-				void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
-			});
+		const swimWrap = controls.createDiv({ cls: "bpp-lite-control" });
+		swimWrap.createSpan({ cls: "bpp-muted", text: "Swimlanes" });
+		const swimSelect = swimWrap.createEl("select", { cls: "bpp-lite-select dropdown" });
+		const currentSwim = this.swimlaneProp;
+		const noneSwim = swimSelect.createEl("option", { text: "None", value: "" });
+		if (!currentSwim) noneSwim.selected = true;
+		for (const option of this.collectGroupByOptions(currentSwim)) {
+			if (option === groupBy) continue;
+			const el = swimSelect.createEl("option", { text: option, value: option });
+			if (option === currentSwim) el.selected = true;
 		}
+		swimSelect.addEventListener("change", () => {
+			this.plugin.settings.kanbanSwimlaneBy = swimSelect.value.trim();
+			// Re-banding re-buckets already-resolved rows; it doesn't change which
+			// notes resolve, so keep the resolve cache.
+			void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
+		});
 
 		const toggleWrap = controls.createDiv({ cls: "bpp-lite-control bpp-lite-control-toggle" });
 		const toggle = toggleWrap.createEl("input", { type: "checkbox" });
@@ -1459,7 +1682,7 @@ export class KanbanView extends PowerPackView {
 	}
 
 	/**
-	 * Render the premium swimlane board: a shared column-header row (counts spanning
+	 * Render the swimlane board: a shared column-header row (counts spanning
 	 * every lane) above one horizontal band per swimlane value, each band a row of
 	 * (lane × column) drop cells. Cards render through the same {@link renderCard} as
 	 * the flat board. Dropping across a band writes the lane property too.
@@ -1508,7 +1731,12 @@ export class KanbanView extends PowerPackView {
 			const head = headCells.createDiv({ cls: "bpp-swimlane-colhead" });
 			if (colored) head.setCssProps({ "--bpp-col-hue": this.columnHueFor(name) });
 			if (overWip) head.addClass("is-over-wip");
-			head.createSpan({ cls: "bpp-swimlane-colname", text: name });
+			const swimName = head.createSpan({ cls: "bpp-swimlane-colname", text: name });
+			// Inline rename: double-click the shared column header (same as the flat board).
+			swimName.addEventListener("dblclick", (evt) => {
+				evt.stopPropagation();
+				this.beginColumnRename(swimName, name, groupBy);
+			});
 			const count = head.createSpan({ cls: "bpp-count", text: formatWipCount(trueCount, wipLimit) });
 			if (wipLimit !== null) count.addClass("has-wip");
 			head.addEventListener("contextmenu", (evt) => this.openColumnMenu(evt, name, groupBy, false, columnNames));

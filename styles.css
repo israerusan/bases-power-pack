@@ -181,6 +181,10 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  /* Absorb the header's free space so the collapse chevron (a leading flex item)
+     doesn't push the title toward center — it stays flush-left as before. */
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .bpp-column-actions {
@@ -2320,4 +2324,105 @@ th.bpp-drillable:hover {
   .bpp-drag-ghost {
     transform: none;
   }
+}
+
+/* ==========================================================================
+   Card covers, hover-rename, tag filters, collapsible columns (1.21)
+   ========================================================================== */
+
+/* Cover image: edge-to-edge at the top of the card (negate the card padding),
+   rounded to match the card's top corners. A missing/unresolved ref → no cover. */
+.bpp-card-cover {
+  display: block;
+  width: calc(100% + 2 * var(--bpp-space-4));
+  height: 120px;
+  margin: calc(-1 * var(--bpp-space-4)) calc(-1 * var(--bpp-space-4)) var(--bpp-space-4);
+  object-fit: cover;
+  border-radius: var(--bpp-radius-md) var(--bpp-radius-md) 0 0;
+  background: var(--background-secondary);
+}
+
+.bpp-card {
+  transition: box-shadow 120ms ease, border-color 120ms ease;
+}
+
+/* Inline rename affordance: a hover ✎ next to the title (F2 and the ⋯ menu also work). */
+.bpp-card-rename {
+  flex: 0 0 auto;
+  font-size: 0.85em;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.bpp-card:hover .bpp-card-rename,
+.bpp-card:focus-within .bpp-card-rename {
+  opacity: 0.65;
+}
+
+.bpp-card-rename:hover,
+.bpp-card-rename:focus-visible {
+  opacity: 1;
+}
+
+.bpp-title-edit,
+.bpp-col-title-edit {
+  width: 100%;
+  min-width: 4em;
+  font-size: inherit;
+}
+
+.bpp-card-title.is-editing,
+.bpp-kanban-column-name.is-editing {
+  flex: 1 1 auto;
+}
+
+/* Clickable tag chips filter the board. */
+.bpp-chip-tag.is-clickable {
+  cursor: pointer;
+}
+
+.bpp-chip-tag.is-clickable:hover,
+.bpp-chip-tag.is-clickable:focus-visible {
+  text-decoration: underline;
+  filter: brightness(1.12);
+}
+
+/* Collapsible columns: a collapsed column shrinks to a narrow strip with its name
+   rotated; the body (cards + roll-ups + actions) is hidden. */
+.bpp-col-collapse {
+  flex: 0 0 auto;
+  font-size: 0.8em;
+  padding: 0 2px;
+}
+
+.bpp-kanban-column.is-collapsed {
+  min-width: 42px;
+  max-width: 42px;
+  padding: var(--bpp-space-4) 4px;
+}
+
+.bpp-kanban-column.is-collapsed .bpp-kanban-column-head {
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  cursor: default;
+}
+
+.bpp-kanban-column.is-collapsed .bpp-column-actions {
+  display: none;
+}
+
+.bpp-kanban-column.is-collapsed .bpp-kanban-column-label {
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.bpp-kanban-column.is-collapsed .bpp-kanban-column-name {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  max-height: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

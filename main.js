@@ -3617,6 +3617,36 @@ function normalize2(value) {
   return toStr(value).trim().toLocaleLowerCase();
 }
 
+// src/query/gallery.ts
+function parseString(input) {
+  let s = input.trim();
+  if (!s) return null;
+  const wiki = s.match(/^!?\[\[([^\]|]+)(?:\|[^\]]*)?\]\]$/);
+  if (wiki) s = wiki[1].trim();
+  const md = s.match(/^!?\[[^\]]*\]\((.+)\)$/);
+  if (md) {
+    s = md[1].trim();
+    const titled = s.match(/^(.*\S)\s+["'][^"']*["']$/);
+    if (titled) s = titled[1].trim();
+  }
+  s = s.replace(/^<([^>]*)>$/, "$1").trim();
+  s = s.replace(/^["']|["']$/g, "").trim();
+  if (!s) return null;
+  if (/^https?:\/\//i.test(s)) return { kind: "url", ref: s };
+  if (/^[a-z][a-z0-9+.-]*:/i.test(s) || s.startsWith("//")) return null;
+  return { kind: "vault", ref: s };
+}
+function parseImageRef(value) {
+  if (typeof value === "string") return parseString(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const ref = typeof item === "string" ? parseString(item) : null;
+      if (ref) return ref;
+    }
+  }
+  return null;
+}
+
 // src/query/dates.ts
 function toIsoDateKey(value) {
   if (value === void 0 || value === null || value === "") return null;
@@ -4376,6 +4406,20 @@ var PowerPackView = class extends import_obsidian4.ItemView {
   fileFor(row) {
     const file = this.app.vault.getAbstractFileByPath(row.id);
     return file instanceof import_obsidian4.TFile ? file : null;
+  }
+  /**
+   * Resolve a row's cover-image property to a loadable URL, or null when there's
+   * none. A vault link/path resolves relative to the note; an http(s) URL is used
+   * as-is. Shared by the Gallery grid and the Kanban card covers so both honor the
+   * same wikilink / markdown-image / URL / list forms (see {@link parseImageRef}).
+   */
+  coverImageSrc(row, prop) {
+    if (!prop) return null;
+    const ref = parseImageRef(row.scope.get(prop));
+    if (!ref) return null;
+    if (ref.kind === "url") return ref.ref;
+    const file = this.app.metadataCache.getFirstLinkpathDest(ref.ref, row.id);
+    return file ? this.app.vault.getResourcePath(file) : null;
   }
   /**
    * Add the per-note actions common to every view — open, open-to-the-right,
@@ -5268,13 +5312,15 @@ var KanbanView = class extends PowerPackView {
     /** The swimlane keys shown in the last render, in display order — the target set
      * for the card menu's "Move to lane" items. Empty on a flat board. */
     this.lastLaneKeys = [];
+    /** Satisfies Obsidian's HoverParent so card hover can drive the core Page Preview
+     * popover (the "hover-link" trigger in renderCard). */
+    this.hoverPopover = null;
     /** Edge auto-scroll driver for mouse (HTML5) drags over the board. */
     this.boardScroller = null;
   }
-  /** The swimlane (second group-by) property, or "" when off. Premium only — the
-   * flat board is the free tier; horizontal bands are an advanced view. */
+  /** The swimlane (second group-by) property, or "" when off. Free — horizontal
+   * bands split the board by a second property (the flat board is "None"). */
   get swimlaneProp() {
-    if (!this.plugin.settings.isPro) return "";
     const p = (this.plugin.settings.kanbanSwimlaneBy || "").trim();
     return p && p !== (this.plugin.settings.kanbanGroupBy || "status") ? p : "";
   }
@@ -5465,8 +5511,27 @@ var KanbanView = class extends PowerPackView {
         (evt) => this.openColumnMenu(evt, column.name, groupBy, removable, orderedNames)
       );
       if (overWip) col.addClass("is-over-wip");
+      const collapsed = this.plugin.settings.kanbanCollapsedColumns[column.name] === true;
+      if (collapsed) col.addClass("is-collapsed");
+      const collapseBtn = colHead.createEl("button", {
+        cls: "bpp-col-collapse clickable-icon",
+        attr: {
+          "aria-label": `${collapsed ? "Expand" : "Collapse"} column ${column.name}`,
+          "aria-expanded": String(!collapsed),
+          title: collapsed ? "Expand column" : "Collapse column"
+        }
+      });
+      collapseBtn.createSpan({ text: collapsed ? "\u25B8" : "\u25BE", attr: { "aria-hidden": "true" } });
+      collapseBtn.addEventListener("click", (evt) => {
+        evt.stopPropagation();
+        void this.toggleColumnCollapse(column.name);
+      });
       const colLabel = colHead.createDiv({ cls: "bpp-kanban-column-label" });
-      colLabel.createSpan({ text: column.name });
+      const nameSpan = colLabel.createSpan({ cls: "bpp-kanban-column-name", text: column.name });
+      nameSpan.addEventListener("dblclick", (evt) => {
+        evt.stopPropagation();
+        this.beginColumnRename(nameSpan, column.name, groupBy);
+      });
       const count = colLabel.createSpan({
         cls: "bpp-count",
         text: formatWipCount(trueCount, wipLimit)
@@ -5500,6 +5565,7 @@ var KanbanView = class extends PowerPackView {
         });
         removeButton.addEventListener("click", () => void this.removeExtraColumn(groupBy, column.name));
       }
+      if (collapsed) continue;
       if (this.plugin.settings.isPro && this.plugin.settings.rollups.length > 0) {
         const chips = col.createDiv({ cls: "bpp-col-rollups" });
         for (const rollup of this.plugin.settings.rollups) {
@@ -5528,9 +5594,26 @@ var KanbanView = class extends PowerPackView {
     if (this.selected.has(row.id)) card.addClass("is-selected");
     this.applyColorRule(card, row);
     card.draggable = true;
+    const coverSrc = this.coverImageSrc(row, this.plugin.settings.kanbanCardImageProp);
+    if (coverSrc) {
+      card.addClass("has-cover");
+      card.createEl("img", {
+        cls: "bpp-card-cover",
+        attr: { src: coverSrc, alt: "", loading: "lazy", draggable: "false" }
+      });
+    }
     const openMenu = (a) => this.openCardMenu(a, row, ctx.groupBy, ctx.orderedNames, columnName, ctx.laneKey);
     const head = card.createDiv({ cls: "bpp-card-head" });
-    head.createDiv({ cls: "bpp-card-title", text: row.name });
+    const titleEl = head.createDiv({ cls: "bpp-card-title", text: row.name });
+    const renameBtn = head.createEl("button", {
+      cls: "bpp-card-rename clickable-icon",
+      attr: { "aria-label": `Rename ${row.name}`, title: "Rename note" }
+    });
+    renameBtn.createSpan({ text: "\u270E", attr: { "aria-hidden": "true" } });
+    renameBtn.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      this.beginTitleRename(card, titleEl, row);
+    });
     this.addOverflowButton(head, row.name, openMenu);
     const isDone = isRowDone(row, ctx.groupBy, this.plugin.settings.kanbanDoneValue);
     for (const field of ctx.metaFields) {
@@ -5570,7 +5653,80 @@ var KanbanView = class extends PowerPackView {
     });
     this.makeItemAccessible(card, row.name, () => this.openRow(row), openMenu);
     card.addEventListener("contextmenu", (evt) => openMenu(evt));
+    card.addEventListener("keydown", (evt) => {
+      if (evt.target === card && evt.key === "F2") {
+        evt.preventDefault();
+        this.beginTitleRename(card, titleEl, row);
+      }
+    });
+    card.addEventListener("mouseover", (event) => {
+      this.app.workspace.trigger("hover-link", {
+        event,
+        source: "bpp-kanban",
+        hoverParent: this,
+        targetEl: card,
+        linktext: row.id,
+        sourcePath: row.id
+      });
+    });
     (_a = this.touch) == null ? void 0 : _a.attach(card, row.id);
+  }
+  /**
+   * Rename a card's note in place: swap the title for an input, commit on Enter/blur
+   * via {@link fileFor} + `fileManager.renameFile`, Escape cancels. Background
+   * re-renders are held during the edit (beginInteraction) so a vault change can't
+   * yank the input, exactly like {@link beginInlineEdit}.
+   */
+  beginTitleRename(card, titleEl, row) {
+    const file = this.fileFor(row);
+    if (!file) return;
+    const original = file.basename;
+    card.draggable = false;
+    titleEl.empty();
+    titleEl.addClass("is-editing");
+    const input = titleEl.createEl("input", { cls: "bpp-inline-edit bpp-title-edit", type: "text" });
+    input.value = original;
+    input.focus();
+    input.select();
+    this.beginInteraction();
+    let settled = false;
+    const finish = () => {
+      this.endInteraction();
+      card.draggable = true;
+    };
+    const commit = async () => {
+      var _a;
+      if (settled) return;
+      settled = true;
+      const next = input.value.trim();
+      finish();
+      if (!next || next === original) {
+        await this.render();
+        return;
+      }
+      const parent = ((_a = file.parent) == null ? void 0 : _a.path) ? `${file.parent.path}/` : "";
+      const target = (0, import_obsidian5.normalizePath)(`${parent}${next}.${file.extension}`);
+      try {
+        await this.app.fileManager.renameFile(file, target);
+        this.plugin.invalidateSnapshot();
+      } catch (error) {
+        new import_obsidian5.Notice(`Rename failed: ${String(error)}`);
+      }
+      await this.render();
+    };
+    input.addEventListener("click", (event) => event.stopPropagation());
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void commit();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        settled = true;
+        finish();
+        void this.render();
+      }
+    });
+    input.addEventListener("blur", () => void commit());
   }
   renderAddColumnTile(board, groupBy) {
     const tile = board.createDiv({ cls: "bpp-kanban-column bpp-kanban-add-column" });
@@ -5613,6 +5769,53 @@ var KanbanView = class extends PowerPackView {
     else delete map[groupBy];
     await this.plugin.saveSettings({ invalidateResolved: false });
     await this.render();
+  }
+  /** Collapse or expand a column (persisted per column value, like WIP limits). */
+  async toggleColumnCollapse(columnName) {
+    const map = this.plugin.settings.kanbanCollapsedColumns;
+    if (map[columnName]) delete map[columnName];
+    else map[columnName] = true;
+    await this.plugin.saveSettings({ invalidateResolved: false });
+    await this.render();
+  }
+  /**
+   * Rename a column in place: swap the header label for an input, then route the
+   * committed value through {@link applyColumnRename} (which confirms a large
+   * frontmatter rewrite and carries the column's color/order/WIP identity across).
+   * Escape cancels. Used by the header double-click and the column menu.
+   */
+  beginColumnRename(labelSpan, columnName, groupBy) {
+    const dragEl = labelSpan.closest('[draggable="true"]');
+    if (dragEl) dragEl.draggable = false;
+    labelSpan.empty();
+    labelSpan.addClass("is-editing");
+    const input = labelSpan.createEl("input", { cls: "bpp-inline-edit bpp-col-title-edit", type: "text" });
+    input.value = columnName;
+    input.focus();
+    input.select();
+    this.beginInteraction();
+    let settled = false;
+    const commit = async () => {
+      if (settled) return;
+      settled = true;
+      const next = input.value.trim();
+      this.endInteraction();
+      await this.render();
+      if (next && next !== columnName) this.applyColumnRename(groupBy, columnName, next);
+    };
+    input.addEventListener("click", (event) => event.stopPropagation());
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void commit();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        settled = true;
+        this.endInteraction();
+        void this.render();
+      }
+    });
+    input.addEventListener("blur", () => void commit());
   }
   /**
    * A card metadata line the user can click to edit the underlying frontmatter.
@@ -5660,7 +5863,24 @@ var KanbanView = class extends PowerPackView {
     }
     if (field === "tags" || field === "tag" || field === "file.tags") {
       const parts = Array.isArray(value) ? value.map((v) => toStr(v)).filter(Boolean) : display.split(",").map((s) => s.trim()).filter(Boolean);
-      for (const part of parts) line.createSpan({ cls: "bpp-chip bpp-chip-tag", text: part });
+      for (const part of parts) {
+        const chip = line.createSpan({ cls: "bpp-chip bpp-chip-tag is-clickable", text: part });
+        chip.setAttr("title", `Filter board by "${part}"`);
+        chip.setAttr("role", "button");
+        chip.setAttr("tabindex", "0");
+        const filter = (evt) => {
+          evt.stopPropagation();
+          this.searchQuery = part;
+          void this.render();
+        };
+        chip.addEventListener("click", filter);
+        chip.addEventListener("keydown", (evt) => {
+          if (evt.key === "Enter" || evt.key === " ") {
+            evt.preventDefault();
+            filter(evt);
+          }
+        });
+      }
       if (parts.length > 0) return;
     }
     line.createSpan({ cls: "bpp-card-meta-key", text: `${field}:` });
@@ -5781,6 +6001,12 @@ var KanbanView = class extends PowerPackView {
     menu.addItem(
       (i) => i.setTitle("Set WIP limit\u2026").setIcon("gauge").onClick(() => this.setWipLimit(columnName))
     );
+    if (!this.swimlaneProp) {
+      const isCollapsed = this.plugin.settings.kanbanCollapsedColumns[columnName] === true;
+      menu.addItem(
+        (i) => i.setTitle(isCollapsed ? "Expand column" : "Collapse column").setIcon(isCollapsed ? "chevrons-up-down" : "chevrons-down-up").onClick(() => void this.toggleColumnCollapse(columnName))
+      );
+    }
     const idx = orderedNames.indexOf(columnName);
     if (idx > 0) {
       menu.addItem(
@@ -5906,6 +6132,11 @@ var KanbanView = class extends PowerPackView {
       wip[to] = wip[from];
       delete wip[from];
     }
+    const collapsed = this.plugin.settings.kanbanCollapsedColumns;
+    if (collapsed[from] !== void 0) {
+      collapsed[to] = collapsed[from];
+      delete collapsed[from];
+    }
     await this.plugin.saveSettings();
     new import_obsidian5.Notice(`Renamed "${from}" \u2192 "${to}" on ${ok} note${ok === 1 ? "" : "s"}.`);
     await this.render();
@@ -5971,23 +6202,21 @@ var KanbanView = class extends PowerPackView {
       if (option.value === this.sortBy) el.selected = true;
     }
     sortSelect.addEventListener("change", () => void this.setSortBy(sortSelect.value));
-    if (this.plugin.settings.isPro) {
-      const swimWrap = controls.createDiv({ cls: "bpp-lite-control" });
-      swimWrap.createSpan({ cls: "bpp-muted", text: "Swimlanes" });
-      const swimSelect = swimWrap.createEl("select", { cls: "bpp-lite-select dropdown" });
-      const current = this.swimlaneProp;
-      const none = swimSelect.createEl("option", { text: "None", value: "" });
-      if (!current) none.selected = true;
-      for (const option of this.collectGroupByOptions(current)) {
-        if (option === groupBy) continue;
-        const el = swimSelect.createEl("option", { text: option, value: option });
-        if (option === current) el.selected = true;
-      }
-      swimSelect.addEventListener("change", () => {
-        this.plugin.settings.kanbanSwimlaneBy = swimSelect.value.trim();
-        void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
-      });
+    const swimWrap = controls.createDiv({ cls: "bpp-lite-control" });
+    swimWrap.createSpan({ cls: "bpp-muted", text: "Swimlanes" });
+    const swimSelect = swimWrap.createEl("select", { cls: "bpp-lite-select dropdown" });
+    const currentSwim = this.swimlaneProp;
+    const noneSwim = swimSelect.createEl("option", { text: "None", value: "" });
+    if (!currentSwim) noneSwim.selected = true;
+    for (const option of this.collectGroupByOptions(currentSwim)) {
+      if (option === groupBy) continue;
+      const el = swimSelect.createEl("option", { text: option, value: option });
+      if (option === currentSwim) el.selected = true;
     }
+    swimSelect.addEventListener("change", () => {
+      this.plugin.settings.kanbanSwimlaneBy = swimSelect.value.trim();
+      void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
+    });
     const toggleWrap = controls.createDiv({ cls: "bpp-lite-control bpp-lite-control-toggle" });
     const toggle = toggleWrap.createEl("input", { type: "checkbox" });
     toggle.checked = this.hideDoneColumn;
@@ -6342,7 +6571,7 @@ var KanbanView = class extends PowerPackView {
     await this.applyCardReorder(rowId, target.columnName, targetRow, true, groupBy, laneProp, target.laneKey);
   }
   /**
-   * Render the premium swimlane board: a shared column-header row (counts spanning
+   * Render the swimlane board: a shared column-header row (counts spanning
    * every lane) above one horizontal band per swimlane value, each band a row of
    * (lane × column) drop cells. Cards render through the same {@link renderCard} as
    * the flat board. Dropping across a band writes the lane property too.
@@ -6381,7 +6610,11 @@ var KanbanView = class extends PowerPackView {
       const head = headCells.createDiv({ cls: "bpp-swimlane-colhead" });
       if (colored) head.setCssProps({ "--bpp-col-hue": this.columnHueFor(name) });
       if (overWip) head.addClass("is-over-wip");
-      head.createSpan({ cls: "bpp-swimlane-colname", text: name });
+      const swimName = head.createSpan({ cls: "bpp-swimlane-colname", text: name });
+      swimName.addEventListener("dblclick", (evt) => {
+        evt.stopPropagation();
+        this.beginColumnRename(swimName, name, groupBy);
+      });
       const count = head.createSpan({ cls: "bpp-count", text: formatWipCount(trueCount, wipLimit) });
       if (wipLimit !== null) count.addClass("has-wip");
       head.addEventListener("contextmenu", (evt) => this.openColumnMenu(evt, name, groupBy, false, columnNames));
@@ -6611,6 +6844,8 @@ var DEFAULT_SETTINGS = {
   kanbanBlockOverWip: false,
   kanbanRankProp: "rank",
   kanbanSwimlaneBy: "",
+  kanbanCardImageProp: "",
+  kanbanCollapsedColumns: {},
   feedDateProp: "file.mtime",
   feedGranularity: "day",
   calendarDateProp: "due",
@@ -6736,6 +6971,14 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
         void this.plugin.saveSettings();
       })
     );
+    new import_obsidian6.Setting(containerEl).setName("Card image property").setDesc(
+      "Optional frontmatter property holding a cover image shown at the top of each kanban card \u2014 a path, [[wikilink]], markdown image, or URL. Leave blank for no covers."
+    ).addText(
+      (text) => this.keySuggest(text).setPlaceholder("(none)").setValue(this.plugin.settings.kanbanCardImageProp).onChange((value) => {
+        this.plugin.settings.kanbanCardImageProp = value.trim();
+        void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
+      })
+    );
     new import_obsidian6.Setting(containerEl).setName("Quick add folder").setDesc("Optional folder for the kanban + button. Leave blank to create notes at the vault root.").addText(
       (text) => this.folderSuggest(text).setValue(this.plugin.settings.kanbanQuickAddFolder).onChange((value) => {
         this.plugin.settings.kanbanQuickAddFolder = value.trim();
@@ -6765,7 +7008,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
       })
     );
     new import_obsidian6.Setting(containerEl).setName("Swimlane property").setDesc(
-      "Premium. A second property that splits the board into horizontal bands (swimlanes) \u2014 e.g. owner or project \u2014 with columns still grouped by the group-by property. Leave blank for a flat board; also switchable from the board's Swimlanes control."
+      "A second property that splits the board into horizontal bands (swimlanes) \u2014 e.g. owner or project \u2014 with columns still grouped by the group-by property. Leave blank for a flat board; also switchable from the board's Swimlanes control."
     ).addText(
       (text) => this.keySuggest(text).setPlaceholder("(none)").setValue(this.plugin.settings.kanbanSwimlaneBy).onChange((value) => {
         this.plugin.settings.kanbanSwimlaneBy = value.trim();
@@ -9652,38 +9895,6 @@ function formatValue(n) {
 
 // src/views/galleryView.ts
 var import_obsidian10 = require("obsidian");
-
-// src/query/gallery.ts
-function parseString(input) {
-  let s = input.trim();
-  if (!s) return null;
-  const wiki = s.match(/^!?\[\[([^\]|]+)(?:\|[^\]]*)?\]\]$/);
-  if (wiki) s = wiki[1].trim();
-  const md = s.match(/^!?\[[^\]]*\]\((.+)\)$/);
-  if (md) {
-    s = md[1].trim();
-    const titled = s.match(/^(.*\S)\s+["'][^"']*["']$/);
-    if (titled) s = titled[1].trim();
-  }
-  s = s.replace(/^<([^>]*)>$/, "$1").trim();
-  s = s.replace(/^["']|["']$/g, "").trim();
-  if (!s) return null;
-  if (/^https?:\/\//i.test(s)) return { kind: "url", ref: s };
-  if (/^[a-z][a-z0-9+.-]*:/i.test(s) || s.startsWith("//")) return null;
-  return { kind: "vault", ref: s };
-}
-function parseImageRef(value) {
-  if (typeof value === "string") return parseString(value);
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const ref = typeof item === "string" ? parseString(item) : null;
-      if (ref) return ref;
-    }
-  }
-  return null;
-}
-
-// src/views/galleryView.ts
 var VIEW_TYPE_GALLERY = "bpp-gallery-view";
 var GalleryView = class extends PowerPackView {
   getViewType() {
@@ -9806,14 +10017,10 @@ var GalleryView = class extends PowerPackView {
     this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, () => void this.render());
     this.showMenuAtAnchor(menu, anchor);
   }
-  /** Resolve the card's cover image to a loadable URL, or null when there's none.
-   * A vault link is resolved relative to the note; an http(s) URL is used as-is. */
+  /** Resolve the card's cover image to a loadable URL, or null when there's none —
+   * via the shared resolver so Gallery and Kanban covers stay in lockstep. */
   imageSrc(row) {
-    const ref = parseImageRef(row.scope.get(this.plugin.settings.galleryImageProp));
-    if (!ref) return null;
-    if (ref.kind === "url") return ref.ref;
-    const file = this.app.metadataCache.getFirstLinkpathDest(ref.ref, row.id);
-    return file ? this.app.vault.getResourcePath(file) : null;
+    return this.coverImageSrc(row, this.plugin.settings.galleryImageProp);
   }
 };
 
@@ -10411,6 +10618,7 @@ var BasesPowerPackPlugin = class extends import_obsidian12.Plugin {
     this.settings.kanbanColumnOrder = sanitizeStringMap(this.settings.kanbanColumnOrder);
     this.settings.kanbanSortBy = sanitizeSortMap(this.settings.kanbanSortBy);
     this.settings.kanbanHideDone = sanitizeBoolMap(this.settings.kanbanHideDone);
+    this.settings.kanbanCollapsedColumns = sanitizeBoolMap(this.settings.kanbanCollapsedColumns);
     if (typeof this.settings.kanbanColorColumns !== "boolean") this.settings.kanbanColorColumns = DEFAULT_SETTINGS.kanbanColorColumns;
     this.settings.kanbanRankProp = coerceProp(this.settings.kanbanRankProp, DEFAULT_SETTINGS.kanbanRankProp);
     this.settings.feedDateProp = coerceProp(this.settings.feedDateProp, DEFAULT_SETTINGS.feedDateProp);

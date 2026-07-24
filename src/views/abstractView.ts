@@ -14,6 +14,7 @@ import { PromptModal, ConfirmModal } from "./modals";
 import { coerceFieldInput, formatFieldForEdit } from "../query/inlineEdit";
 import { resolveRowColor } from "../query/colorRules";
 import { formatCardField } from "../query/kanban";
+import { parseImageRef } from "../query/gallery";
 import { buildMarkdownTable } from "../query/export";
 import { writeRowProperty } from "./viewData";
 import { renderSearchControl } from "./viewChrome";
@@ -182,6 +183,21 @@ export abstract class PowerPackView extends ItemView {
 	protected fileFor(row: Row): TFile | null {
 		const file = this.app.vault.getAbstractFileByPath(row.id);
 		return file instanceof TFile ? file : null;
+	}
+
+	/**
+	 * Resolve a row's cover-image property to a loadable URL, or null when there's
+	 * none. A vault link/path resolves relative to the note; an http(s) URL is used
+	 * as-is. Shared by the Gallery grid and the Kanban card covers so both honor the
+	 * same wikilink / markdown-image / URL / list forms (see {@link parseImageRef}).
+	 */
+	protected coverImageSrc(row: Row, prop: string): string | null {
+		if (!prop) return null;
+		const ref = parseImageRef(row.scope.get(prop));
+		if (!ref) return null;
+		if (ref.kind === "url") return ref.ref;
+		const file = this.app.metadataCache.getFirstLinkpathDest(ref.ref, row.id);
+		return file ? this.app.vault.getResourcePath(file) : null;
 	}
 
 	/**

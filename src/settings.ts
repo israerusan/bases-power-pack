@@ -65,9 +65,15 @@ export interface BasesPowerPackSettings {
 	/** Frontmatter property holding a card's manual rank, written by drag-to-reorder
 	 * in the default "Manual" sort. */
 	kanbanRankProp: string;
-	/** Premium: a second group-by property that splits the board into horizontal
-	 * swimlanes (bands). "" = flat board. Picked from the board's Swimlanes control. */
+	/** A second group-by property that splits the board into horizontal swimlanes
+	 * (bands). "" = flat board. Picked from the board's Swimlanes control. */
 	kanbanSwimlaneBy: string;
+	/** Frontmatter property holding a card's cover image (path / wikilink / markdown
+	 * image / URL). "" = no covers. Shares the Gallery's image-ref parsing. */
+	kanbanCardImageProp: string;
+	/** Columns collapsed to a narrow strip on the flat board, keyed by column value
+	 * (like kanbanWipLimits / kanbanColorOverrides). */
+	kanbanCollapsedColumns: Record<string, boolean>;
 
 	/** Feed / timeline (premium) */
 	feedDateProp: string;
@@ -157,6 +163,8 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	kanbanBlockOverWip: false,
 	kanbanRankProp: "rank",
 	kanbanSwimlaneBy: "",
+	kanbanCardImageProp: "",
+	kanbanCollapsedColumns: {},
 	feedDateProp: "file.mtime",
 	feedGranularity: "day",
 	calendarDateProp: "due",
@@ -338,6 +346,21 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
+			.setName("Card image property")
+			.setDesc(
+				"Optional frontmatter property holding a cover image shown at the top of each kanban card — a path, [[wikilink]], markdown image, or URL. Leave blank for no covers."
+			)
+			.addText((text) =>
+				this.keySuggest(text)
+					.setPlaceholder("(none)")
+					.setValue(this.plugin.settings.kanbanCardImageProp)
+					.onChange((value) => {
+						this.plugin.settings.kanbanCardImageProp = value.trim();
+						void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
+					})
+			);
+
+		new Setting(containerEl)
 			.setName("Quick add folder")
 			.setDesc("Optional folder for the kanban + button. Leave blank to create notes at the vault root.")
 			.addText((text) =>
@@ -387,7 +410,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Swimlane property")
 			.setDesc(
-				"Premium. A second property that splits the board into horizontal bands (swimlanes) — e.g. owner or project — with columns still grouped by the group-by property. Leave blank for a flat board; also switchable from the board's Swimlanes control."
+				"A second property that splits the board into horizontal bands (swimlanes) — e.g. owner or project — with columns still grouped by the group-by property. Leave blank for a flat board; also switchable from the board's Swimlanes control."
 			)
 			.addText((text) =>
 				this.keySuggest(text)

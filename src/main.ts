@@ -534,6 +534,7 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.settings.kanbanColumnOrder = sanitizeStringMap(this.settings.kanbanColumnOrder);
 		this.settings.kanbanSortBy = sanitizeSortMap(this.settings.kanbanSortBy);
 		this.settings.kanbanHideDone = sanitizeBoolMap(this.settings.kanbanHideDone);
+		this.settings.kanbanCollapsedColumns = sanitizeBoolMap(this.settings.kanbanCollapsedColumns);
 		if (typeof this.settings.kanbanColorColumns !== "boolean") this.settings.kanbanColorColumns = DEFAULT_SETTINGS.kanbanColorColumns;
 		this.settings.kanbanRankProp = coerceProp(this.settings.kanbanRankProp, DEFAULT_SETTINGS.kanbanRankProp);
 		this.settings.feedDateProp = coerceProp(this.settings.feedDateProp, DEFAULT_SETTINGS.feedDateProp);

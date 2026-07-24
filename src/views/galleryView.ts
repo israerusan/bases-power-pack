@@ -2,7 +2,6 @@ import { Menu } from "obsidian";
 import type { Row } from "../model/row";
 import { PowerPackView } from "./abstractView";
 import { formatCardField } from "../query/kanban";
-import { parseImageRef } from "../query/gallery";
 import { filterRowsByText } from "../query/search";
 import { renderContextControls, renderPropertySelect } from "./viewChrome";
 
@@ -156,13 +155,9 @@ export class GalleryView extends PowerPackView {
 		this.showMenuAtAnchor(menu, anchor);
 	}
 
-	/** Resolve the card's cover image to a loadable URL, or null when there's none.
-	 * A vault link is resolved relative to the note; an http(s) URL is used as-is. */
+	/** Resolve the card's cover image to a loadable URL, or null when there's none —
+	 * via the shared resolver so Gallery and Kanban covers stay in lockstep. */
 	private imageSrc(row: Row): string | null {
-		const ref = parseImageRef(row.scope.get(this.plugin.settings.galleryImageProp));
-		if (!ref) return null;
-		if (ref.kind === "url") return ref.ref;
-		const file = this.app.metadataCache.getFirstLinkpathDest(ref.ref, row.id);
-		return file ? this.app.vault.getResourcePath(file) : null;
+		return this.coverImageSrc(row, this.plugin.settings.galleryImageProp);
 	}
 }
