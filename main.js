@@ -5662,7 +5662,7 @@ var KanbanView = class extends PowerPackView {
     card.addEventListener("mouseover", (event) => {
       this.app.workspace.trigger("hover-link", {
         event,
-        source: "bpp-kanban",
+        source: VIEW_TYPE_KANBAN,
         hoverParent: this,
         targetEl: card,
         linktext: row.id,
@@ -10292,6 +10292,7 @@ var BasesPowerPackPlugin = class extends import_obsidian12.Plugin {
     this.registerView(VIEW_TYPE_DASHBOARD, (leaf) => new DashboardView(leaf, this));
     this.registerView(VIEW_TYPE_GALLERY, (leaf) => new GalleryView(leaf, this));
     this.registerView(VIEW_TYPE_FEED, (leaf) => new FeedView(leaf, this));
+    this.registerHoverLinkSource(VIEW_TYPE_KANBAN, { display: "Bases Power Pack kanban", defaultMod: false });
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => this.queueHierarchyRetarget(file.path, oldPath))
     );

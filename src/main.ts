@@ -155,6 +155,12 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.registerView(VIEW_TYPE_GALLERY, (leaf) => new GalleryView(leaf, this));
 		this.registerView(VIEW_TYPE_FEED, (leaf) => new FeedView(leaf, this));
 
+		// Register the Kanban board as a hover-link source so the core Page Preview
+		// plugin shows a card's note preview on a PLAIN hover (defaultMod: false). The
+		// board fires the "hover-link" event with this same id as its source; without
+		// this registration Page Preview would require holding Ctrl/Cmd (or ignore it).
+		this.registerHoverLinkSource(VIEW_TYPE_KANBAN, { display: "Bases Power Pack kanban", defaultMod: false });
+
 		// Keep the hierarchy intact when a parent note is renamed/moved: repoint any
 		// child whose parent property pointed at the old path (premium; one undo
 		// frame). Events are coalesced so a folder move (one event per contained

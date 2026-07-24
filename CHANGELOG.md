@@ -3,6 +3,15 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.21.1] - 2026-07-24
+
+### Fixed
+- **Card hover preview now shows on a plain hover.** 1.21.0 fired the preview event
+  but never registered the board as a hover-link source, so the popover only
+  appeared while holding Ctrl/Cmd. The Kanban board is now a registered Page
+  Preview source (no modifier needed), and it appears as a toggle under **Settings
+  → Page preview**. (Requires the core **Page preview** plugin to be enabled.)
+
 ## [1.21.0] - 2026-07-24
 
 A **Kanban feel** release: swimlanes are now free, and the board gains the polish

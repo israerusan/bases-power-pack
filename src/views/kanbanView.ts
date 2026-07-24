@@ -509,11 +509,13 @@ export class KanbanView extends PowerPackView {
 				this.beginTitleRename(card, titleEl, row);
 			}
 		});
-		// Native hover preview via the core Page Preview plugin (the "feels native" touch).
+		// Native hover preview via the core Page Preview plugin (the "feels native"
+		// touch). `source` MUST match the id registered with registerHoverLinkSource in
+		// onload, or Page Preview falls back to requiring the Mod key.
 		card.addEventListener("mouseover", (event) => {
 			this.app.workspace.trigger("hover-link", {
 				event,
-				source: "bpp-kanban",
+				source: VIEW_TYPE_KANBAN,
 				hoverParent: this,
 				targetEl: card,
 				linktext: row.id,
