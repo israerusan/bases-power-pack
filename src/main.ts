@@ -17,6 +17,7 @@ import {
 	type AutomationRule,
 } from "./query/automation";
 import { KanbanView, VIEW_TYPE_KANBAN } from "./views/kanbanView";
+import { KanbanBasesView, KANBAN_BASES_VIEW_ID } from "./bases/kanbanBasesView";
 import { CalendarView, VIEW_TYPE_CALENDAR } from "./views/calendarView";
 import { GanttView, VIEW_TYPE_GANTT } from "./views/ganttView";
 import { HierarchyView, VIEW_TYPE_HIERARCHY } from "./views/hierarchyView";
@@ -162,6 +163,16 @@ export default class BasesPowerPackPlugin extends Plugin {
 		// board fires the "hover-link" event with this same id as its source; without
 		// this registration Page Preview would require holding Ctrl/Cmd (or ignore it).
 		this.registerHoverLinkSource(VIEW_TYPE_KANBAN, { display: "Bases Power Pack kanban", defaultMod: false });
+
+		// Native Bases view: a "Kanban" option inside the Bases view dropdown (Obsidian
+		// ≥1.10). Additive — the standalone views above are unaffected. registerBasesView
+		// returns false (a no-op) when the Bases core plugin is disabled.
+		this.registerBasesView(KANBAN_BASES_VIEW_ID, {
+			name: "Kanban",
+			icon: "layout-dashboard",
+			factory: (controller, containerEl) => new KanbanBasesView(controller, containerEl),
+		});
+		this.registerHoverLinkSource(KANBAN_BASES_VIEW_ID, { display: "Bases Power Pack kanban", defaultMod: false });
 
 		// Keep the hierarchy intact when a parent note is renamed/moved: repoint any
 		// child whose parent property pointed at the old path (premium; one undo
