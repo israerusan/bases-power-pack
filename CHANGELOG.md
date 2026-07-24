@@ -3,6 +3,21 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.21.2] - 2026-07-24
+
+Two runtime fixes found by a device-vs-code audit.
+
+### Fixed
+- **Cover images resolve for Markdown-embed values with encoded spaces.** A card (or
+  gallery) image property written as a Markdown embed to a spaced filename — e.g.
+  `![](Attachments/my%20photo.png)`, which is how Obsidian writes it when
+  *Use [[Wikilinks]]* is off — now percent-decodes so the file is found. Wikilinks,
+  plain paths, and URLs are unchanged.
+- **Touch drag no longer aborts on mobile.** Once a card is picked up (long-press),
+  the board no longer scrolls out from under the drag: a non-passive `touchmove`
+  guard now suppresses native panning for the duration of the drag (a `pointermove`
+  `preventDefault` can't do this). Auto-scroll near the edges still works.
+
 ## [1.21.1] - 2026-07-24
 
 ### Fixed

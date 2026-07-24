@@ -1379,5 +1379,24 @@ assert.equal(autoscroll.edgeVelocity(1200, 0, 1000, 56, 18), 18, "overshoot belo
 // A container smaller than two zones has no calm middle → never fights the user.
 assert.equal(autoscroll.edgeVelocity(50, 0, 80, 56, 18), 0, "a tiny container does not auto-scroll");
 
+// ---- gallery / card cover image-ref parsing --------------------------------
+// Obsidian percent-encodes spaces in a Markdown embed when "Use [[Wikilinks]]" is
+// off, e.g. ![](Attachments/my%20photo.png); the vault ref must be decoded so
+// getFirstLinkpathDest can match the literal file name (shared by Kanban + Gallery).
+assert.equal(
+	gallery.parseImageRef("![](Attachments/my%20photo.png)").ref,
+	"Attachments/my photo.png",
+	"markdown embed %20 decodes to a literal space"
+);
+assert.equal(gallery.parseImageRef("[[my photo.png]]").ref, "my photo.png", "wikilink keeps its literal space");
+assert.equal(gallery.parseImageRef("Attachments/plain.png").ref, "Attachments/plain.png", "a bare path is unchanged");
+assert.equal(gallery.parseImageRef("cover(1).png").ref, "cover(1).png", "parens in a bare filename survive");
+const urlRef = gallery.parseImageRef("https://ex.com/a%20b.png");
+assert.equal(urlRef.kind, "url", "an http(s) value is a URL ref");
+assert.equal(urlRef.ref, "https://ex.com/a%20b.png", "a URL is NOT percent-decoded");
+assert.equal(gallery.parseImageRef("![](bad%ZZ.png)").ref, "bad%ZZ.png", "a malformed % sequence falls back to the literal");
+assert.equal(gallery.parseImageRef(""), null, "an empty value is not an image ref");
+assert.equal(gallery.parseImageRef("data:image/png;base64,AAAA"), null, "a data: URI is rejected");
+
 fs.unlinkSync(outfile);
 console.log("engine tests passed");

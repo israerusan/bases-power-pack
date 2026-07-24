@@ -3634,7 +3634,13 @@ function parseString(input) {
   if (!s) return null;
   if (/^https?:\/\//i.test(s)) return { kind: "url", ref: s };
   if (/^[a-z][a-z0-9+.-]*:/i.test(s) || s.startsWith("//")) return null;
-  return { kind: "vault", ref: s };
+  let decoded = s;
+  try {
+    decoded = decodeURIComponent(s);
+  } catch (e) {
+    decoded = s;
+  }
+  return { kind: "vault", ref: decoded };
 }
 function parseImageRef(value) {
   if (typeof value === "string") return parseString(value);
@@ -5082,6 +5088,16 @@ var TouchDragController = class {
     /** Removes the current gesture's per-card listeners; set in onPointerDown, invoked
      * by every reset so no path leaks them (notably the pre-arm scroll-cancel). */
     this.cleanupListeners = null;
+    /** The document the armed-drag scroll blocker is attached to, or null. */
+    this.scrollBlockDoc = null;
+    /** Blocks native pan/scroll during an armed touch drag. A pointermove
+     * preventDefault does NOT stop scrolling for Pointer Events (only CSS touch-action
+     * does, evaluated at gesture start) — but a NON-PASSIVE touchmove preventDefault
+     * cancels an in-progress scroll, which is how a long-press-then-drag keeps the
+     * board still on mobile. Stable reference so it can be removed on every exit. */
+    this.blockTouchScroll = (e) => {
+      e.preventDefault();
+    };
     this.startX = 0;
     this.startY = 0;
     this.ghostOffsetX = 0;
@@ -5177,6 +5193,8 @@ var TouchDragController = class {
     this.ghostOffsetY = y - rect.top;
     const scrollEl = this.opts.scrollContainer();
     this.scroller = scrollEl ? new DragScroller(scrollEl) : null;
+    this.scrollBlockDoc = card.ownerDocument;
+    this.scrollBlockDoc.addEventListener("touchmove", this.blockTouchScroll, { passive: false });
     this.positionGhost(x, y);
   }
   positionGhost(x, y) {
@@ -5245,6 +5263,10 @@ var TouchDragController = class {
     this.ghost = null;
     (_b = this.scroller) == null ? void 0 : _b.stop();
     this.scroller = null;
+    if (this.scrollBlockDoc) {
+      this.scrollBlockDoc.removeEventListener("touchmove", this.blockTouchScroll);
+      this.scrollBlockDoc = null;
+    }
     (_c = this.lastTarget.cell) == null ? void 0 : _c.removeClass("is-drop-target");
     this.clearCardMarks(this.lastTarget.card);
     this.lastTarget = { cell: null, card: null };

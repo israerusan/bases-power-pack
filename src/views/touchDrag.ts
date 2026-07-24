@@ -51,6 +51,16 @@ export class TouchDragController {
 	/** Removes the current gesture's per-card listeners; set in onPointerDown, invoked
 	 * by every reset so no path leaks them (notably the pre-arm scroll-cancel). */
 	private cleanupListeners: (() => void) | null = null;
+	/** The document the armed-drag scroll blocker is attached to, or null. */
+	private scrollBlockDoc: Document | null = null;
+	/** Blocks native pan/scroll during an armed touch drag. A pointermove
+	 * preventDefault does NOT stop scrolling for Pointer Events (only CSS touch-action
+	 * does, evaluated at gesture start) — but a NON-PASSIVE touchmove preventDefault
+	 * cancels an in-progress scroll, which is how a long-press-then-drag keeps the
+	 * board still on mobile. Stable reference so it can be removed on every exit. */
+	private readonly blockTouchScroll = (e: TouchEvent): void => {
+		e.preventDefault();
+	};
 	private startX = 0;
 	private startY = 0;
 	private ghostOffsetX = 0;
@@ -160,6 +170,10 @@ export class TouchDragController {
 		this.ghostOffsetY = y - rect.top;
 		const scrollEl = this.opts.scrollContainer();
 		this.scroller = scrollEl ? new DragScroller(scrollEl) : null;
+		// Block native scroll for the rest of the drag (removed in finish()). Attached
+		// now, after a stationary long-press, so the WebView hasn't begun a scroll yet.
+		this.scrollBlockDoc = card.ownerDocument;
+		this.scrollBlockDoc.addEventListener("touchmove", this.blockTouchScroll, { passive: false });
 		this.positionGhost(x, y);
 	}
 
@@ -232,6 +246,12 @@ export class TouchDragController {
 		this.ghost = null;
 		this.scroller?.stop();
 		this.scroller = null;
+		// Restore native scrolling — critical: if this leaked, the whole app would stop
+		// scrolling until a reload. finish() runs on every armed-drag exit path.
+		if (this.scrollBlockDoc) {
+			this.scrollBlockDoc.removeEventListener("touchmove", this.blockTouchScroll);
+			this.scrollBlockDoc = null;
+		}
 		this.lastTarget.cell?.removeClass("is-drop-target");
 		this.clearCardMarks(this.lastTarget.card);
 		this.lastTarget = { cell: null, card: null };

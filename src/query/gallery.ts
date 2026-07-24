@@ -39,7 +39,17 @@ function parseString(input: string): ImageRef | null {
 	// A `file:`/`data:` or protocol-relative ref is untrusted noise for a vault
 	// gallery — only http(s) URLs and vault paths are honored.
 	if (/^[a-z][a-z0-9+.-]*:/i.test(s) || s.startsWith("//")) return null;
-	return { kind: "vault", ref: s };
+	// Obsidian writes a Markdown embed to a spaced filename as `![](Attachments/my%20photo.png)`
+	// when "Use [[Wikilinks]]" is off; percent-decode so getFirstLinkpathDest can match the
+	// literal file name. A no-op on unencoded paths; a malformed `%` sequence falls back to
+	// the literal string rather than throwing.
+	let decoded = s;
+	try {
+		decoded = decodeURIComponent(s);
+	} catch {
+		decoded = s;
+	}
+	return { kind: "vault", ref: decoded };
 }
 
 /**
