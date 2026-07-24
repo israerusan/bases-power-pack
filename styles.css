@@ -2426,3 +2426,38 @@ th.bpp-drillable:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ==========================================================================
+   Floating editor + column sets (1.22)
+   ========================================================================== */
+
+/* Floating editor: a roomy modal that hosts a real editor view. */
+.bpp-float-edit {
+  width: min(92vw, 920px);
+  height: min(86vh, 820px);
+}
+
+.bpp-float-edit .modal-content {
+  height: 100%;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* The reparented workspace-leaf view fills the modal body. */
+.bpp-float-edit .modal-content > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Column-set editor rows: indent the per-column rows under their set header. */
+.bpp-colset-head {
+  border-top: 1px solid var(--background-modifier-border);
+  margin-top: 6px;
+}
+
+.bpp-colset-col {
+  padding-left: 22px;
+  border-top: none;
+}

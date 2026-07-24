@@ -25,8 +25,9 @@ import { buildCsv, buildMarkdownBoard, buildMarkdownTable } from "../query/expor
 import { evaluateSafe, toBool, toStr } from "../engine/expression";
 import { createSeededNote, writeRowProperties, writeRowProperty, type PropertyWrite } from "./viewData";
 import { renderContextControls, renderRollupBar } from "./viewChrome";
-import { BulkEditModal, ConfirmModal, PromptModal, type BulkOp } from "./modals";
+import { BulkEditModal, ConfirmModal, FloatingEditModal, PromptModal, type BulkOp } from "./modals";
 import { DND_COLUMN, DND_ROW } from "./dnd";
+import { type ColumnSet } from "../settings";
 import { buildSwimlanes, SWIMLANE_EMPTY } from "../query/swimlane";
 import { TouchDragController, type TouchDropTarget } from "./touchDrag";
 import { DragScroller } from "./autoscroll";
@@ -490,13 +491,14 @@ export class KanbanView extends PowerPackView {
 		// Hand-order sort: each card is a precise drop target so a drag lands
 		// BETWEEN two cards, writing a rank that sorts it there.
 		if (ctx.reorderEnabled) this.wireCardReorder(card, row, columnName, ctx.groupBy, ctx.laneKey);
-		// Modifier-click multi-selects (plain click still opens the note, unchanged).
+		// Modifier-click multi-selects; a plain click opens the note (in a tab, or the
+		// floating editor when that's the configured click action).
 		card.addEventListener("click", (evt) => {
 			if (evt.ctrlKey || evt.metaKey || evt.shiftKey) {
 				evt.preventDefault();
 				this.toggleSelect(row.id);
 			} else {
-				this.openRow(row);
+				this.openCardDefault(row);
 			}
 		});
 		// Focusable + Enter-to-open + Shift+F10/ContextMenu-to-menu (keyboard path).
@@ -627,6 +629,33 @@ export class KanbanView extends PowerPackView {
 		else delete map[groupBy];
 		await this.plugin.saveSettings({ invalidateResolved: false });
 		await this.render();
+	}
+
+	/**
+	 * Apply a predefined column set: set the group-by, the column order, per-column
+	 * colors, the visible (droppable) columns, and the done value — all in one write.
+	 * Only settings maps change (no note is touched), so it's presentational.
+	 */
+	private async applyColumnSet(set: ColumnSet): Promise<void> {
+		const s = this.plugin.settings;
+		const group = set.groupBy.trim() || "status";
+		const names = set.columns.map((c) => c.name.trim()).filter(Boolean);
+		s.kanbanGroupBy = group;
+		s.kanbanColumnOrder[group] = names;
+		s.kanbanExtraColumns[group] = names; // every column shows even when empty
+		for (const col of set.columns) {
+			const name = col.name.trim();
+			if (!name) continue;
+			// A set column with a hue writes an override; "Auto color" (blank) CLEARS any
+			// stale manual override so the column returns to its declared auto appearance.
+			if (col.hue.trim()) s.kanbanColorOverrides[name] = col.hue.trim();
+			else delete s.kanbanColorOverrides[name];
+		}
+		const done = set.columns.find((c) => c.done && c.name.trim());
+		if (done) s.kanbanDoneValue = done.name.trim();
+		await this.plugin.saveSettings({ invalidateResolved: false });
+		await this.render();
+		new Notice(`Applied column set "${set.name}".`);
 	}
 
 	/** Collapse or expand a column (persisted per column value, like WIP limits). */
@@ -856,6 +885,20 @@ export class KanbanView extends PowerPackView {
 
 	// ---- context menus --------------------------------------------------------
 
+	/** Open a note in the floating editor (a real editor over the board); falls back
+	 * to a split pane inside the modal if the private leaf path is unavailable. */
+	private openFloating(row: Row): void {
+		const file = this.fileFor(row);
+		if (!file) return;
+		new FloatingEditModal(this.app, file).open();
+	}
+
+	/** What a plain card click does — a tab (default) or the floating editor. */
+	private openCardDefault(row: Row): void {
+		if (this.plugin.settings.kanbanCardClickAction === "floating") this.openFloating(row);
+		else this.openRow(row);
+	}
+
 	private openCardMenu(
 		anchor: MouseEvent | HTMLElement,
 		row: Row,
@@ -867,6 +910,11 @@ export class KanbanView extends PowerPackView {
 		if (anchor instanceof MouseEvent) anchor.preventDefault();
 		const menu = new Menu();
 		const after = (): void => void this.render();
+
+		menu.addItem((i) =>
+			i.setTitle("Open in floating editor").setIcon("edit").onClick(() => this.openFloating(row))
+		);
+		menu.addSeparator();
 
 		// Keyboard/touch hand-ordering: nudge the card one slot within its cell — the
 		// accessible path to a reorder that's otherwise a mouse-only drag. Only offered
@@ -1237,6 +1285,21 @@ export class KanbanView extends PowerPackView {
 			// notes resolve, so keep the resolve cache.
 			void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
 		});
+
+		// Column set: apply a saved layout (group-by + order + colors + done value).
+		const columnSets = this.plugin.settings.kanbanColumnSets;
+		if (columnSets.length > 0) {
+			const setWrap = controls.createDiv({ cls: "bpp-lite-control" });
+			setWrap.createSpan({ cls: "bpp-muted", text: "Column set" });
+			const setSelect = setWrap.createEl("select", { cls: "bpp-lite-select dropdown" });
+			setSelect.createEl("option", { text: "Apply…", value: "" });
+			for (const cs of columnSets) setSelect.createEl("option", { text: cs.name, value: cs.id });
+			setSelect.addEventListener("change", () => {
+				const chosen = columnSets.find((c) => c.id === setSelect.value);
+				setSelect.value = ""; // reset to the "Apply…" prompt
+				if (chosen) void this.applyColumnSet(chosen);
+			});
+		}
 
 		const toggleWrap = controls.createDiv({ cls: "bpp-lite-control bpp-lite-control-toggle" });
 		const toggle = toggleWrap.createEl("input", { type: "checkbox" });

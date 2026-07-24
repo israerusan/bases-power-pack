@@ -3,6 +3,20 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.22.0] - 2026-07-24
+
+### Added
+- **Floating editor.** Open a card's note in a real, editable editor floating over the
+  board — no tab switch. Use it from the card menu ("Open in floating editor"), or set
+  **Settings → Card click opens → floating editor** to make a plain click open it. (Falls
+  back to a split pane if the floating view is unavailable.)
+- **"New Kanban board" command.** One command scaffolds a `Tasks` folder and three sample
+  notes across To Do / Doing / Done, groups the board by `status`, and opens it — a
+  populated board in one step. Idempotent: it won't overwrite notes you already have.
+- **Predefined column sets.** Define named layouts in settings — an ordered set of columns,
+  each with a color and an optional "done" marker — then apply one from the board's
+  **Column set** control to set the group-by, order, colors, and done value at once.
+
 ## [1.21.2] - 2026-07-24
 
 Two runtime fixes found by a device-vs-code audit.

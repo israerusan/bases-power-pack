@@ -4,6 +4,8 @@ import {
 	BasesPowerPackSettingTab,
 	CALENDAR_VIEW_MODES,
 	DEFAULT_SETTINGS,
+	type ColumnSet,
+	type ColumnSetColumn,
 	type SavedFilter,
 } from "./settings";
 import { LicenseManager } from "./license/LicenseManager";
@@ -220,6 +222,12 @@ export default class BasesPowerPackPlugin extends Plugin {
 			id: "open-feed-view",
 			name: "Open Feed view (Premium)",
 			checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_FEED),
+		});
+
+		this.addCommand({
+			id: "new-kanban-board",
+			name: "New Kanban board",
+			callback: () => void this.createKanbanBoard(),
 		});
 
 		this.addCommand({
@@ -467,6 +475,52 @@ export default class BasesPowerPackPlugin extends Plugin {
 		return true;
 	}
 
+	/**
+	 * Scaffold a working board: a "Tasks" folder and three sample notes across the
+	 * To Do / Doing / Done statuses, then group the Kanban by `status` and open it —
+	 * so the very first board is populated, not empty. Idempotent: existing sample
+	 * notes are left untouched, and re-running just re-opens the board.
+	 */
+	private async createKanbanBoard(): Promise<void> {
+		const { vault } = this.app;
+		try {
+			const folder = "Tasks";
+			if (!vault.getAbstractFileByPath(folder)) await vault.createFolder(folder);
+			// Fixed, YAML-safe values — no escaping needed for these literals.
+			const samples: Array<[string, string]> = [
+				["Draft the proposal", "To Do"],
+				["Build the prototype", "Doing"],
+				["Ship v1", "Done"],
+			];
+			let created = 0;
+			for (const [title, status] of samples) {
+				const path = normalizePath(`${folder}/${title}.md`);
+				if (!vault.getAbstractFileByPath(path)) {
+					const file = await vault.create(path, `---\nstatus: ${status}\n---\n\n# ${title}\n`);
+					// Seed the snapshot with the known frontmatter — vault.create resolves
+					// before the metadata cache indexes it, so the first render would otherwise
+					// group all three cards in one blank column before self-correcting.
+					this.seedCreatedNote(file, { status });
+					created++;
+				}
+			}
+			this.settings.kanbanGroupBy = "status";
+			this.settings.kanbanQuickAddFolder = folder;
+			await this.saveSettings();
+			await this.activateView(VIEW_TYPE_KANBAN);
+			// Re-render an already-open board so the group-by change shows even on the
+			// idempotent re-run path (no metadata event fires when nothing was created).
+			this.refreshViews();
+			new Notice(
+				created > 0
+					? `Kanban board ready — added ${created} sample note${created === 1 ? "" : "s"} in "${folder}".`
+					: "Opened your Kanban board (grouped by status)."
+			);
+		} catch (error) {
+			new Notice(`Bases Power Pack: could not create the board (${String(error)}).`);
+		}
+	}
+
 	/** Reveal (or create) a leaf hosting the given view type. */
 	async activateView(viewType: string): Promise<void> {
 		const { workspace } = this.app;
@@ -529,6 +583,8 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
 
 		this.settings.savedFilters = sanitizeSavedFilters(this.settings.savedFilters);
+		this.settings.kanbanColumnSets = sanitizeColumnSets(this.settings.kanbanColumnSets);
+		if (this.settings.kanbanCardClickAction !== "floating") this.settings.kanbanCardClickAction = "tab";
 		this.settings.rollups = sanitizeRollups(this.settings.rollups);
 		this.settings.automations = sanitizeAutomations(this.settings.automations);
 		this.settings.colorRules = normalizeColorRules(this.settings.colorRules);
@@ -601,6 +657,32 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.savePromise = this.savePromise.then(() => this.saveData(this.settings));
 		return this.savePromise;
 	}
+}
+
+function sanitizeColumnSets(value: unknown): ColumnSet[] {
+	if (!Array.isArray(value)) return [];
+	const out: ColumnSet[] = [];
+	for (const raw of value) {
+		if (!raw || typeof raw !== "object") continue;
+		const s = raw as { id?: unknown; name?: unknown; groupBy?: unknown; columns?: unknown };
+		if (typeof s.id !== "string" || typeof s.name !== "string") continue;
+		const columns: ColumnSetColumn[] = [];
+		if (Array.isArray(s.columns)) {
+			for (const rc of s.columns) {
+				if (!rc || typeof rc !== "object") continue;
+				const c = rc as { name?: unknown; hue?: unknown; done?: unknown };
+				if (typeof c.name !== "string") continue;
+				columns.push({ name: c.name, hue: typeof c.hue === "string" ? c.hue : "", done: c.done === true });
+			}
+		}
+		out.push({
+			id: s.id,
+			name: s.name,
+			groupBy: typeof s.groupBy === "string" ? s.groupBy : "status",
+			columns,
+		});
+	}
+	return out;
 }
 
 function sanitizeSavedFilters(value: unknown): SavedFilter[] {

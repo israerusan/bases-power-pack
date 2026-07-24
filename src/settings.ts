@@ -31,6 +31,23 @@ export interface SavedFilter {
 	expression: string;
 }
 
+/** One column in a predefined {@link ColumnSet}. */
+export interface ColumnSetColumn {
+	name: string;
+	/** Hue "0"-"359" (matches kanbanColorOverrides), or "" for the auto/stable hue. */
+	hue: string;
+	/** When applied, this column's value becomes the board's "done" value. */
+	done: boolean;
+}
+
+/** A saved column layout — an ordered, colored column set applied as a fixed workflow. */
+export interface ColumnSet {
+	id: string;
+	name: string;
+	groupBy: string;
+	columns: ColumnSetColumn[];
+}
+
 export interface BasesPowerPackSettings {
 	/** License */
 	licenseKey: string;
@@ -74,6 +91,12 @@ export interface BasesPowerPackSettings {
 	/** Columns collapsed to a narrow strip on the flat board, keyed by column value
 	 * (like kanbanWipLimits / kanbanColorOverrides). */
 	kanbanCollapsedColumns: Record<string, boolean>;
+	/** What a plain card click does: open the note in a tab (default), or in a
+	 * floating editor over the board. The card menu always offers both. */
+	kanbanCardClickAction: "tab" | "floating";
+	/** Predefined column layouts (ordered columns, each with a color + a done flag)
+	 * applied as a fixed workflow from the board's Column set control. */
+	kanbanColumnSets: ColumnSet[];
 
 	/** Feed / timeline (premium) */
 	feedDateProp: string;
@@ -165,6 +188,8 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	kanbanSwimlaneBy: "",
 	kanbanCardImageProp: "",
 	kanbanCollapsedColumns: {},
+	kanbanCardClickAction: "tab",
+	kanbanColumnSets: [],
 	feedDateProp: "file.mtime",
 	feedGranularity: "day",
 	calendarDateProp: "due",
@@ -421,6 +446,22 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 						void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
 					})
 			);
+
+		new Setting(containerEl)
+			.setName("Card click opens")
+			.setDesc("What a plain click on a card does. The card menu always offers both, and modifier-click still multi-selects.")
+			.addDropdown((dd) =>
+				dd
+					.addOption("tab", "Open in a tab")
+					.addOption("floating", "Open in a floating editor")
+					.setValue(this.plugin.settings.kanbanCardClickAction)
+					.onChange((v) => {
+						this.plugin.settings.kanbanCardClickAction = v === "floating" ? "floating" : "tab";
+						void this.plugin.saveSettings({ invalidateResolved: false });
+					})
+			);
+
+		this.renderColumnSets(containerEl);
 
 		// ---- Premium ---------------------------------------------------------
 		new Setting(containerEl).setName("Premium").setHeading();
@@ -852,6 +893,136 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 	private folderSuggest(text: TextComponent): TextComponent {
 		new FolderSuggest(this.app, text.inputEl);
 		return text;
+	}
+
+	private renderColumnSets(containerEl: HTMLElement): void {
+		new Setting(containerEl)
+			.setName("Column sets")
+			.setDesc(
+				"Predefined column layouts — an ordered set of columns, each with a color and an optional \"done\" marker. Apply one from the board's Column set control to set the group-by, order, colors, and done value in one step."
+			)
+			.setHeading();
+
+		const swatches: Array<[string, number]> = [
+			["Red", 0],
+			["Orange", 30],
+			["Yellow", 50],
+			["Green", 130],
+			["Teal", 175],
+			["Blue", 215],
+			["Purple", 270],
+			["Pink", 320],
+		];
+		const save = (): Promise<void> => this.plugin.saveSettings({ invalidateResolved: false });
+		const saveRedraw = (): void => void save().then(() => this.display());
+		const sets = this.plugin.settings.kanbanColumnSets;
+
+		sets.forEach((set) => {
+			const head = new Setting(containerEl).setClass("bpp-colset-head");
+			head.addText((t) =>
+				t.setPlaceholder("Set name").setValue(set.name).onChange((v) => {
+					set.name = v;
+					void save();
+				})
+			);
+			head.addText((t) =>
+				this.keySuggest(t)
+					.setPlaceholder("group-by (e.g. status)")
+					.setValue(set.groupBy)
+					.onChange((v) => {
+						set.groupBy = v.trim();
+						void save();
+					})
+			);
+			head.addExtraButton((b) =>
+				b.setIcon("plus").setTooltip("Add column").onClick(() => {
+					set.columns.push({ name: "", hue: "", done: false });
+					saveRedraw();
+				})
+			);
+			head.addExtraButton((b) =>
+				b.setIcon("trash").setTooltip("Delete set").onClick(() => {
+					this.plugin.settings.kanbanColumnSets = sets.filter((s) => s.id !== set.id);
+					saveRedraw();
+				})
+			);
+
+			set.columns.forEach((col, ci) => {
+				const row = new Setting(containerEl).setClass("bpp-colset-col");
+				row.addText((t) =>
+					t.setPlaceholder("Column value").setValue(col.name).onChange((v) => {
+						col.name = v;
+						void save();
+					})
+				);
+				row.addDropdown((dd) => {
+					dd.addOption("", "Auto color");
+					for (const [label, hue] of swatches) dd.addOption(String(hue), label);
+					dd.setValue(col.hue).onChange((v) => {
+						col.hue = v;
+						void save();
+					});
+				});
+				row.addToggle((tg) =>
+					tg
+						.setTooltip('Mark this column as the board\'s "done" value')
+						.setValue(col.done)
+						.onChange((v) => {
+							// At most one "done" column per set.
+							if (v) set.columns.forEach((c) => (c.done = c === col));
+							else col.done = false;
+							saveRedraw();
+						})
+				);
+				row.addExtraButton((b) =>
+					b
+						.setIcon("arrow-up")
+						.setTooltip("Move up")
+						.setDisabled(ci === 0)
+						.onClick(() => {
+							if (ci === 0) return;
+							[set.columns[ci - 1], set.columns[ci]] = [set.columns[ci], set.columns[ci - 1]];
+							saveRedraw();
+						})
+				);
+				row.addExtraButton((b) =>
+					b
+						.setIcon("arrow-down")
+						.setTooltip("Move down")
+						.setDisabled(ci === set.columns.length - 1)
+						.onClick(() => {
+							if (ci === set.columns.length - 1) return;
+							[set.columns[ci + 1], set.columns[ci]] = [set.columns[ci], set.columns[ci + 1]];
+							saveRedraw();
+						})
+				);
+				row.addExtraButton((b) =>
+					b.setIcon("trash").setTooltip("Remove column").onClick(() => {
+						set.columns.splice(ci, 1);
+						saveRedraw();
+					})
+				);
+			});
+		});
+
+		new Setting(containerEl).addButton((b) =>
+			b
+				.setButtonText("Add column set")
+				.setCta()
+				.onClick(() => {
+					this.plugin.settings.kanbanColumnSets.push({
+						id: genId("cols"),
+						name: "New set",
+						groupBy: "status",
+						columns: [
+							{ name: "To Do", hue: "", done: false },
+							{ name: "Doing", hue: "215", done: false },
+							{ name: "Done", hue: "130", done: true },
+						],
+					});
+					saveRedraw();
+				})
+		);
 	}
 
 	private renderColorRules(containerEl: HTMLElement): void {

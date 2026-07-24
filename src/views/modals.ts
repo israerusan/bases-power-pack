@@ -1,4 +1,67 @@
-import { App, Modal, Setting } from "obsidian";
+import { App, Modal, Setting, TFile, WorkspaceLeaf } from "obsidian";
+
+/**
+ * A floating editor: opens a note in a REAL, editable Obsidian view floating over the
+ * board — no tab switch. Follows the approach the mainstream Base Board plugin ships:
+ * construct an orphaned WorkspaceLeaf (never registered with the workspace) and reparent
+ * its `view.containerEl` into the modal. `WorkspaceLeaf` isn't publicly constructable, so
+ * that one line is guarded — if it (or the file open) ever fails, we fall back to the
+ * fully-public `getLeaf("split")`, so the action can never hard-break.
+ */
+export class FloatingEditModal extends Modal {
+	private leaf: WorkspaceLeaf | null = null;
+
+	constructor(app: App, private readonly file: TFile) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.modalEl.addClass("bpp-float-edit");
+		this.titleEl.setText(this.file.basename);
+		let leaf: WorkspaceLeaf;
+		try {
+			const LeafCtor = WorkspaceLeaf as unknown as new (app: App) => WorkspaceLeaf;
+			leaf = new LeafCtor(this.app);
+		} catch {
+			this.fallbackToSplit();
+			return;
+		}
+		this.leaf = leaf;
+		leaf.openFile(this.file, { active: false }).then(
+			() => {
+				if (this.leaf !== leaf) return; // modal already closed
+				const el = leaf.view?.containerEl;
+				if (!el) {
+					this.fallbackToSplit();
+					return;
+				}
+				this.contentEl.empty();
+				this.contentEl.appendChild(el);
+			},
+			() => {
+				if (this.leaf !== leaf) return; // modal already closed — don't open a stray pane
+				this.fallbackToSplit();
+			}
+		);
+	}
+
+	onClose(): void {
+		// Detach the rogue leaf so its editor/view can't leak (it was never in the workspace).
+		this.leaf?.detach();
+		this.leaf = null;
+		this.contentEl.empty();
+	}
+
+	/** Public-API degradation: open the note in a split pane instead. Detach any rogue
+	 * leaf we created first (it was never in the workspace) so it can't leak. */
+	private fallbackToSplit(): void {
+		const file = this.file;
+		this.leaf?.detach();
+		this.leaf = null;
+		this.close();
+		void this.app.workspace.getLeaf("split").openFile(file);
+	}
+}
 
 /** A single-field text prompt (rename a note, edit a field, rename a column). */
 export class PromptModal extends Modal {

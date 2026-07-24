@@ -2935,6 +2935,59 @@ var import_obsidian4 = require("obsidian");
 
 // src/views/modals.ts
 var import_obsidian2 = require("obsidian");
+var FloatingEditModal = class extends import_obsidian2.Modal {
+  constructor(app, file) {
+    super(app);
+    this.file = file;
+    this.leaf = null;
+  }
+  onOpen() {
+    this.modalEl.addClass("bpp-float-edit");
+    this.titleEl.setText(this.file.basename);
+    let leaf;
+    try {
+      const LeafCtor = import_obsidian2.WorkspaceLeaf;
+      leaf = new LeafCtor(this.app);
+    } catch (e) {
+      this.fallbackToSplit();
+      return;
+    }
+    this.leaf = leaf;
+    leaf.openFile(this.file, { active: false }).then(
+      () => {
+        var _a;
+        if (this.leaf !== leaf) return;
+        const el = (_a = leaf.view) == null ? void 0 : _a.containerEl;
+        if (!el) {
+          this.fallbackToSplit();
+          return;
+        }
+        this.contentEl.empty();
+        this.contentEl.appendChild(el);
+      },
+      () => {
+        if (this.leaf !== leaf) return;
+        this.fallbackToSplit();
+      }
+    );
+  }
+  onClose() {
+    var _a;
+    (_a = this.leaf) == null ? void 0 : _a.detach();
+    this.leaf = null;
+    this.contentEl.empty();
+  }
+  /** Public-API degradation: open the note in a split pane instead. Detach any rogue
+   * leaf we created first (it was never in the workspace) so it can't leak. */
+  fallbackToSplit() {
+    var _a;
+    const file = this.file;
+    (_a = this.leaf) == null ? void 0 : _a.detach();
+    this.leaf = null;
+    this.close();
+    void this.app.workspace.getLeaf("split").openFile(file);
+  }
+};
 var PromptModal = class extends import_obsidian2.Modal {
   constructor(app, opts) {
     super(app);
@@ -5670,7 +5723,7 @@ var KanbanView = class extends PowerPackView {
         evt.preventDefault();
         this.toggleSelect(row.id);
       } else {
-        this.openRow(row);
+        this.openCardDefault(row);
       }
     });
     this.makeItemAccessible(card, row.name, () => this.openRow(row), openMenu);
@@ -5791,6 +5844,30 @@ var KanbanView = class extends PowerPackView {
     else delete map[groupBy];
     await this.plugin.saveSettings({ invalidateResolved: false });
     await this.render();
+  }
+  /**
+   * Apply a predefined column set: set the group-by, the column order, per-column
+   * colors, the visible (droppable) columns, and the done value — all in one write.
+   * Only settings maps change (no note is touched), so it's presentational.
+   */
+  async applyColumnSet(set) {
+    const s = this.plugin.settings;
+    const group = set.groupBy.trim() || "status";
+    const names = set.columns.map((c) => c.name.trim()).filter(Boolean);
+    s.kanbanGroupBy = group;
+    s.kanbanColumnOrder[group] = names;
+    s.kanbanExtraColumns[group] = names;
+    for (const col of set.columns) {
+      const name = col.name.trim();
+      if (!name) continue;
+      if (col.hue.trim()) s.kanbanColorOverrides[name] = col.hue.trim();
+      else delete s.kanbanColorOverrides[name];
+    }
+    const done = set.columns.find((c) => c.done && c.name.trim());
+    if (done) s.kanbanDoneValue = done.name.trim();
+    await this.plugin.saveSettings({ invalidateResolved: false });
+    await this.render();
+    new import_obsidian5.Notice(`Applied column set "${set.name}".`);
   }
   /** Collapse or expand a column (persisted per column value, like WIP limits). */
   async toggleColumnCollapse(columnName) {
@@ -5958,10 +6035,26 @@ var KanbanView = class extends PowerPackView {
     return (_a = this.plugin.settings.kanbanColorOverrides[name]) != null ? _a : String(columnHue(name));
   }
   // ---- context menus --------------------------------------------------------
+  /** Open a note in the floating editor (a real editor over the board); falls back
+   * to a split pane inside the modal if the private leaf path is unavailable. */
+  openFloating(row) {
+    const file = this.fileFor(row);
+    if (!file) return;
+    new FloatingEditModal(this.app, file).open();
+  }
+  /** What a plain card click does — a tab (default) or the floating editor. */
+  openCardDefault(row) {
+    if (this.plugin.settings.kanbanCardClickAction === "floating") this.openFloating(row);
+    else this.openRow(row);
+  }
   openCardMenu(anchor, row, groupBy, columns, columnName = "", laneKey = null) {
     if (anchor instanceof MouseEvent) anchor.preventDefault();
     const menu = new import_obsidian5.Menu();
     const after = () => void this.render();
+    menu.addItem(
+      (i) => i.setTitle("Open in floating editor").setIcon("edit").onClick(() => this.openFloating(row))
+    );
+    menu.addSeparator();
     if (this.reorderEnabled && columnName) {
       menu.addItem(
         (i) => i.setTitle("Move up in column").setIcon("arrow-up").onClick(() => void this.moveCardWithinColumn(row, groupBy, columnName, laneKey, -1))
@@ -6239,6 +6332,19 @@ var KanbanView = class extends PowerPackView {
       this.plugin.settings.kanbanSwimlaneBy = swimSelect.value.trim();
       void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
     });
+    const columnSets = this.plugin.settings.kanbanColumnSets;
+    if (columnSets.length > 0) {
+      const setWrap = controls.createDiv({ cls: "bpp-lite-control" });
+      setWrap.createSpan({ cls: "bpp-muted", text: "Column set" });
+      const setSelect = setWrap.createEl("select", { cls: "bpp-lite-select dropdown" });
+      setSelect.createEl("option", { text: "Apply\u2026", value: "" });
+      for (const cs of columnSets) setSelect.createEl("option", { text: cs.name, value: cs.id });
+      setSelect.addEventListener("change", () => {
+        const chosen = columnSets.find((c) => c.id === setSelect.value);
+        setSelect.value = "";
+        if (chosen) void this.applyColumnSet(chosen);
+      });
+    }
     const toggleWrap = controls.createDiv({ cls: "bpp-lite-control bpp-lite-control-toggle" });
     const toggle = toggleWrap.createEl("input", { type: "checkbox" });
     toggle.checked = this.hideDoneColumn;
@@ -6868,6 +6974,8 @@ var DEFAULT_SETTINGS = {
   kanbanSwimlaneBy: "",
   kanbanCardImageProp: "",
   kanbanCollapsedColumns: {},
+  kanbanCardClickAction: "tab",
+  kanbanColumnSets: [],
   feedDateProp: "file.mtime",
   feedGranularity: "day",
   calendarDateProp: "due",
@@ -7037,6 +7145,13 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
         void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
       })
     );
+    new import_obsidian6.Setting(containerEl).setName("Card click opens").setDesc("What a plain click on a card does. The card menu always offers both, and modifier-click still multi-selects.").addDropdown(
+      (dd) => dd.addOption("tab", "Open in a tab").addOption("floating", "Open in a floating editor").setValue(this.plugin.settings.kanbanCardClickAction).onChange((v) => {
+        this.plugin.settings.kanbanCardClickAction = v === "floating" ? "floating" : "tab";
+        void this.plugin.saveSettings({ invalidateResolved: false });
+      })
+    );
+    this.renderColumnSets(containerEl);
     new import_obsidian6.Setting(containerEl).setName("Premium").setHeading();
     const premiumIn = (parent, name, desc, render) => {
       const setting = new import_obsidian6.Setting(parent).setName(name).setDesc(desc);
@@ -7390,6 +7505,110 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
   folderSuggest(text) {
     new FolderSuggest(this.app, text.inputEl);
     return text;
+  }
+  renderColumnSets(containerEl) {
+    new import_obsidian6.Setting(containerEl).setName("Column sets").setDesc(
+      `Predefined column layouts \u2014 an ordered set of columns, each with a color and an optional "done" marker. Apply one from the board's Column set control to set the group-by, order, colors, and done value in one step.`
+    ).setHeading();
+    const swatches = [
+      ["Red", 0],
+      ["Orange", 30],
+      ["Yellow", 50],
+      ["Green", 130],
+      ["Teal", 175],
+      ["Blue", 215],
+      ["Purple", 270],
+      ["Pink", 320]
+    ];
+    const save = () => this.plugin.saveSettings({ invalidateResolved: false });
+    const saveRedraw = () => void save().then(() => this.display());
+    const sets = this.plugin.settings.kanbanColumnSets;
+    sets.forEach((set) => {
+      const head = new import_obsidian6.Setting(containerEl).setClass("bpp-colset-head");
+      head.addText(
+        (t) => t.setPlaceholder("Set name").setValue(set.name).onChange((v) => {
+          set.name = v;
+          void save();
+        })
+      );
+      head.addText(
+        (t) => this.keySuggest(t).setPlaceholder("group-by (e.g. status)").setValue(set.groupBy).onChange((v) => {
+          set.groupBy = v.trim();
+          void save();
+        })
+      );
+      head.addExtraButton(
+        (b) => b.setIcon("plus").setTooltip("Add column").onClick(() => {
+          set.columns.push({ name: "", hue: "", done: false });
+          saveRedraw();
+        })
+      );
+      head.addExtraButton(
+        (b) => b.setIcon("trash").setTooltip("Delete set").onClick(() => {
+          this.plugin.settings.kanbanColumnSets = sets.filter((s) => s.id !== set.id);
+          saveRedraw();
+        })
+      );
+      set.columns.forEach((col, ci) => {
+        const row = new import_obsidian6.Setting(containerEl).setClass("bpp-colset-col");
+        row.addText(
+          (t) => t.setPlaceholder("Column value").setValue(col.name).onChange((v) => {
+            col.name = v;
+            void save();
+          })
+        );
+        row.addDropdown((dd) => {
+          dd.addOption("", "Auto color");
+          for (const [label, hue] of swatches) dd.addOption(String(hue), label);
+          dd.setValue(col.hue).onChange((v) => {
+            col.hue = v;
+            void save();
+          });
+        });
+        row.addToggle(
+          (tg) => tg.setTooltip(`Mark this column as the board's "done" value`).setValue(col.done).onChange((v) => {
+            if (v) set.columns.forEach((c) => c.done = c === col);
+            else col.done = false;
+            saveRedraw();
+          })
+        );
+        row.addExtraButton(
+          (b) => b.setIcon("arrow-up").setTooltip("Move up").setDisabled(ci === 0).onClick(() => {
+            if (ci === 0) return;
+            [set.columns[ci - 1], set.columns[ci]] = [set.columns[ci], set.columns[ci - 1]];
+            saveRedraw();
+          })
+        );
+        row.addExtraButton(
+          (b) => b.setIcon("arrow-down").setTooltip("Move down").setDisabled(ci === set.columns.length - 1).onClick(() => {
+            if (ci === set.columns.length - 1) return;
+            [set.columns[ci + 1], set.columns[ci]] = [set.columns[ci], set.columns[ci + 1]];
+            saveRedraw();
+          })
+        );
+        row.addExtraButton(
+          (b) => b.setIcon("trash").setTooltip("Remove column").onClick(() => {
+            set.columns.splice(ci, 1);
+            saveRedraw();
+          })
+        );
+      });
+    });
+    new import_obsidian6.Setting(containerEl).addButton(
+      (b) => b.setButtonText("Add column set").setCta().onClick(() => {
+        this.plugin.settings.kanbanColumnSets.push({
+          id: genId("cols"),
+          name: "New set",
+          groupBy: "status",
+          columns: [
+            { name: "To Do", hue: "", done: false },
+            { name: "Doing", hue: "215", done: false },
+            { name: "Done", hue: "130", done: true }
+          ]
+        });
+        saveRedraw();
+      })
+    );
   }
   renderColorRules(containerEl) {
     new import_obsidian6.Setting(containerEl).setName("Color rules").setDesc(
@@ -10362,6 +10581,11 @@ var BasesPowerPackPlugin = class extends import_obsidian12.Plugin {
       checkCallback: (checking) => this.premiumCommand(checking, VIEW_TYPE_FEED)
     });
     this.addCommand({
+      id: "new-kanban-board",
+      name: "New Kanban board",
+      callback: () => void this.createKanbanBoard()
+    });
+    this.addCommand({
       id: "undo-last-change",
       name: "Undo last change",
       checkCallback: (checking) => {
@@ -10571,6 +10795,48 @@ var BasesPowerPackPlugin = class extends import_obsidian12.Plugin {
     if (!checking) void this.activateView(viewType);
     return true;
   }
+  /**
+   * Scaffold a working board: a "Tasks" folder and three sample notes across the
+   * To Do / Doing / Done statuses, then group the Kanban by `status` and open it —
+   * so the very first board is populated, not empty. Idempotent: existing sample
+   * notes are left untouched, and re-running just re-opens the board.
+   */
+  async createKanbanBoard() {
+    const { vault } = this.app;
+    try {
+      const folder = "Tasks";
+      if (!vault.getAbstractFileByPath(folder)) await vault.createFolder(folder);
+      const samples = [
+        ["Draft the proposal", "To Do"],
+        ["Build the prototype", "Doing"],
+        ["Ship v1", "Done"]
+      ];
+      let created = 0;
+      for (const [title, status] of samples) {
+        const path = (0, import_obsidian12.normalizePath)(`${folder}/${title}.md`);
+        if (!vault.getAbstractFileByPath(path)) {
+          const file = await vault.create(path, `---
+status: ${status}
+---
+
+# ${title}
+`);
+          this.seedCreatedNote(file, { status });
+          created++;
+        }
+      }
+      this.settings.kanbanGroupBy = "status";
+      this.settings.kanbanQuickAddFolder = folder;
+      await this.saveSettings();
+      await this.activateView(VIEW_TYPE_KANBAN);
+      this.refreshViews();
+      new import_obsidian12.Notice(
+        created > 0 ? `Kanban board ready \u2014 added ${created} sample note${created === 1 ? "" : "s"} in "${folder}".` : "Opened your Kanban board (grouped by status)."
+      );
+    } catch (error) {
+      new import_obsidian12.Notice(`Bases Power Pack: could not create the board (${String(error)}).`);
+    }
+  }
   /** Reveal (or create) a leaf hosting the given view type. */
   async activateView(viewType) {
     const { workspace } = this.app;
@@ -10630,6 +10896,8 @@ var BasesPowerPackPlugin = class extends import_obsidian12.Plugin {
     const loaded = data !== null && typeof data === "object" ? data : {};
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
     this.settings.savedFilters = sanitizeSavedFilters(this.settings.savedFilters);
+    this.settings.kanbanColumnSets = sanitizeColumnSets(this.settings.kanbanColumnSets);
+    if (this.settings.kanbanCardClickAction !== "floating") this.settings.kanbanCardClickAction = "tab";
     this.settings.rollups = sanitizeRollups(this.settings.rollups);
     this.settings.automations = sanitizeAutomations(this.settings.automations);
     this.settings.colorRules = normalizeColorRules(this.settings.colorRules);
@@ -10686,6 +10954,31 @@ var BasesPowerPackPlugin = class extends import_obsidian12.Plugin {
     return this.savePromise;
   }
 };
+function sanitizeColumnSets(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object") continue;
+    const s = raw;
+    if (typeof s.id !== "string" || typeof s.name !== "string") continue;
+    const columns = [];
+    if (Array.isArray(s.columns)) {
+      for (const rc of s.columns) {
+        if (!rc || typeof rc !== "object") continue;
+        const c = rc;
+        if (typeof c.name !== "string") continue;
+        columns.push({ name: c.name, hue: typeof c.hue === "string" ? c.hue : "", done: c.done === true });
+      }
+    }
+    out.push({
+      id: s.id,
+      name: s.name,
+      groupBy: typeof s.groupBy === "string" ? s.groupBy : "status",
+      columns
+    });
+  }
+  return out;
+}
 function sanitizeSavedFilters(value) {
   if (!Array.isArray(value)) return [];
   return value.filter(
