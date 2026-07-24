@@ -7901,12 +7901,12 @@ var LicenseManager = _LicenseManager;
 // src/bases/kanbanBasesView.ts
 var import_obsidian7 = require("obsidian");
 var KANBAN_BASES_VIEW_ID = "kanban";
+var RANK_PROP = "rank";
+var RANK_PROP_ID = `note.${RANK_PROP}`;
 var KanbanBasesView = class extends import_obsidian7.BasesView {
   constructor(controller, containerEl) {
     super(controller);
     this.type = KANBAN_BASES_VIEW_ID;
-    /** Satisfies HoverParent so card hover can drive the core Page Preview popover. */
-    this.hoverPopover = null;
     this.root = containerEl;
   }
   onunload() {
@@ -7931,27 +7931,35 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
       return;
     }
     const writeKey = this.resolveGroupKey();
-    const byPath = /* @__PURE__ */ new Map();
-    for (const group of groups) {
-      const value = this.hasKey(group) && group.key ? group.key.toString() : "";
-      const name = value || "(no value)";
-      const col = board.createDiv({ cls: "bpp-kanban-column" });
-      col.setCssProps({ "--bpp-col-hue": String(columnHue(name)) });
-      if (writeKey) this.wireColumnDrop(col, value, writeKey, byPath);
-      const head = col.createDiv({ cls: "bpp-kanban-column-head" });
-      const label = head.createDiv({ cls: "bpp-kanban-column-label" });
-      label.createSpan({ text: name });
-      label.createSpan({ cls: "bpp-count", text: String(group.entries.length) });
-      for (const entry of group.entries) {
-        byPath.set(entry.file.path, entry);
-        this.renderCard(col, entry, writeKey !== null);
+    const columns = groups.map((group) => ({
+      value: this.hasKey(group) && group.key ? group.key.toString() : "",
+      name: this.hasKey(group) && group.key ? group.key.toString() : "(no value)",
+      entries: [...group.entries].sort((a, b) => this.compareRank(a, b))
+    }));
+    const columnOf = /* @__PURE__ */ new Map();
+    const entryOf = /* @__PURE__ */ new Map();
+    for (const col of columns) {
+      for (const entry of col.entries) {
+        columnOf.set(entry.file.path, col);
+        entryOf.set(entry.file.path, entry);
       }
     }
+    const ctx = { writeKey, columns, columnOf, entryOf };
+    for (const col of columns) {
+      const colEl = board.createDiv({ cls: "bpp-kanban-column" });
+      colEl.setCssProps({ "--bpp-col-hue": String(columnHue(col.name)) });
+      if (writeKey) this.wireColumnDrop(colEl, col, ctx);
+      const head = colEl.createDiv({ cls: "bpp-kanban-column-head" });
+      const label = head.createDiv({ cls: "bpp-kanban-column-label" });
+      label.createSpan({ text: col.name });
+      label.createSpan({ cls: "bpp-count", text: String(col.entries.length) });
+      for (const entry of col.entries) this.renderCard(colEl, entry, col, ctx);
+    }
   }
-  renderCard(col, entry, draggable) {
-    const card = col.createDiv({ cls: "bpp-card" });
+  renderCard(colEl, entry, col, ctx) {
+    const card = colEl.createDiv({ cls: "bpp-card" });
     card.createDiv({ cls: "bpp-card-head" }).createDiv({ cls: "bpp-card-title", text: entry.file.basename });
-    if (draggable) {
+    if (ctx.writeKey) {
       card.draggable = true;
       card.addEventListener("dragstart", (e) => {
         var _a;
@@ -7960,51 +7968,123 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
         if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
       });
       card.addEventListener("dragend", () => card.removeClass("is-dragging"));
+      this.wireCardReorder(card, entry, col, ctx);
     }
     card.addEventListener("click", () => void this.app.workspace.getLeaf(false).openFile(entry.file));
-    card.addEventListener("mouseover", (event) => {
-      this.app.workspace.trigger("hover-link", {
-        event,
-        source: KANBAN_BASES_VIEW_ID,
-        hoverParent: this,
-        targetEl: card,
-        linktext: entry.file.path,
-        sourcePath: entry.file.path
-      });
-    });
   }
-  wireColumnDrop(col, value, writeKey, byPath) {
-    col.addEventListener("dragover", (e) => {
+  /** Whole-column drop (on empty space): a cross-column move appended at the end. */
+  wireColumnDrop(colEl, col, ctx) {
+    colEl.addEventListener("dragover", (e) => {
       var _a, _b;
       if (!((_b = (_a = e.dataTransfer) == null ? void 0 : _a.types) != null ? _b : []).includes("text/plain")) return;
       e.preventDefault();
-      col.addClass("is-drop-target");
+      colEl.addClass("is-drop-target");
       if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
     });
-    col.addEventListener("dragleave", () => col.removeClass("is-drop-target"));
-    col.addEventListener("drop", (e) => {
+    colEl.addEventListener("dragleave", () => colEl.removeClass("is-drop-target"));
+    colEl.addEventListener("drop", (e) => {
       var _a;
       e.preventDefault();
-      col.removeClass("is-drop-target");
+      colEl.removeClass("is-drop-target");
       const path = (_a = e.dataTransfer) == null ? void 0 : _a.getData("text/plain");
-      if (!path) return;
-      const entry = byPath.get(path);
-      if (entry) void this.moveEntry(entry, writeKey, value);
+      if (path) void this.drop(path, col, null, true, ctx);
     });
   }
-  /** Write the group property back to the note. An empty target value (the "(no value)"
-   * band) clears the property rather than writing a literal. */
-  async moveEntry(entry, key, value) {
+  wireCardReorder(card, target, col, ctx) {
+    card.addEventListener("dragover", (e) => {
+      var _a, _b;
+      if (!((_b = (_a = e.dataTransfer) == null ? void 0 : _a.types) != null ? _b : []).includes("text/plain")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      const before = this.inTopHalf(card, e);
+      card.toggleClass("is-reorder-before", before);
+      card.toggleClass("is-reorder-after", !before);
+    });
+    card.addEventListener("dragleave", () => {
+      card.removeClass("is-reorder-before");
+      card.removeClass("is-reorder-after");
+    });
+    card.addEventListener("drop", (e) => {
+      var _a;
+      card.removeClass("is-reorder-before");
+      card.removeClass("is-reorder-after");
+      const path = (_a = e.dataTransfer) == null ? void 0 : _a.getData("text/plain");
+      if (!path) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (path === target.file.path) return;
+      void this.drop(path, col, target, this.inTopHalf(card, e), ctx);
+    });
+  }
+  /**
+   * Commit a drop: move the dragged note to `col` (writing the group property if the
+   * column changed) and set its `rank` so it lands before/after `target` (or at the
+   * end when `target` is null). Renumbers the destination column only when the gap
+   * can't be split — the same plan the standalone board uses.
+   */
+  async drop(path, col, target, before, ctx) {
+    const moved = ctx.entryOf.get(path);
+    if (!moved) return;
+    const from = ctx.columnOf.get(path);
+    const crossColumn = ctx.writeKey !== null && (!from || from.value !== col.value);
+    const items = col.entries.filter((e) => e.file.path !== path).map((e) => ({ id: e.file.path, rank: this.rankOf(e) }));
+    if (moved) items.push({ id: path, rank: this.rankOf(moved) });
+    let index;
+    if (target === null) index = col.entries.filter((e) => e.file.path !== path).length;
+    else {
+      const rest = col.entries.filter((e) => e.file.path !== path);
+      const pos = rest.findIndex((e) => e.file.path === target.file.path);
+      if (pos === -1) return;
+      index = before ? pos : pos + 1;
+    }
+    const rankWrites = planReorder(items, path, index);
+    const rankById = new Map(rankWrites.map((w) => [w.id, w.rank]));
     try {
-      await this.app.fileManager.processFrontMatter(entry.file, (fm) => {
-        if (value === "") delete fm[key];
-        else fm[key] = value;
+      await this.app.fileManager.processFrontMatter(moved.file, (fm) => {
+        if (crossColumn && ctx.writeKey) {
+          if (col.value === "") delete fm[ctx.writeKey];
+          else fm[ctx.writeKey] = col.value;
+        }
+        if (rankById.has(path)) fm[RANK_PROP] = rankById.get(path);
       });
+      for (const write of rankWrites) {
+        if (write.id === path) continue;
+        const neighbour = ctx.entryOf.get(write.id);
+        if (neighbour) {
+          await this.app.fileManager.processFrontMatter(neighbour.file, (fm) => {
+            fm[RANK_PROP] = write.rank;
+          });
+        }
+      }
     } catch (error) {
       new import_obsidian7.Notice(`Bases Power Pack: could not move the card (${String(error)}).`);
     }
   }
   // ---- helpers (defensive against the young Bases API) ----------------------
+  inTopHalf(el, e) {
+    const rect = el.getBoundingClientRect();
+    return e.clientY < rect.top + rect.height / 2;
+  }
+  /** A card's manual rank, or null when it has never been hand-ordered. */
+  rankOf(entry) {
+    try {
+      const v = entry.getValue(RANK_PROP_ID);
+      return v == null ? null : parseRank(v.toString());
+    } catch (e) {
+      return null;
+    }
+  }
+  /** Order two entries by rank (unranked last), ties broken by file name — the same
+   * order the standalone board shows, so a reorder plans against what's on screen. */
+  compareRank(a, b) {
+    const ar = this.rankOf(a);
+    const br = this.rankOf(b);
+    if (ar !== null && br !== null && ar !== br) return ar - br;
+    if (ar === null && br !== null) return 1;
+    if (ar !== null && br === null) return -1;
+    return a.file.basename.localeCompare(b.file.basename, void 0, { sensitivity: "base" });
+  }
   empty(board, title, body) {
     const box = board.createDiv({ cls: "bpp-emptystate" });
     box.createDiv({ cls: "bpp-emptystate-title", text: title });
@@ -10697,7 +10777,6 @@ var BasesPowerPackPlugin = class extends import_obsidian13.Plugin {
       icon: "layout-dashboard",
       factory: (controller, containerEl) => new KanbanBasesView(controller, containerEl)
     });
-    this.registerHoverLinkSource(KANBAN_BASES_VIEW_ID, { display: "Bases Power Pack kanban", defaultMod: false });
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => this.queueHierarchyRetarget(file.path, oldPath))
     );

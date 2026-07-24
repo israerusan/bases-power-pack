@@ -172,7 +172,6 @@ export default class BasesPowerPackPlugin extends Plugin {
 			icon: "layout-dashboard",
 			factory: (controller, containerEl) => new KanbanBasesView(controller, containerEl),
 		});
-		this.registerHoverLinkSource(KANBAN_BASES_VIEW_ID, { display: "Bases Power Pack kanban", defaultMod: false });
 
 		// Keep the hierarchy intact when a parent note is renamed/moved: repoint any
 		// child whose parent property pointed at the old path (premium; one undo
