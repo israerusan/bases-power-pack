@@ -22,6 +22,8 @@ await build({
 			export * as wip from "./src/query/wip.ts";
 			export * as hierarchy from "./src/query/hierarchy.ts";
 			export * as kanban from "./src/query/kanban.ts";
+			export * as swimlane from "./src/query/swimlane.ts";
+			export * as autoscroll from "./src/views/autoscroll.ts";
 			export * as colorRules from "./src/query/colorRules.ts";
 			export * as pivot from "./src/query/pivot.ts";
 			export * as dashboard from "./src/query/dashboard.ts";
@@ -45,7 +47,7 @@ await build({
 });
 
 const m = await import(`file://${outfile.replace(/\\/g, "/")}`);
-const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, hierarchy, kanban, colorRules, pivot, dashboard, gallery, ranking, exporter, feed, kanbanActions, base, resolve, rowmod } = m;
+const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, hierarchy, kanban, swimlane, autoscroll, colorRules, pivot, dashboard, gallery, ranking, exporter, feed, kanbanActions, base, resolve, rowmod } = m;
 
 /** Build a Row-like object with the given frontmatter/name for the pure engines. */
 function makeTestRow(name, fm) {
@@ -1309,6 +1311,73 @@ assert.deepEqual(
 	["Zebra", "Apple"],
 	"within a day the later time comes first, not alphabetical"
 );
+
+// ---- swimlanes -------------------------------------------------------------
+// A fuller row than makeTestRow: the search path reads note.path/folder/tags, so a
+// swimlane search test needs them present (an array for tags, not undefined).
+const srow = (name, fm) => ({
+	id: `${name}.md`,
+	name,
+	note: { path: `${name}.md`, name, folder: "", ext: "md", tags: [], ctime: 0, mtime: 0, size: 0, frontmatter: fm },
+	scope: {
+		get: (k) => {
+			const data = { "file.name": name, "file.path": `${name}.md`, "file.folder": "", "file.tags": [], ...fm };
+			return k in data ? data[k] : undefined;
+		},
+	},
+});
+const swimRows = [
+	srow("A", { status: "Todo", owner: "Sam", rank: 0 }),
+	srow("B", { status: "Doing", owner: "Sam", rank: 1 }),
+	srow("C", { status: "Todo", owner: "Kai" }),
+	srow("D", { status: "Done", owner: "Kai" }),
+	srow("E", { status: "Doing", owner: "" }), // blank lane → (empty) band
+];
+const sm = swimlane.buildSwimlanes(swimRows, { groupBy: "status", laneProp: "owner", rankProp: "rank" });
+// Columns are the flat board's columns (in first-seen order), shared by every lane.
+assert.deepEqual(sm.columnNames, ["Todo", "Doing", "Done"], "swimlane columns = the flat board's columns");
+assert.deepEqual(sm.lanes.map((l) => l.key), ["Kai", "Sam", "(empty)"], "lanes sorted, (empty) last");
+// Every lane exposes every column (aligned grid), even empty cells.
+for (const lane of sm.lanes) {
+	assert.deepEqual(lane.columns.map((c) => c.name), sm.columnNames, `lane ${lane.key} has all columns aligned`);
+}
+const sam = sm.lanes.find((l) => l.key === "Sam");
+assert.deepEqual(sam.columns.find((c) => c.name === "Todo").rows.map((r) => r.name), ["A"], "Sam∩Todo = A");
+assert.deepEqual(sam.columns.find((c) => c.name === "Doing").rows.map((r) => r.name), ["B"], "Sam∩Doing = B");
+assert.equal(sam.columns.find((c) => c.name === "Done").rows.length, 0, "Sam∩Done is an empty cell");
+assert.equal(sam.total, 2, "lane total counts across its columns");
+const empty = sm.lanes.find((l) => l.key === "(empty)");
+assert.deepEqual(empty.columns.find((c) => c.name === "Doing").rows.map((r) => r.name), ["E"], "blank owner lands in (empty) band");
+// Search narrows to matching cards: like the flat board, columns and lanes with no
+// match drop out, and the surviving columns stay aligned across the surviving lanes.
+const searched = swimlane.buildSwimlanes(swimRows, { groupBy: "status", laneProp: "owner", search: "A" });
+assert.deepEqual(searched.columnNames, ["Todo"], "search drops columns with no matching card (matches the flat board)");
+assert.deepEqual(searched.lanes.map((l) => l.key), ["Sam"], "only the lane with a match remains");
+assert.deepEqual(searched.lanes[0].columns.map((c) => c.name), ["Todo"], "surviving lane shows the surviving column");
+// Hide-done drops the Done column across all lanes.
+const hidden = swimlane.buildSwimlanes(swimRows, { groupBy: "status", laneProp: "owner", hideColumn: "Done" });
+assert.deepEqual(hidden.columnNames, ["Todo", "Doing"], "hideColumn removes it from every lane");
+// Lane truncation flag.
+const manyLanes = Array.from({ length: 5 }, (_, i) => srow(`n${i}`, { status: "Todo", owner: `L${i}` }));
+const capped = swimlane.buildSwimlanes(manyLanes, { groupBy: "status", laneProp: "owner", maxLanes: 3 });
+assert.equal(capped.truncatedLanes, true, "over the lane cap sets truncatedLanes");
+assert.equal(capped.lanes.length, 3, "lane list is capped to maxLanes");
+
+// ---- auto-scroll velocity --------------------------------------------------
+// Calm middle → no scroll.
+assert.equal(autoscroll.edgeVelocity(500, 0, 1000, 56, 18), 0, "middle of the container does not scroll");
+// Near the top edge → negative (scroll up), ramping to full speed at the edge.
+assert.equal(autoscroll.edgeVelocity(0, 0, 1000, 56, 18), -18, "at the top edge → full up-speed");
+assert.ok(autoscroll.edgeVelocity(28, 0, 1000, 56, 18) < 0, "inside the top zone scrolls up");
+assert.ok(Math.abs(autoscroll.edgeVelocity(28, 0, 1000, 56, 18)) < 18, "mid-zone is slower than the edge");
+// Near the bottom edge → positive (scroll down).
+assert.equal(autoscroll.edgeVelocity(1000, 0, 1000, 56, 18), 18, "at the bottom edge → full down-speed");
+assert.ok(autoscroll.edgeVelocity(980, 0, 1000, 56, 18) > 0, "inside the bottom zone scrolls down");
+// Overshoot past the edge stays clamped, never exceeds max.
+assert.equal(autoscroll.edgeVelocity(-40, 0, 1000, 56, 18), -18, "overshoot above the top clamps to max");
+assert.equal(autoscroll.edgeVelocity(1200, 0, 1000, 56, 18), 18, "overshoot below the bottom clamps to max");
+// A container smaller than two zones has no calm middle → never fights the user.
+assert.equal(autoscroll.edgeVelocity(50, 0, 80, 56, 18), 0, "a tiny container does not auto-scroll");
 
 fs.unlinkSync(outfile);
 console.log("engine tests passed");

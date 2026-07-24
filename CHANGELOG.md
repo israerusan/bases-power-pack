@@ -3,6 +3,36 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.20.0] - 2026-07-24
+
+The Kanban board grows the capabilities the mainstream board still lacks —
+**swimlanes** (its oldest open request), **touch drag**, **keyboard reordering**,
+and **auto-scroll while dragging** — plus **multi-select** and a **date picker**.
+All of it is additive: the free flat board behaves exactly as before, and every
+new surface is gated or opt-in.
+
+### Added
+- **Swimlanes (Premium).** Pick a second property in the board's new **Swimlanes**
+  control (or in settings) and the board splits into horizontal bands — e.g.
+  columns by `status`, lanes by `owner` or `project`. Columns stay aligned across
+  every lane, drag a card between lanes to rewrite the lane property, and each cell
+  has its own quick-add. Move Rules, WIP limits (per column, across lanes), and
+  manual rank all keep working. Leave it on **None** for the classic flat board.
+- **Auto-scroll while dragging.** Drag a card (or column) near the top, bottom, or
+  side edge and the board scrolls to follow, so a tall column or a board wider than
+  the pane is fully reachable mid-drag — mouse and touch alike.
+- **Touch drag.** Long-press a card on a phone/tablet to pick it up and drag it
+  between columns, lanes, or positions, with a floating preview and the same
+  auto-scroll. (The mouse board keeps native drag-and-drop unchanged.)
+- **Keyboard reordering.** The card menu (⋯ or Shift+F10) gains **Move up / Move
+  down in column** and, on a swimlane board, **Move to lane** — hand-ordering and
+  banding without a mouse.
+- **Multi-select move.** Ctrl/Cmd/Shift-click cards to select several, then drag any
+  one — or use the selection bar's **Move to column** — to move the whole set at
+  once, in a single undo step. Plain click still just opens the note.
+- **Date picker on cards.** Clicking a date field (`due`, and your Calendar/Gantt
+  date properties) to edit it now opens a real date picker instead of a text box.
+
 ## [1.19.0] - 2026-07-22
 
 A **fix**: drag-to-reorder cards now works out of the box. The capability shipped

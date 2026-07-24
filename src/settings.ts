@@ -65,6 +65,9 @@ export interface BasesPowerPackSettings {
 	/** Frontmatter property holding a card's manual rank, written by drag-to-reorder
 	 * in the default "Manual" sort. */
 	kanbanRankProp: string;
+	/** Premium: a second group-by property that splits the board into horizontal
+	 * swimlanes (bands). "" = flat board. Picked from the board's Swimlanes control. */
+	kanbanSwimlaneBy: string;
 
 	/** Feed / timeline (premium) */
 	feedDateProp: string;
@@ -153,6 +156,7 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	kanbanWipLimits: {},
 	kanbanBlockOverWip: false,
 	kanbanRankProp: "rank",
+	kanbanSwimlaneBy: "",
 	feedDateProp: "file.mtime",
 	feedGranularity: "day",
 	calendarDateProp: "due",
@@ -377,6 +381,21 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 					.onChange((value) => {
 						this.plugin.settings.kanbanRankProp = value.trim() || "rank";
 						void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Swimlane property")
+			.setDesc(
+				"Premium. A second property that splits the board into horizontal bands (swimlanes) — e.g. owner or project — with columns still grouped by the group-by property. Leave blank for a flat board; also switchable from the board's Swimlanes control."
+			)
+			.addText((text) =>
+				this.keySuggest(text)
+					.setPlaceholder("(none)")
+					.setValue(this.plugin.settings.kanbanSwimlaneBy)
+					.onChange((value) => {
+						this.plugin.settings.kanbanSwimlaneBy = value.trim();
+						void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
 					})
 			);
 

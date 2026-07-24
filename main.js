@@ -3511,6 +3511,12 @@ function columnHue(name) {
 function matchesSearch(row, search, columnName) {
   return rowMatchesText(row, search, [columnName]);
 }
+function sortKanbanColumn(rows, sortBy, rankProp) {
+  return sortRows(rows, sortBy, rankProp);
+}
+function rowMatchesKanbanSearch(row, search, columnName) {
+  return matchesSearch(row, search, columnName);
+}
 function sortRows(rows, sortBy, rankProp) {
   const copy = [...rows];
   if (sortBy === "manual" || sortBy === "rank") {
@@ -4916,6 +4922,317 @@ var DND_ROW = "application/x-bpp-row";
 var DND_COLUMN = "application/x-bpp-column";
 var DND_TREE = "application/x-bpp-tree";
 
+// src/query/swimlane.ts
+var SWIMLANE_EMPTY = "(empty)";
+var DEFAULT_MAX_LANES = 30;
+function laneKeyOf(row, laneProp) {
+  return toStr(row.scope.get(laneProp)).trim() || SWIMLANE_EMPTY;
+}
+function orderLaneKeys(keys, laneOrder) {
+  const rank = new Map(laneOrder.map((name, index) => [name, index]));
+  return [...keys].sort((a, b) => {
+    var _a, _b;
+    if (a === SWIMLANE_EMPTY) return 1;
+    if (b === SWIMLANE_EMPTY) return -1;
+    const ra = (_a = rank.get(a)) != null ? _a : Infinity;
+    const rb = (_b = rank.get(b)) != null ? _b : Infinity;
+    if (ra !== rb) return ra - rb;
+    return a.localeCompare(b, void 0, { numeric: true, sensitivity: "base" });
+  });
+}
+function buildSwimlanes(rows, options) {
+  var _a, _b, _c, _d;
+  const groupBy = options.groupBy || "status";
+  const laneProp = options.laneProp;
+  const search = toStr((_a = options.search) != null ? _a : "").trim();
+  const sortBy = (_b = options.sortBy) != null ? _b : "manual";
+  const rankProp = options.rankProp || "rank";
+  const maxLanes = (_c = options.maxLanes) != null ? _c : DEFAULT_MAX_LANES;
+  const columnNames = buildKanbanColumns(rows, options).map((c) => c.name);
+  const laneKeysSeen = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const row of rows) {
+    const key = laneKeyOf(row, laneProp);
+    if (!seen.has(key)) {
+      seen.add(key);
+      laneKeysSeen.push(key);
+    }
+  }
+  const ordered = orderLaneKeys(laneKeysSeen, (_d = options.laneOrder) != null ? _d : []);
+  const build = (key) => {
+    const laneRows = rows.filter((r) => laneKeyOf(r, laneProp) === key);
+    let total = 0;
+    const columns = columnNames.map((name) => {
+      let cell = laneRows.filter((r) => toStr(r.scope.get(groupBy)) === name);
+      if (search) cell = cell.filter((r) => rowMatchesKanbanSearch(r, search, name));
+      total += cell.length;
+      return { name, rows: sortKanbanColumn(cell, sortBy, rankProp) };
+    });
+    return { key, columns, total };
+  };
+  const visible = ordered.map(build).filter((lane) => lane.total > 0);
+  const truncatedLanes = visible.length > maxLanes;
+  const lanes = truncatedLanes ? visible.slice(0, maxLanes) : visible;
+  return { columnNames, lanes, truncatedLanes };
+}
+
+// src/views/autoscroll.ts
+var SCROLL_ZONE = 56;
+var MAX_SCROLL_SPEED = 18;
+function edgeVelocity(pos, min, max, zone = SCROLL_ZONE, maxSpeed = MAX_SCROLL_SPEED) {
+  if (max - min < 2 * zone) return 0;
+  if (pos <= min + zone) {
+    const depth = Math.min(zone, min + zone - pos);
+    return -maxSpeed * (depth / zone);
+  }
+  if (pos >= max - zone) {
+    const depth = Math.min(zone, pos - (max - zone));
+    return maxSpeed * (depth / zone);
+  }
+  return 0;
+}
+var DragScroller = class {
+  constructor(el) {
+    this.el = el;
+    this.frame = null;
+    this.x = 0;
+    this.y = 0;
+    this.win = el.ownerDocument.defaultView;
+  }
+  /** Record the latest pointer position (viewport coords) and ensure the loop runs. */
+  update(clientX, clientY) {
+    this.x = clientX;
+    this.y = clientY;
+    if (this.frame === null && this.win) this.frame = this.win.requestAnimationFrame(() => this.tick());
+  }
+  /** Stop scrolling and cancel the loop. Safe to call when not running. */
+  stop() {
+    if (this.frame !== null && this.win) this.win.cancelAnimationFrame(this.frame);
+    this.frame = null;
+  }
+  tick() {
+    this.frame = null;
+    if (!this.win) return;
+    const rect = this.el.getBoundingClientRect();
+    const dy = edgeVelocity(this.y, rect.top, rect.bottom);
+    const dx = edgeVelocity(this.x, rect.left, rect.right);
+    if (dy !== 0) this.el.scrollTop += dy;
+    if (dx !== 0) this.el.scrollLeft += dx;
+    if (dx !== 0 || dy !== 0) this.frame = this.win.requestAnimationFrame(() => this.tick());
+  }
+};
+
+// src/views/touchDrag.ts
+var DEFAULT_LONG_PRESS_MS = 380;
+var DEFAULT_MOVE_CANCEL_PX = 10;
+var TouchDragController = class {
+  constructor(opts) {
+    this.opts = opts;
+    this.ghost = null;
+    this.scroller = null;
+    this.timer = null;
+    this.armed = false;
+    this.activeCard = null;
+    this.activeRowId = "";
+    this.pointerId = -1;
+    /** Removes the current gesture's per-card listeners; set in onPointerDown, invoked
+     * by every reset so no path leaks them (notably the pre-arm scroll-cancel). */
+    this.cleanupListeners = null;
+    this.startX = 0;
+    this.startY = 0;
+    this.ghostOffsetX = 0;
+    this.ghostOffsetY = 0;
+    this.lastTarget = { cell: null, card: null };
+  }
+  /** Wire one card for touch dragging. Mouse/pen pointers are ignored so the
+   * existing HTML5 drag stays authoritative for them. */
+  attach(cardEl, rowId) {
+    cardEl.addEventListener("pointerdown", (evt) => this.onPointerDown(evt, cardEl, rowId));
+  }
+  /** Tear down a drag in flight (called before a re-render, defensively) — a full
+   * reset so no ghost, listener, timer, or suppressed-render state outlives it. */
+  destroy() {
+    this.reset();
+  }
+  onPointerDown(evt, cardEl, rowId) {
+    var _a;
+    if (evt.pointerType !== "touch") return;
+    if (this.activeCard) return;
+    this.activeCard = cardEl;
+    this.activeRowId = rowId;
+    this.pointerId = evt.pointerId;
+    this.startX = evt.clientX;
+    this.startY = evt.clientY;
+    this.armed = false;
+    const win = cardEl.ownerDocument.defaultView;
+    this.timer = win ? win.setTimeout(() => this.arm(evt.clientX, evt.clientY), (_a = this.opts.longPressMs) != null ? _a : DEFAULT_LONG_PRESS_MS) : null;
+    const move = (e) => this.onPointerMove(e);
+    const cleanup = () => {
+      cardEl.removeEventListener("pointermove", move);
+      cardEl.removeEventListener("pointerup", up);
+      cardEl.removeEventListener("pointercancel", cancel);
+    };
+    this.cleanupListeners = cleanup;
+    const up = (e) => {
+      cleanup();
+      this.onPointerUp(e);
+    };
+    const cancel = () => {
+      cleanup();
+      this.reset();
+    };
+    cardEl.addEventListener("pointermove", move);
+    cardEl.addEventListener("pointerup", up);
+    cardEl.addEventListener("pointercancel", cancel);
+  }
+  onPointerMove(evt) {
+    var _a, _b;
+    if (!this.activeCard) return;
+    if (!this.armed) {
+      const moved = Math.hypot(evt.clientX - this.startX, evt.clientY - this.startY);
+      if (moved > ((_a = this.opts.moveCancelPx) != null ? _a : DEFAULT_MOVE_CANCEL_PX)) this.reset();
+      return;
+    }
+    evt.preventDefault();
+    this.positionGhost(evt.clientX, evt.clientY);
+    (_b = this.scroller) == null ? void 0 : _b.update(evt.clientX, evt.clientY);
+    this.updateIndicator(evt.clientX, evt.clientY);
+  }
+  onPointerUp(evt) {
+    this.cancelTimer();
+    if (!this.armed) {
+      this.reset();
+      return;
+    }
+    const target = this.resolveTarget(evt.clientX, evt.clientY);
+    this.finish(true);
+    if (target) this.opts.onDrop(this.activeRowId, target);
+    this.reset();
+  }
+  /** Arm the drag after the long-press: build the ghost, lock the pointer, and
+   * start auto-scroll. */
+  arm(x, y) {
+    var _a, _b;
+    const card = this.activeCard;
+    if (!card) return;
+    this.armed = true;
+    (_b = (_a = this.opts).onBegin) == null ? void 0 : _b.call(_a);
+    try {
+      card.setPointerCapture(this.pointerId);
+    } catch (e) {
+    }
+    card.addClass("is-touch-dragging");
+    const rect = card.getBoundingClientRect();
+    const ghost = card.cloneNode(true);
+    ghost.addClass("bpp-drag-ghost");
+    ghost.removeClass("is-touch-dragging");
+    ghost.setCssStyles({ width: `${rect.width}px`, left: `${rect.left}px`, top: `${rect.top}px` });
+    card.ownerDocument.body.appendChild(ghost);
+    this.ghost = ghost;
+    this.ghostOffsetX = x - rect.left;
+    this.ghostOffsetY = y - rect.top;
+    const scrollEl = this.opts.scrollContainer();
+    this.scroller = scrollEl ? new DragScroller(scrollEl) : null;
+    this.positionGhost(x, y);
+  }
+  positionGhost(x, y) {
+    var _a;
+    (_a = this.ghost) == null ? void 0 : _a.setCssStyles({ left: `${x - this.ghostOffsetX}px`, top: `${y - this.ghostOffsetY}px` });
+  }
+  updateIndicator(x, y) {
+    var _a;
+    const { cell, card } = this.hitTest(x, y);
+    if (cell !== this.lastTarget.cell) {
+      (_a = this.lastTarget.cell) == null ? void 0 : _a.removeClass("is-drop-target");
+      cell == null ? void 0 : cell.addClass("is-drop-target");
+    }
+    if (card !== this.lastTarget.card) {
+      this.clearCardMarks(this.lastTarget.card);
+    }
+    if (card) {
+      const before = this.inTopHalf(card, y);
+      card.toggleClass("is-reorder-before", before);
+      card.toggleClass("is-reorder-after", !before);
+    }
+    this.lastTarget = { cell, card };
+  }
+  resolveTarget(x, y) {
+    const { cell, card } = this.hitTest(x, y);
+    if (!cell) return null;
+    const columnName = cell.getAttribute("data-bpp-col");
+    if (columnName === null) return null;
+    const laneKey = cell.getAttribute("data-bpp-lane");
+    let beforeRowId = null;
+    if (card) {
+      const before = this.inTopHalf(card, y);
+      if (before) beforeRowId = card.getAttribute("data-bpp-row");
+      else {
+        const next = card.nextElementSibling;
+        beforeRowId = next instanceof HTMLElement ? next.getAttribute("data-bpp-row") : null;
+      }
+    }
+    return { columnName, laneKey, beforeRowId };
+  }
+  /** Find the column cell and (optionally) the card under a viewport point. The
+   * ghost is `pointer-events: none`, so it never occludes the hit-test. */
+  hitTest(x, y) {
+    var _a;
+    const doc = (_a = this.activeCard) == null ? void 0 : _a.ownerDocument;
+    const el = doc == null ? void 0 : doc.elementFromPoint(x, y);
+    if (!(el instanceof HTMLElement)) return { cell: null, card: null };
+    const cell = el.closest("[data-bpp-col]");
+    let card = el.closest("[data-bpp-row]");
+    if (card && card.getAttribute("data-bpp-row") === this.activeRowId) card = null;
+    return { cell, card };
+  }
+  inTopHalf(el, y) {
+    const rect = el.getBoundingClientRect();
+    return y < rect.top + rect.height / 2;
+  }
+  clearCardMarks(card) {
+    card == null ? void 0 : card.removeClass("is-reorder-before");
+    card == null ? void 0 : card.removeClass("is-reorder-after");
+  }
+  /** Remove all visual drag state (ghost, indicators, capture) but leave the
+   * active-pointer bookkeeping for `reset()` to clear. */
+  finish(_committed) {
+    var _a, _b, _c, _d, _e, _f;
+    (_a = this.ghost) == null ? void 0 : _a.remove();
+    this.ghost = null;
+    (_b = this.scroller) == null ? void 0 : _b.stop();
+    this.scroller = null;
+    (_c = this.lastTarget.cell) == null ? void 0 : _c.removeClass("is-drop-target");
+    this.clearCardMarks(this.lastTarget.card);
+    this.lastTarget = { cell: null, card: null };
+    const card = this.activeCard;
+    if (card) {
+      card.removeClass("is-touch-dragging");
+      if (this.pointerId !== -1 && ((_d = card.hasPointerCapture) == null ? void 0 : _d.call(card, this.pointerId))) {
+        card.releasePointerCapture(this.pointerId);
+      }
+    }
+    if (this.armed) (_f = (_e = this.opts).onEnd) == null ? void 0 : _f.call(_e);
+    this.armed = false;
+  }
+  cancelTimer() {
+    var _a;
+    const win = (_a = this.activeCard) == null ? void 0 : _a.ownerDocument.defaultView;
+    if (this.timer !== null && win) win.clearTimeout(this.timer);
+    this.timer = null;
+  }
+  /** Full teardown after a completed or cancelled gesture. */
+  reset() {
+    var _a;
+    this.cancelTimer();
+    this.finish(false);
+    (_a = this.cleanupListeners) == null ? void 0 : _a.call(this);
+    this.cleanupListeners = null;
+    this.activeCard = null;
+    this.activeRowId = "";
+    this.pointerId = -1;
+  }
+};
+
 // src/views/kanbanView.ts
 var VIEW_TYPE_KANBAN = "bpp-kanban-view";
 var SORT_OPTIONS = [
@@ -4942,6 +5259,24 @@ var KanbanView = class extends PowerPackView {
     /** The rows AS DISPLAYED per column (search-filtered, in the active sort order)
      * — the basis for a manual drag-to-reorder, which reads the shown rank order. */
     this.lastDisplayColumns = /* @__PURE__ */ new Map();
+    /** Cards selected via modifier-click, by row id. Dragging any selected card moves
+     * the whole set; the selection bar acts on it in bulk. Plain click is unchanged
+     * (opens the note), so selection is strictly additive to the existing behavior. */
+    this.selected = /* @__PURE__ */ new Set();
+    /** Touch drag layer (pointer-based), rebuilt each render. Mouse keeps HTML5 DnD. */
+    this.touch = null;
+    /** The swimlane keys shown in the last render, in display order — the target set
+     * for the card menu's "Move to lane" items. Empty on a flat board. */
+    this.lastLaneKeys = [];
+    /** Edge auto-scroll driver for mouse (HTML5) drags over the board. */
+    this.boardScroller = null;
+  }
+  /** The swimlane (second group-by) property, or "" when off. Premium only — the
+   * flat board is the free tier; horizontal bands are an advanced view. */
+  get swimlaneProp() {
+    if (!this.plugin.settings.isPro) return "";
+    const p = (this.plugin.settings.kanbanSwimlaneBy || "").trim();
+    return p && p !== (this.plugin.settings.kanbanGroupBy || "status") ? p : "";
   }
   get groupByProp() {
     return this.plugin.settings.kanbanGroupBy || "status";
@@ -4985,8 +5320,16 @@ var KanbanView = class extends PowerPackView {
   getIcon() {
     return "layout-dashboard";
   }
+  async onClose() {
+    var _a, _b;
+    (_a = this.boardScroller) == null ? void 0 : _a.stop();
+    this.boardScroller = null;
+    (_b = this.touch) == null ? void 0 : _b.destroy();
+    this.touch = null;
+    await super.onClose();
+  }
   async render() {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e;
     const token = ++this.renderToken;
     const resolved = await this.plugin.getResolvedView();
     if (this.isStale(token)) return;
@@ -5037,8 +5380,13 @@ var KanbanView = class extends PowerPackView {
     this.lastColumnRows = columnRows;
     const orderedNames = columns.map((column) => column.name);
     const colored = this.plugin.settings.kanbanColorColumns;
+    const swimProp = this.swimlaneProp;
     const board = container.createDiv({ cls: "bpp-kanban-board" });
     if (colored) board.addClass("is-colored");
+    if (swimProp) board.addClass("is-swimlaned");
+    this.wireBoardAutoScroll(board);
+    (_c = this.touch) == null ? void 0 : _c.destroy();
+    this.touch = this.makeTouchController(board, groupBy, swimProp);
     const rowById = new Map(resolved.rows.map((row) => [row.id, row]));
     if (columns.length === 0) {
       if (this.searchQuery || this.hideDoneColumn) {
@@ -5075,9 +5423,31 @@ var KanbanView = class extends PowerPackView {
     const metaFields = this.plugin.settings.kanbanCardFields;
     const today = todayIso();
     const dueProps = /* @__PURE__ */ new Set(["due", this.plugin.settings.calendarDateProp || "due"]);
+    const cardCtx = {
+      groupBy,
+      orderedNames,
+      metaFields,
+      cardFormula,
+      today,
+      dueProps,
+      reorderEnabled: this.reorderEnabled,
+      laneKey: null
+    };
+    if (swimProp) {
+      this.renderSwimlaneBoard(board, resolved.rows, columns, columnRows, {
+        groupBy,
+        swimProp,
+        extraColumns,
+        colored,
+        cardCtx
+      });
+      this.renderSelectionBar(container, groupBy, orderedNames);
+      return;
+    }
     for (const column of columns) {
       const col = board.createDiv({ cls: "bpp-kanban-column" });
-      const trueCount = ((_c = columnRows.get(column.name)) != null ? _c : []).length;
+      col.setAttr("data-bpp-col", column.name);
+      const trueCount = ((_d = columnRows.get(column.name)) != null ? _d : []).length;
       const wipLimit = limitFor(this.plugin.settings.kanbanWipLimits, column.name);
       const overWip = isOverWip(trueCount, wipLimit);
       col.setAttr("role", "group");
@@ -5135,48 +5505,72 @@ var KanbanView = class extends PowerPackView {
         for (const rollup of this.plugin.settings.rollups) {
           chips.createSpan({
             cls: "bpp-col-rollup",
-            text: `${rollup.label || rollup.aggregation}: ${computeRollup(rollup, (_d = columnRows.get(column.name)) != null ? _d : [])}`
+            text: `${rollup.label || rollup.aggregation}: ${computeRollup(rollup, (_e = columnRows.get(column.name)) != null ? _e : [])}`
           });
         }
       }
-      for (const row of column.rows) {
-        const card = col.createDiv({ cls: "bpp-card" });
-        this.applyColorRule(card, row);
-        card.draggable = true;
-        const openMenu = (a) => this.openCardMenu(a, row, groupBy, orderedNames);
-        const head = card.createDiv({ cls: "bpp-card-head" });
-        head.createDiv({ cls: "bpp-card-title", text: row.name });
-        this.addOverflowButton(head, row.name, openMenu);
-        const isDone = isRowDone(row, groupBy, this.plugin.settings.kanbanDoneValue);
-        for (const field of metaFields) {
-          const display = formatCardField(row, field);
-          if (display === null) continue;
-          this.renderEditableField(card, row, field, display, {
-            today,
-            dueState: dueProps.has(field) && !isDone
-          });
-        }
-        if (cardFormula) {
-          const val = evaluateSafe(cardFormula, row.scope);
-          if (val !== null && toStr(val) !== "") {
-            card.createDiv({ cls: "bpp-card-meta bpp-card-meta-premium", text: toStr(val) });
-          }
-        }
-        card.addEventListener("dragstart", (event) => {
-          var _a2, _b2;
-          card.addClass("is-dragging");
-          (_a2 = event.dataTransfer) == null ? void 0 : _a2.setData("text/plain", row.id);
-          (_b2 = event.dataTransfer) == null ? void 0 : _b2.setData(DND_ROW, row.id);
-          if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
-        });
-        card.addEventListener("dragend", () => card.removeClass("is-dragging"));
-        if (this.reorderEnabled) this.wireCardReorder(card, row, column.name, groupBy);
-        card.addEventListener("click", () => this.openRow(row));
-        this.makeItemAccessible(card, row.name, () => this.openRow(row), openMenu);
-        card.addEventListener("contextmenu", (evt) => openMenu(evt));
-      }
+      for (const row of column.rows) this.renderCard(col, row, column.name, cardCtx);
     }
     if (!this.searchQuery) this.renderAddColumnTile(board, groupBy);
+    this.renderSelectionBar(container, groupBy, orderedNames);
+  }
+  /**
+   * Render one card into a column/cell. Extracted from the flat board loop so the
+   * swimlane board renders cards through the exact same path — no divergent second
+   * copy of the chip/edit/drag/selection wiring. `ctx.laneKey` is null on the flat
+   * board and the lane value in a swimlane cell (it routes the reorder + the card
+   * menu's move actions to the lane-aware handlers).
+   */
+  renderCard(container, row, columnName, ctx) {
+    var _a;
+    const card = container.createDiv({ cls: "bpp-card" });
+    card.setAttr("data-bpp-row", row.id);
+    if (this.selected.has(row.id)) card.addClass("is-selected");
+    this.applyColorRule(card, row);
+    card.draggable = true;
+    const openMenu = (a) => this.openCardMenu(a, row, ctx.groupBy, ctx.orderedNames, columnName, ctx.laneKey);
+    const head = card.createDiv({ cls: "bpp-card-head" });
+    head.createDiv({ cls: "bpp-card-title", text: row.name });
+    this.addOverflowButton(head, row.name, openMenu);
+    const isDone = isRowDone(row, ctx.groupBy, this.plugin.settings.kanbanDoneValue);
+    for (const field of ctx.metaFields) {
+      const display = formatCardField(row, field);
+      if (display === null) continue;
+      this.renderEditableField(card, row, field, display, {
+        today: ctx.today,
+        dueState: ctx.dueProps.has(field) && !isDone
+      });
+    }
+    if (ctx.cardFormula) {
+      const val = evaluateSafe(ctx.cardFormula, row.scope);
+      if (val !== null && toStr(val) !== "") {
+        card.createDiv({ cls: "bpp-card-meta bpp-card-meta-premium", text: toStr(val) });
+      }
+    }
+    card.addEventListener("dragstart", (event) => {
+      var _a2, _b;
+      card.addClass("is-dragging");
+      (_a2 = event.dataTransfer) == null ? void 0 : _a2.setData("text/plain", row.id);
+      (_b = event.dataTransfer) == null ? void 0 : _b.setData(DND_ROW, row.id);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    });
+    card.addEventListener("dragend", () => {
+      var _a2;
+      card.removeClass("is-dragging");
+      (_a2 = this.boardScroller) == null ? void 0 : _a2.stop();
+    });
+    if (ctx.reorderEnabled) this.wireCardReorder(card, row, columnName, ctx.groupBy, ctx.laneKey);
+    card.addEventListener("click", (evt) => {
+      if (evt.ctrlKey || evt.metaKey || evt.shiftKey) {
+        evt.preventDefault();
+        this.toggleSelect(row.id);
+      } else {
+        this.openRow(row);
+      }
+    });
+    this.makeItemAccessible(card, row.name, () => this.openRow(row), openMenu);
+    card.addEventListener("contextmenu", (evt) => openMenu(evt));
+    (_a = this.touch) == null ? void 0 : _a.attach(card, row.id);
   }
   renderAddColumnTile(board, groupBy) {
     const tile = board.createDiv({ cls: "bpp-kanban-column bpp-kanban-add-column" });
@@ -5278,10 +5672,21 @@ var KanbanView = class extends PowerPackView {
     card.draggable = false;
     line.empty();
     line.removeClass("bpp-card-meta-editable");
-    const input = line.createEl("input", { cls: "bpp-inline-edit", type: "text" });
-    input.value = formatFieldForEdit(previous);
+    const dateProps = new Set(
+      [
+        "due",
+        this.plugin.settings.calendarDateProp,
+        this.plugin.settings.ganttStartProp,
+        this.plugin.settings.ganttEndProp
+      ].filter(Boolean)
+    );
+    const prevStr = toStr(previous).trim();
+    const isBareDate = /^\d{4}-\d{2}-\d{2}$/.test(prevStr) && toIsoDateKey(prevStr) !== null;
+    const useDate = isBareDate || prevStr === "" && dateProps.has(field);
+    const input = line.createEl("input", { cls: "bpp-inline-edit", type: useDate ? "date" : "text" });
+    input.value = useDate ? prevStr : formatFieldForEdit(previous);
     input.focus();
-    input.select();
+    if (input.type === "text") input.select();
     this.beginInteraction();
     let settled = false;
     const commit = async () => {
@@ -5311,10 +5716,19 @@ var KanbanView = class extends PowerPackView {
     return (_a = this.plugin.settings.kanbanColorOverrides[name]) != null ? _a : String(columnHue(name));
   }
   // ---- context menus --------------------------------------------------------
-  openCardMenu(anchor, row, groupBy, columns) {
+  openCardMenu(anchor, row, groupBy, columns, columnName = "", laneKey = null) {
     if (anchor instanceof MouseEvent) anchor.preventDefault();
     const menu = new import_obsidian5.Menu();
     const after = () => void this.render();
+    if (this.reorderEnabled && columnName) {
+      menu.addItem(
+        (i) => i.setTitle("Move up in column").setIcon("arrow-up").onClick(() => void this.moveCardWithinColumn(row, groupBy, columnName, laneKey, -1))
+      );
+      menu.addItem(
+        (i) => i.setTitle("Move down in column").setIcon("arrow-down").onClick(() => void this.moveCardWithinColumn(row, groupBy, columnName, laneKey, 1))
+      );
+      menu.addSeparator();
+    }
     const current = toStr(row.scope.get(groupBy));
     const others = columns.filter((c) => c !== current);
     if (others.length > 0) {
@@ -5325,8 +5739,39 @@ var KanbanView = class extends PowerPackView {
       }
       menu.addSeparator();
     }
+    const swimProp = this.swimlaneProp;
+    if (swimProp && laneKey !== null) {
+      const otherLanes = this.lastLaneKeys.filter((l) => l !== laneKey);
+      if (otherLanes.length > 0) {
+        const col = toStr(row.scope.get(groupBy));
+        for (const lane of otherLanes) {
+          menu.addItem(
+            (i) => i.setTitle(`Move to lane "${lane === SWIMLANE_EMPTY ? "(empty)" : lane}"`).setIcon("move-vertical").onClick(() => void this.moveRowToColumn(row, groupBy, col, swimProp, lane))
+          );
+        }
+        menu.addSeparator();
+      }
+    }
     this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, after);
     this.showMenuAtAnchor(menu, anchor);
+  }
+  /** Nudge a card one slot up (-1) or down (+1) within its cell's hand-order — the
+   * keyboard/touch equivalent of dragging it between its neighbours. Plans against
+   * the cell's true rank order, so it's exact even with a search active. */
+  async moveCardWithinColumn(row, groupBy, columnName, laneKey, dir) {
+    const laneProp = laneKey === null ? null : this.swimlaneProp || null;
+    const group = groupBy || "status";
+    const rankProp = this.rankProp;
+    const resolved = await this.plugin.getResolvedView();
+    const cell = resolved.rows.filter(
+      (r) => toStr(r.scope.get(group)) === columnName && (laneProp === null || this.laneKeyOf(r, laneProp) === laneKey)
+    );
+    const sorted = [...cell].sort((a, b) => this.compareByRank(a, b, rankProp));
+    const idx = sorted.findIndex((r) => r.id === row.id);
+    if (idx === -1) return;
+    const targetIdx = idx + dir;
+    if (targetIdx < 0 || targetIdx >= sorted.length) return;
+    await this.applyCardReorder(row.id, columnName, sorted[targetIdx], dir < 0, group, laneProp, laneKey);
   }
   openColumnMenu(anchor, columnName, groupBy, removable, orderedNames) {
     if (anchor instanceof MouseEvent) anchor.preventDefault();
@@ -5526,6 +5971,23 @@ var KanbanView = class extends PowerPackView {
       if (option.value === this.sortBy) el.selected = true;
     }
     sortSelect.addEventListener("change", () => void this.setSortBy(sortSelect.value));
+    if (this.plugin.settings.isPro) {
+      const swimWrap = controls.createDiv({ cls: "bpp-lite-control" });
+      swimWrap.createSpan({ cls: "bpp-muted", text: "Swimlanes" });
+      const swimSelect = swimWrap.createEl("select", { cls: "bpp-lite-select dropdown" });
+      const current = this.swimlaneProp;
+      const none = swimSelect.createEl("option", { text: "None", value: "" });
+      if (!current) none.selected = true;
+      for (const option of this.collectGroupByOptions(current)) {
+        if (option === groupBy) continue;
+        const el = swimSelect.createEl("option", { text: option, value: option });
+        if (option === current) el.selected = true;
+      }
+      swimSelect.addEventListener("change", () => {
+        this.plugin.settings.kanbanSwimlaneBy = swimSelect.value.trim();
+        void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
+      });
+    }
     const toggleWrap = controls.createDiv({ cls: "bpp-lite-control bpp-lite-control-toggle" });
     const toggle = toggleWrap.createEl("input", { type: "checkbox" });
     toggle.checked = this.hideDoneColumn;
@@ -5556,17 +6018,22 @@ var KanbanView = class extends PowerPackView {
       columnEl.removeClass("is-col-drop-target");
     });
     columnEl.addEventListener("drop", (event) => {
-      var _a, _b, _c;
+      var _a, _b, _c, _d;
       event.preventDefault();
       columnEl.removeClass("is-drop-target");
       columnEl.removeClass("is-col-drop-target");
-      const draggedColumn = (_a = event.dataTransfer) == null ? void 0 : _a.getData(DND_COLUMN);
+      (_a = this.boardScroller) == null ? void 0 : _a.stop();
+      const draggedColumn = (_b = event.dataTransfer) == null ? void 0 : _b.getData(DND_COLUMN);
       if (draggedColumn) {
         void this.reorderColumn(groupBy, orderedNames, draggedColumn, columnName);
         return;
       }
-      const rowId = ((_b = event.dataTransfer) == null ? void 0 : _b.getData(DND_ROW)) || ((_c = event.dataTransfer) == null ? void 0 : _c.getData("text/plain"));
+      const rowId = ((_c = event.dataTransfer) == null ? void 0 : _c.getData(DND_ROW)) || ((_d = event.dataTransfer) == null ? void 0 : _d.getData("text/plain"));
       if (!rowId) return;
+      if (this.selected.has(rowId) && this.selected.size > 1) {
+        void this.moveSelectionToColumn(groupBy, columnName, null);
+        return;
+      }
       const row = rowById.get(rowId);
       if (!row) return;
       void this.moveRowToColumn(row, groupBy, columnName);
@@ -5580,7 +6047,11 @@ var KanbanView = class extends PowerPackView {
       (_a = event.dataTransfer) == null ? void 0 : _a.setData(DND_COLUMN, columnName);
       if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
     });
-    colHead.addEventListener("dragend", () => columnEl.removeClass("is-col-dragging"));
+    colHead.addEventListener("dragend", () => {
+      var _a;
+      columnEl.removeClass("is-col-dragging");
+      (_a = this.boardScroller) == null ? void 0 : _a.stop();
+    });
   }
   async reorderColumn(groupBy, orderedNames, moved, target) {
     const next = reorderColumns(orderedNames, moved, target);
@@ -5594,33 +6065,44 @@ var KanbanView = class extends PowerPackView {
    * rules read the note's pre-move frontmatter, so an automation write never
    * re-triggers another rule.
    */
-  async moveRowToColumn(row, groupBy, columnName) {
-    var _a, _b;
+  async moveRowToColumn(row, groupBy, columnName, laneProp = null, laneKey = null) {
+    var _a, _b, _c;
     const key = groupBy || "status";
-    if (toStr(row.scope.get(key)) === columnName) return;
+    const crossColumn = toStr(row.scope.get(key)) !== columnName;
+    const crossLane = laneProp !== null && this.laneKeyOf(row, laneProp) !== laneKey;
+    if (!crossColumn && !crossLane) return;
     const resolved = await this.plugin.getResolvedView();
-    if (COMPUTED_FILE_PROPS.has(key) || Object.prototype.hasOwnProperty.call((_a = resolved.def.formulas) != null ? _a : {}, key)) {
+    if (crossColumn && this.isComputedField((_a = resolved.def.formulas) != null ? _a : {}, key)) {
       new import_obsidian5.Notice(`"${key}" is a computed/formula field \u2014 cards grouped by it can't be moved here.`);
       return;
     }
-    if (this.plugin.settings.kanbanBlockOverWip) {
+    if (crossLane && laneProp !== null && this.isComputedField((_b = resolved.def.formulas) != null ? _b : {}, laneProp)) {
+      new import_obsidian5.Notice(`"${laneProp}" is a computed/formula field \u2014 cards can't be moved across swimlanes here.`);
+      return;
+    }
+    if (crossColumn && this.plugin.settings.kanbanBlockOverWip) {
       const limit = limitFor(this.plugin.settings.kanbanWipLimits, columnName);
-      const targetCount = ((_b = this.lastColumnRows.get(columnName)) != null ? _b : []).length;
+      const targetCount = ((_c = this.lastColumnRows.get(columnName)) != null ? _c : []).length;
       if (dropWouldExceed(targetCount, limit)) {
         new import_obsidian5.Notice(`"${columnName}" is at its WIP limit (${limit}). Move blocked.`);
         await this.render();
         return;
       }
     }
-    const writes = [{ key, value: columnName }];
-    if (this.plugin.settings.isPro) {
-      const matched = rulesForTransition(this.plugin.settings.automations, key, columnName);
-      writes.push(...computeRuleWrites(matched, row.note.frontmatter, /* @__PURE__ */ new Date()));
+    const writes = [];
+    if (crossColumn) {
+      writes.push({ key, value: columnName });
+      if (this.plugin.settings.isPro) {
+        const matched = rulesForTransition(this.plugin.settings.automations, key, columnName);
+        writes.push(...computeRuleWrites(matched, row.note.frontmatter, /* @__PURE__ */ new Date()));
+      }
     }
+    if (crossLane && laneProp !== null) writes.push(this.laneWrite(laneProp, laneKey));
+    if (writes.length === 0) return;
+    const automationWrites = crossColumn ? writes.length - 1 - (crossLane ? 1 : 0) : 0;
     const ok = await writeRowProperties(this.plugin, row.id, writes, { label: `Move to "${columnName}"` });
-    if (ok && writes.length > 1) {
-      const n = writes.length - 1;
-      new import_obsidian5.Notice(`Moved to "${columnName}" \xB7 ${n} automation write${n === 1 ? "" : "s"}.`);
+    if (ok && automationWrites > 0) {
+      new import_obsidian5.Notice(`Moved to "${columnName}" \xB7 ${automationWrites} automation write${automationWrites === 1 ? "" : "s"}.`);
     }
     await this.render();
   }
@@ -5635,7 +6117,7 @@ var KanbanView = class extends PowerPackView {
    * insertion line. Stops propagation so the column-level "move to column" drop
    * doesn't also fire.
    */
-  wireCardReorder(cardEl, targetRow, columnName, groupBy) {
+  wireCardReorder(cardEl, targetRow, columnName, groupBy, laneKey = null) {
     cardEl.addEventListener("dragover", (event) => {
       var _a, _b;
       if (!((_b = (_a = event.dataTransfer) == null ? void 0 : _a.types) != null ? _b : []).includes(DND_ROW)) return;
@@ -5652,17 +6134,27 @@ var KanbanView = class extends PowerPackView {
       cardEl.removeClass("is-reorder-after");
     });
     cardEl.addEventListener("drop", (event) => {
-      var _a, _b;
+      var _a, _b, _c;
       const rowId = ((_a = event.dataTransfer) == null ? void 0 : _a.getData(DND_ROW)) || ((_b = event.dataTransfer) == null ? void 0 : _b.getData("text/plain"));
       cardEl.removeClass("is-reorder-before");
       cardEl.removeClass("is-reorder-after");
       if (!rowId) return;
       event.preventDefault();
       event.stopPropagation();
+      (_c = this.boardScroller) == null ? void 0 : _c.stop();
+      if (this.selected.has(rowId) && this.selected.size > 1) {
+        void this.moveSelectionToColumn(groupBy, columnName, laneKey);
+        return;
+      }
       if (rowId === targetRow.id) return;
       const before = this.isBeforeHalf(cardEl, event);
-      void this.applyCardReorder(rowId, columnName, targetRow, before, groupBy);
+      void this.applyCardReorder(rowId, columnName, targetRow, before, groupBy, this.swimlaneOrNull(laneKey), laneKey);
     });
+  }
+  /** The active swimlane property when a lane key is in play, else null — so the
+   * flat board (laneKey null) passes null through to the lane-agnostic path. */
+  swimlaneOrNull(laneKey) {
+    return laneKey === null ? null : this.swimlaneProp || null;
   }
   /** True when the pointer is in the top half of `el` (so a drop inserts before it). */
   isBeforeHalf(el, event) {
@@ -5680,18 +6172,35 @@ var KanbanView = class extends PowerPackView {
     if (ar !== null && br === null) return -1;
     return a.name.localeCompare(b.name, void 0, { sensitivity: "base" });
   }
+  /** A row's swimlane key (missing/blank → the "(empty)" band), matching the pure
+   * swimlane engine so the view and the model agree on lane membership. */
+  laneKeyOf(row, laneProp) {
+    return toStr(row.scope.get(laneProp)).trim() || SWIMLANE_EMPTY;
+  }
+  /** The frontmatter write that moves a card into a swimlane. Dropping into the
+   * "(empty)" band must CLEAR the lane property, not write the literal sentinel
+   * "(empty)" — otherwise the note carries a bogus real value that every base
+   * filter/export sees. (quickAddInCell already skips the write for this case.) */
+  laneWrite(laneProp, laneKey) {
+    return laneKey === SWIMLANE_EMPTY || laneKey === null ? { key: laneProp, remove: true } : { key: laneProp, value: laneKey };
+  }
   /**
-   * Apply a manual reorder: write the card's new rank (and, when it came from
-   * another column, its new group value plus any Move Rules), renumbering the
-   * destination column only when the neighbouring gap can't be split. The whole
+   * Apply a manual reorder: write the card's new rank (and, when it moved to a new
+   * column and/or swimlane, the group/lane values plus any Move Rules), renumbering
+   * the destination cell only when the neighbouring gap can't be split. The whole
    * reorder is one undo entry.
+   *
+   * `targetRow === null` appends at the cell's end (a drop on empty cell space).
+   * `laneProp`/`laneKey` are null on the flat board and the swimlane's row/lane in
+   * a banded board — the ONLY difference on the flat path is that both are null, so
+   * the free board's behaviour is unchanged.
    */
-  async applyCardReorder(rowId, columnName, targetRow, before, groupBy) {
-    var _a, _b, _c;
+  async applyCardReorder(rowId, columnName, targetRow, before, groupBy, laneProp = null, laneKey = null) {
+    var _a, _b, _c, _d, _e;
     const rankProp = this.rankProp;
     const group = groupBy || "status";
-    if (rankProp === group) {
-      new import_obsidian5.Notice(`Manual order property ("${rankProp}") must differ from the group-by property \u2014 pick a separate numeric property in settings.`);
+    if (rankProp === group || laneProp !== null && rankProp === laneProp) {
+      new import_obsidian5.Notice(`Manual order property ("${rankProp}") must differ from the group-by and swimlane properties \u2014 pick a separate numeric property in settings.`);
       return;
     }
     const resolved = await this.plugin.getResolvedView();
@@ -5702,27 +6211,45 @@ var KanbanView = class extends PowerPackView {
       return;
     }
     const crossColumn = toStr(movedRow.scope.get(group)) !== columnName;
+    const crossLane = laneProp !== null && this.laneKeyOf(movedRow, laneProp) !== laneKey;
+    if (crossColumn && this.isComputedField((_b = resolved.def.formulas) != null ? _b : {}, group)) {
+      new import_obsidian5.Notice(`"${group}" is a computed/formula field \u2014 cards grouped by it can't be moved here.`);
+      return;
+    }
+    if (crossLane && laneProp !== null && this.isComputedField((_c = resolved.def.formulas) != null ? _c : {}, laneProp)) {
+      new import_obsidian5.Notice(`"${laneProp}" is a computed/formula field \u2014 cards can't be moved across swimlanes here.`);
+      return;
+    }
     if (crossColumn && this.plugin.settings.kanbanBlockOverWip) {
       const limit = limitFor(this.plugin.settings.kanbanWipLimits, columnName);
-      const targetCount = ((_b = this.lastColumnRows.get(columnName)) != null ? _b : []).length;
+      const targetCount = ((_d = this.lastColumnRows.get(columnName)) != null ? _d : []).length;
       if (dropWouldExceed(targetCount, limit)) {
         new import_obsidian5.Notice(`"${columnName}" is at its WIP limit (${limit}). Move blocked.`);
         await this.render();
         return;
       }
     }
-    const sorted = [...(_c = this.lastColumnRows.get(columnName)) != null ? _c : []].sort((a, b) => this.compareByRank(a, b, rankProp));
+    const cellRows = laneProp !== null ? resolved.rows.filter(
+      (r) => toStr(r.scope.get(group)) === columnName && this.laneKeyOf(r, laneProp) === laneKey
+    ) : (_e = this.lastColumnRows.get(columnName)) != null ? _e : [];
+    const sorted = [...cellRows].sort((a, b) => this.compareByRank(a, b, rankProp));
     const items = sorted.map((r) => ({ id: r.id, rank: parseRank(r.scope.get(rankProp)) }));
-    const targetPos = items.filter((i) => i.id !== rowId).findIndex((i) => i.id === targetRow.id);
-    if (targetPos === -1) {
-      await this.render();
-      return;
+    const rest = items.filter((i) => i.id !== rowId);
+    let insertIndex;
+    if (targetRow === null) {
+      insertIndex = rest.length;
+    } else {
+      const targetPos = rest.findIndex((i) => i.id === targetRow.id);
+      if (targetPos === -1) {
+        await this.render();
+        return;
+      }
+      insertIndex = before ? targetPos : targetPos + 1;
     }
-    const insertIndex = before ? targetPos : targetPos + 1;
     const rankWrites = planReorder(items, rowId, insertIndex);
-    if (rankWrites.length === 0 && !crossColumn) return;
+    if (rankWrites.length === 0 && !crossColumn && !crossLane) return;
     const rankById = new Map(rankWrites.map((w) => [w.id, w.rank]));
-    const label = crossColumn ? `Move to "${columnName}"` : "Reorder card";
+    const label = crossColumn || crossLane ? `Move to "${columnName}"` : "Reorder card";
     const batch = this.plugin.undo.beginBatch(label);
     const movedWrites = [];
     if (crossColumn) {
@@ -5732,6 +6259,7 @@ var KanbanView = class extends PowerPackView {
         movedWrites.push(...computeRuleWrites(matched, movedRow.note.frontmatter, /* @__PURE__ */ new Date()));
       }
     }
+    if (crossLane && laneProp !== null) movedWrites.push(this.laneWrite(laneProp, laneKey));
     if (rankById.has(rowId)) movedWrites.push({ key: rankProp, value: rankById.get(rowId) });
     if (movedWrites.length > 0) await writeRowProperties(this.plugin, rowId, movedWrites, { batch });
     for (const write of rankWrites) {
@@ -5739,6 +6267,302 @@ var KanbanView = class extends PowerPackView {
       await writeRowProperties(this.plugin, write.id, [{ key: rankProp, value: write.rank }], { batch });
     }
     this.plugin.undo.commitBatch(batch);
+    await this.render();
+  }
+  /** True when `prop` is a computed `file.*` accessor or a base formula — a field a
+   * card move must never overwrite with a literal (it would shadow the computed value). */
+  isComputedField(formulas, prop) {
+    return COMPUTED_FILE_PROPS.has(prop) || Object.prototype.hasOwnProperty.call(formulas, prop);
+  }
+  // ---- auto-scroll, touch, swimlanes, multi-select --------------------------
+  /** The nearest scrollable ancestor of `el` (itself included), resolved at drag
+   * time so the auto-scroll drives whatever actually scrolls — the board when it
+   * has its own overflow, otherwise the view-content pane. Falls back to `el`. */
+  scrollContainerFor(el) {
+    var _a, _b;
+    const view = el.ownerDocument.defaultView;
+    let cur = el;
+    while (cur) {
+      const style = view == null ? void 0 : view.getComputedStyle(cur);
+      const oy = (_a = style == null ? void 0 : style.overflowY) != null ? _a : "";
+      const ox = (_b = style == null ? void 0 : style.overflowX) != null ? _b : "";
+      if ((oy === "auto" || oy === "scroll") && cur.scrollHeight > cur.clientHeight || (ox === "auto" || ox === "scroll") && cur.scrollWidth > cur.clientWidth) {
+        return cur;
+      }
+      cur = cur.parentElement;
+    }
+    return el;
+  }
+  /** Wire edge auto-scroll for mouse (HTML5) drags: feed the scroller the pointer
+   * position on dragover, stop it when the drag leaves or drops. The scroll target
+   * is resolved lazily on the first dragover, when layout (and overflow) is real. */
+  wireBoardAutoScroll(board) {
+    this.boardScroller = null;
+    const ensure = () => {
+      if (!this.boardScroller) this.boardScroller = new DragScroller(this.scrollContainerFor(board));
+      return this.boardScroller;
+    };
+    board.addEventListener("dragover", (event) => {
+      var _a, _b;
+      const types = (_b = (_a = event.dataTransfer) == null ? void 0 : _a.types) != null ? _b : [];
+      if (!types.includes(DND_ROW) && !types.includes(DND_COLUMN)) return;
+      ensure().update(event.clientX, event.clientY);
+    });
+    board.addEventListener("drop", () => {
+      var _a;
+      return (_a = this.boardScroller) == null ? void 0 : _a.stop();
+    });
+    board.addEventListener("dragleave", (event) => {
+      var _a;
+      if (this.dragTrulyLeft(board, event)) (_a = this.boardScroller) == null ? void 0 : _a.stop();
+    });
+  }
+  /** Build the touch-drag layer for this render. Its drop resolves back through the
+   * same move/reorder methods the mouse path uses — no duplicated write logic. */
+  makeTouchController(board, groupBy, swimProp) {
+    return new TouchDragController({
+      scrollContainer: () => this.scrollContainerFor(board),
+      onBegin: () => this.beginInteraction(),
+      onEnd: () => this.endInteraction(),
+      onDrop: (rowId, target) => void this.handleTouchDrop(rowId, target, groupBy, swimProp)
+    });
+  }
+  async handleTouchDrop(rowId, target, groupBy, swimProp) {
+    var _a;
+    if (this.selected.has(rowId) && this.selected.size > 1) {
+      await this.moveSelectionToColumn(groupBy, target.columnName, target.laneKey);
+      return;
+    }
+    const laneProp = target.laneKey === null ? null : swimProp || null;
+    let targetRow = null;
+    if (target.beforeRowId) {
+      const resolved = await this.plugin.getResolvedView();
+      targetRow = (_a = resolved.rows.find((r) => r.id === target.beforeRowId)) != null ? _a : null;
+    }
+    await this.applyCardReorder(rowId, target.columnName, targetRow, true, groupBy, laneProp, target.laneKey);
+  }
+  /**
+   * Render the premium swimlane board: a shared column-header row (counts spanning
+   * every lane) above one horizontal band per swimlane value, each band a row of
+   * (lane × column) drop cells. Cards render through the same {@link renderCard} as
+   * the flat board. Dropping across a band writes the lane property too.
+   */
+  renderSwimlaneBoard(board, rows, columns, columnRows, opts) {
+    var _a, _b;
+    const { groupBy, swimProp, colored, cardCtx } = opts;
+    const model = buildSwimlanes(rows, {
+      groupBy,
+      laneProp: swimProp,
+      search: this.searchQuery,
+      hideColumn: this.hideDoneColumn ? this.plugin.settings.kanbanDoneValue : "",
+      sortBy: this.sortBy,
+      rankProp: this.rankProp,
+      extraColumns: opts.extraColumns,
+      columnOrder: (_a = this.plugin.settings.kanbanColumnOrder[groupBy]) != null ? _a : []
+    });
+    this.lastLaneKeys = model.lanes.map((l) => l.key);
+    const columnNames = model.columnNames;
+    const rowById = new Map(rows.map((r) => [r.id, r]));
+    const grid = board.createDiv({ cls: "bpp-swimlane-grid" });
+    grid.setCssProps({ "--bpp-swim-cols": String(columnNames.length) });
+    if (model.truncatedLanes) {
+      grid.createDiv({
+        cls: "bpp-muted bpp-swimlane-truncation",
+        text: `Showing the first ${model.lanes.length} swimlanes. Search or filter the board to reach the rest.`
+      });
+    }
+    const headRow = grid.createDiv({ cls: "bpp-swimlane-headrow" });
+    headRow.createDiv({ cls: "bpp-swimlane-corner" });
+    const headCells = headRow.createDiv({ cls: "bpp-swimlane-cells" });
+    for (const name of columnNames) {
+      const trueCount = ((_b = columnRows.get(name)) != null ? _b : []).length;
+      const wipLimit = limitFor(this.plugin.settings.kanbanWipLimits, name);
+      const overWip = isOverWip(trueCount, wipLimit);
+      const head = headCells.createDiv({ cls: "bpp-swimlane-colhead" });
+      if (colored) head.setCssProps({ "--bpp-col-hue": this.columnHueFor(name) });
+      if (overWip) head.addClass("is-over-wip");
+      head.createSpan({ cls: "bpp-swimlane-colname", text: name });
+      const count = head.createSpan({ cls: "bpp-count", text: formatWipCount(trueCount, wipLimit) });
+      if (wipLimit !== null) count.addClass("has-wip");
+      head.addEventListener("contextmenu", (evt) => this.openColumnMenu(evt, name, groupBy, false, columnNames));
+    }
+    if (model.lanes.length === 0) {
+      this.renderEmptyState(grid, { title: "No cards match", body: "No cards match the current filters." });
+      return;
+    }
+    for (const lane of model.lanes) {
+      const laneLabel = lane.key === SWIMLANE_EMPTY ? "(empty)" : lane.key;
+      const laneRow = grid.createDiv({ cls: "bpp-swimlane-row" });
+      const laneHead = laneRow.createDiv({ cls: "bpp-swimlane-lanehead" });
+      laneHead.createSpan({ cls: "bpp-swimlane-lanename", text: laneLabel });
+      laneHead.createSpan({ cls: "bpp-count", text: String(lane.total) });
+      const cells = laneRow.createDiv({ cls: "bpp-swimlane-cells" });
+      for (const column of lane.columns) {
+        const cell = cells.createDiv({ cls: "bpp-swimlane-cell bpp-kanban-column" });
+        cell.setAttr("data-bpp-col", column.name);
+        cell.setAttr("data-bpp-lane", lane.key);
+        cell.setAttr("role", "group");
+        cell.setAttr(
+          "aria-label",
+          `${laneLabel} \xB7 ${column.name}, ${column.rows.length} card${column.rows.length === 1 ? "" : "s"}`
+        );
+        if (colored) cell.setCssProps({ "--bpp-col-hue": this.columnHueFor(column.name) });
+        this.wireCellDrop(cell, column.name, lane.key, groupBy, rowById);
+        const addBtn = cell.createEl("button", {
+          cls: "bpp-column-add bpp-cell-add",
+          text: "+",
+          attr: { "aria-label": `Add note to ${column.name}, lane ${laneLabel}` }
+        });
+        addBtn.addEventListener("click", () => void this.quickAddInCell(column.name, groupBy, swimProp, lane.key));
+        const cellCtx = { ...cardCtx, laneKey: lane.key };
+        for (const row of column.rows) this.renderCard(cell, row, column.name, cellCtx);
+      }
+    }
+  }
+  /** A swimlane cell is a drop target: a card dropped on empty cell space moves to
+   * this (column, lane), no rank change — the lane-aware analog of the flat column
+   * body drop. A drop onto a card is handled by that card's reorder wiring. */
+  wireCellDrop(cellEl, columnName, laneKey, groupBy, rowById) {
+    cellEl.addEventListener("dragover", (event) => {
+      var _a, _b;
+      if (!((_b = (_a = event.dataTransfer) == null ? void 0 : _a.types) != null ? _b : []).includes(DND_ROW)) return;
+      event.preventDefault();
+      cellEl.addClass("is-drop-target");
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    });
+    cellEl.addEventListener("dragleave", (event) => {
+      if (this.dragTrulyLeft(cellEl, event)) cellEl.removeClass("is-drop-target");
+    });
+    cellEl.addEventListener("drop", (event) => {
+      var _a, _b, _c;
+      event.preventDefault();
+      cellEl.removeClass("is-drop-target");
+      (_a = this.boardScroller) == null ? void 0 : _a.stop();
+      const rowId = ((_b = event.dataTransfer) == null ? void 0 : _b.getData(DND_ROW)) || ((_c = event.dataTransfer) == null ? void 0 : _c.getData("text/plain"));
+      if (!rowId) return;
+      if (this.selected.has(rowId) && this.selected.size > 1) {
+        void this.moveSelectionToColumn(groupBy, columnName, laneKey);
+        return;
+      }
+      const row = rowById.get(rowId);
+      if (!row) return;
+      void this.moveRowToColumn(row, groupBy, columnName, this.swimlaneProp || null, laneKey);
+    });
+  }
+  async quickAddInCell(columnName, groupBy, swimProp, laneKey) {
+    var _a;
+    const title = buildQuickAddTitle(columnName);
+    try {
+      const file = await createSeededNote(
+        this.plugin,
+        this.plugin.settings.kanbanQuickAddFolder,
+        groupBy || "status",
+        columnName,
+        title
+      );
+      if (laneKey !== SWIMLANE_EMPTY && swimProp) {
+        const resolved = await this.plugin.getResolvedView();
+        if (!this.isComputedField((_a = resolved.def.formulas) != null ? _a : {}, swimProp)) {
+          await writeRowProperty(this.plugin, file.path, swimProp, laneKey, false, { label: "Set swimlane" });
+        }
+      }
+      new import_obsidian5.Notice(`Created ${file.basename}`);
+    } catch (error) {
+      new import_obsidian5.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
+    }
+    await this.render();
+  }
+  /** Toggle a card's membership in the multi-select set (modifier-click). Re-renders
+   * so the selection highlight and the selection bar stay in sync. */
+  toggleSelect(rowId) {
+    if (this.selected.has(rowId)) this.selected.delete(rowId);
+    else this.selected.add(rowId);
+    void this.render();
+  }
+  clearSelection() {
+    if (this.selected.size === 0) return;
+    this.selected.clear();
+    void this.render();
+  }
+  /** The bulk action bar shown while cards are multi-selected: move the whole set to
+   * a column (keeping each card's lane) or clear the selection. */
+  renderSelectionBar(container, groupBy, columnNames) {
+    if (this.selected.size === 0) return;
+    const bar = container.createDiv({ cls: "bpp-selection-bar" });
+    bar.createSpan({
+      cls: "bpp-selection-count",
+      text: `${this.selected.size} card${this.selected.size === 1 ? "" : "s"} selected`
+    });
+    const moveBtn = bar.createEl("button", { cls: "bpp-lite-btn", text: "Move to column \u25BE" });
+    moveBtn.addEventListener("click", (evt) => {
+      const menu = new import_obsidian5.Menu();
+      for (const name of columnNames) {
+        menu.addItem((i) => i.setTitle(name).setIcon("arrow-right").onClick(() => void this.moveSelectionToColumn(groupBy, name, null)));
+      }
+      menu.showAtMouseEvent(evt);
+    });
+    const clearBtn = bar.createEl("button", { cls: "bpp-lite-btn", text: "Clear" });
+    clearBtn.addEventListener("click", () => this.clearSelection());
+  }
+  /**
+   * Move every selected card to `columnName` (and, on a swimlane drop, `laneKey`) in
+   * one undo batch. Positions aren't set — a precise rank for many cards at once
+   * isn't meaningful — only the column/lane (with Move Rules) change. WIP is enforced
+   * against the whole batch so a bulk move can't quietly blow a cap.
+   */
+  async moveSelectionToColumn(groupBy, columnName, laneKey) {
+    var _a, _b;
+    const ids = [...this.selected];
+    if (ids.length === 0) return;
+    const group = groupBy || "status";
+    const laneProp = laneKey === null ? null : this.swimlaneProp || null;
+    const resolved = await this.plugin.getResolvedView();
+    const formulas = (_a = resolved.def.formulas) != null ? _a : {};
+    const targetRows = ids.map((id) => resolved.rows.find((r) => r.id === id)).filter((r) => r !== void 0);
+    if (targetRows.length === 0) {
+      this.selected.clear();
+      await this.render();
+      return;
+    }
+    const movingColumn = targetRows.filter((r) => toStr(r.scope.get(group)) !== columnName);
+    if (movingColumn.length > 0 && this.isComputedField(formulas, group)) {
+      new import_obsidian5.Notice(`"${group}" is a computed/formula field \u2014 cards grouped by it can't be moved here.`);
+      return;
+    }
+    if (laneProp !== null && this.isComputedField(formulas, laneProp)) {
+      new import_obsidian5.Notice(`"${laneProp}" is a computed/formula field \u2014 cards can't be moved across swimlanes here.`);
+      return;
+    }
+    if (this.plugin.settings.kanbanBlockOverWip && movingColumn.length > 0) {
+      const limit = limitFor(this.plugin.settings.kanbanWipLimits, columnName);
+      if (limit !== null) {
+        const targetCount = ((_b = this.lastColumnRows.get(columnName)) != null ? _b : []).length;
+        if (targetCount + movingColumn.length > limit) {
+          new import_obsidian5.Notice(`"${columnName}" would exceed its WIP limit (${limit}). Move blocked.`);
+          return;
+        }
+      }
+    }
+    const batch = this.plugin.undo.beginBatch(`Move ${targetRows.length} cards to "${columnName}"`);
+    let moved = 0;
+    for (const r of targetRows) {
+      const crossColumn = toStr(r.scope.get(group)) !== columnName;
+      const crossLane = laneProp !== null && this.laneKeyOf(r, laneProp) !== laneKey;
+      if (!crossColumn && !crossLane) continue;
+      const writes = [];
+      if (crossColumn) {
+        writes.push({ key: group, value: columnName });
+        if (this.plugin.settings.isPro) {
+          const matched = rulesForTransition(this.plugin.settings.automations, group, columnName);
+          writes.push(...computeRuleWrites(matched, r.note.frontmatter, /* @__PURE__ */ new Date()));
+        }
+      }
+      if (crossLane && laneProp !== null) writes.push(this.laneWrite(laneProp, laneKey));
+      if (writes.length > 0 && await writeRowProperties(this.plugin, r.id, writes, { batch })) moved++;
+    }
+    this.plugin.undo.commitBatch(batch);
+    this.selected.clear();
+    new import_obsidian5.Notice(`Moved ${moved} card${moved === 1 ? "" : "s"} to "${columnName}".`);
     await this.render();
   }
   async quickAddNote(columnName, groupBy) {
@@ -5786,6 +6610,7 @@ var DEFAULT_SETTINGS = {
   kanbanWipLimits: {},
   kanbanBlockOverWip: false,
   kanbanRankProp: "rank",
+  kanbanSwimlaneBy: "",
   feedDateProp: "file.mtime",
   feedGranularity: "day",
   calendarDateProp: "due",
@@ -5937,6 +6762,14 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
       (text) => this.keySuggest(text).setPlaceholder("rank").setValue(this.plugin.settings.kanbanRankProp).onChange((value) => {
         this.plugin.settings.kanbanRankProp = value.trim() || "rank";
         void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+      })
+    );
+    new import_obsidian6.Setting(containerEl).setName("Swimlane property").setDesc(
+      "Premium. A second property that splits the board into horizontal bands (swimlanes) \u2014 e.g. owner or project \u2014 with columns still grouped by the group-by property. Leave blank for a flat board; also switchable from the board's Swimlanes control."
+    ).addText(
+      (text) => this.keySuggest(text).setPlaceholder("(none)").setValue(this.plugin.settings.kanbanSwimlaneBy).onChange((value) => {
+        this.plugin.settings.kanbanSwimlaneBy = value.trim();
+        void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
       })
     );
     new import_obsidian6.Setting(containerEl).setName("Premium").setHeading();

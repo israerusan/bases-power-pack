@@ -124,6 +124,20 @@ function matchesSearch(row: Row, search: string, columnName: string): boolean {
 	return rowMatchesText(row, search, [columnName]);
 }
 
+/** Sort one column's rows by the active Kanban sort — exported so the swimlane
+ * board can order each (lane × column) cell with exactly the same rules the flat
+ * board uses, instead of a divergent second copy. */
+export function sortKanbanColumn(rows: Row[], sortBy: KanbanSort, rankProp: string): Row[] {
+	return sortRows(rows, sortBy, rankProp);
+}
+
+/** True when a row matches the board's quick-search — name/path/folder/tags plus
+ * the card's own column value as an extra haystack. Exported for the swimlane
+ * board so its per-cell filtering matches the flat board exactly. */
+export function rowMatchesKanbanSearch(row: Row, search: string, columnName: string): boolean {
+	return matchesSearch(row, search, columnName);
+}
+
 function sortRows(rows: Row[], sortBy: KanbanSort, rankProp: string): Row[] {
 	const copy = [...rows];
 	// "manual" (the default) and the legacy "rank" value are the same hand-order:
