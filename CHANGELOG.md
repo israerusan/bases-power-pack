@@ -3,6 +3,31 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.23.0] - 2026-07-24
+
+Bases Power Pack is now a **native Bases view** — a **"Kanban"** option inside
+Obsidian's Bases view dropdown — alongside the standalone board. Requires Obsidian
+1.10+.
+
+### Added
+- **Native Kanban Bases view.** Open a base, set a **Group by** property, and choose
+  **Kanban** in the view dropdown. Columns come from the group-by; **drag cards between
+  columns** to change the property, **drag between two cards** to reorder (saved to a
+  `rank` property), **reorder / add / remove / color** columns, **right-click** cards and
+  columns for actions (open, rename, delete, move, add note), see **card property chips**
+  (your *Card detail fields*), and **Ctrl/Cmd+hover** to preview. It reuses your board
+  settings (column order, colors, extra columns), so it stays in sync with the standalone
+  board. A `file.*`/`formula.*` group-by renders read-only (only `note.*` properties are
+  written back). The standalone views are unchanged.
+
+### Changed
+- **`minAppVersion` is now 1.10.0** (the Bases view API requires it). Anyone on an older
+  Obsidian keeps the last compatible release automatically via `versions.json` — no one is
+  stranded.
+- **Card hover preview now uses Ctrl/Cmd+hover** on both boards. A plain-hover popover sat
+  on top of the card and blocked dragging; requiring the modifier keeps drag reliable
+  while still offering a preview on demand.
+
 ## [1.22.0] - 2026-07-24
 
 ### Added

@@ -7956,7 +7956,7 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
       this.empty(board, "No results", "Add notes, or adjust this base's filters.");
       return;
     }
-    if (groups.length === 1 && !this.hasKey(groups[0])) {
+    if (groups.length === 1 && !this.hasKey(groups[0]) && this.groupByPid() === null) {
       this.empty(
         board,
         "Choose a Group by property",
@@ -7974,8 +7974,8 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
         entryOf.set(entry.file.path, entry);
       }
     }
-    const ctx = { groupKey, columnOf, entryOf };
     const names = columns.map((c) => c.name);
+    const ctx = { groupKey, columnOf, entryOf, columns, names };
     for (const col of columns) this.renderColumn(board, col, names, ctx, colored);
     if (groupKey) this.renderAddColumnTile(board, groupKey);
   }
@@ -8123,7 +8123,7 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
       colEl.removeClass("is-col-drop-target");
       const movedCol = (_a = e.dataTransfer) == null ? void 0 : _a.getData("application/x-bpp-bcol");
       if (movedCol && ctx.groupKey) {
-        void this.reorderColumn(movedCol, col.name, ctx.groupKey);
+        void this.reorderColumn(movedCol, col.name, ctx.names, ctx.groupKey);
         return;
       }
       const path = (_b = e.dataTransfer) == null ? void 0 : _b.getData("text/plain");
@@ -8164,26 +8164,28 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
     if (!moved || !ctx.groupKey) return;
     const from = ctx.columnOf.get(path);
     const crossColumn = !from || from.value !== col.value;
-    const rest = col.entries.filter((e) => e.file.path !== path);
-    const items = rest.map((e) => ({ id: e.file.path, rank: this.rankOf(e) }));
-    items.push({ id: path, rank: this.rankOf(moved) });
+    const items = col.entries.map((e) => ({ id: e.file.path, rank: this.rankOf(e) }));
+    const rest = items.filter((i) => i.id !== path);
     let index;
     if (target === null) index = rest.length;
     else {
-      const pos = rest.findIndex((e) => e.file.path === target.file.path);
+      const pos = rest.findIndex((i) => i.id === target.file.path);
       if (pos === -1) return;
       index = before ? pos : pos + 1;
     }
     const rankWrites = planReorder(items, path, index);
+    if (rankWrites.length === 0 && !crossColumn) return;
     const rankById = new Map(rankWrites.map((w) => [w.id, w.rank]));
     try {
-      await this.app.fileManager.processFrontMatter(moved.file, (fm) => {
-        if (crossColumn) {
-          if (col.value === "") delete fm[ctx.groupKey];
-          else fm[ctx.groupKey] = col.value;
-        }
-        if (rankById.has(path)) fm[RANK_PROP] = rankById.get(path);
-      });
+      if (crossColumn || rankById.has(path)) {
+        await this.app.fileManager.processFrontMatter(moved.file, (fm) => {
+          if (crossColumn) {
+            if (col.value === "") delete fm[ctx.groupKey];
+            else fm[ctx.groupKey] = col.value;
+          }
+          if (rankById.has(path)) fm[RANK_PROP] = rankById.get(path);
+        });
+      }
       for (const write of rankWrites) {
         if (write.id === path) continue;
         const neighbour = ctx.entryOf.get(write.id);
@@ -8237,10 +8239,8 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
     menu.showAtMouseEvent(anchor);
   }
   // ---- mutations (settings shared with the standalone board) ----------------
-  async reorderColumn(moved, target, groupKey) {
-    var _a;
-    const current = (_a = this.plugin.settings.kanbanColumnOrder[groupKey]) != null ? _a : this.currentColumnNames();
-    this.plugin.settings.kanbanColumnOrder[groupKey] = reorderColumns(current, moved, target);
+  async reorderColumn(moved, target, names, groupKey) {
+    this.plugin.settings.kanbanColumnOrder[groupKey] = reorderColumns(names, moved, target);
     await this.plugin.saveSettings({ invalidateResolved: false });
     this.onDataUpdated();
   }
@@ -8362,16 +8362,7 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
   }
   // ---- helpers --------------------------------------------------------------
   otherColumnNames(col, ctx) {
-    const seen = /* @__PURE__ */ new Map();
-    for (const c of ctx.columnOf.values()) if (c.name !== col.name) seen.set(c.name, c);
-    return [...seen.values()];
-  }
-  currentColumnNames() {
-    const names = /* @__PURE__ */ new Set();
-    for (const g of this.safeGroups()) {
-      if (this.hasKey(g) && g.key) names.add(g.key.toString());
-    }
-    return [...names];
+    return ctx.columns.filter((c) => c.name !== col.name);
   }
   hueFor(name) {
     var _a;
@@ -8440,19 +8431,27 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
       return group.key != null;
     }
   }
-  resolveGroupKey() {
+  /** The raw group-by property id ("note.status" / "file.name" / …), or null when no
+   * Group by is configured. The typings don't expose it, so read the untyped config
+   * paths the reference plugins use, then getAsPropertyId. */
+  groupByPid() {
     const cfg = this.config;
-    let pid = null;
     const gb = cfg.groupBy;
-    if (gb && typeof gb === "object" && typeof gb.property === "string") pid = gb.property;
-    else if (typeof gb === "string") pid = gb;
-    if (!pid && typeof cfg.getAsPropertyId === "function") {
+    if (gb && typeof gb === "object" && typeof gb.property === "string") return gb.property;
+    if (typeof gb === "string") return gb;
+    if (typeof cfg.getAsPropertyId === "function") {
       try {
-        pid = cfg.getAsPropertyId("groupBy");
+        return cfg.getAsPropertyId("groupBy");
       } catch (e) {
-        pid = null;
+        return null;
       }
     }
+    return null;
+  }
+  /** The writable frontmatter key backing the group-by, or null (→ a read-only board).
+   * Only a `note.*` property is writable; a `file.*`/`formula.*` group stays read-only. */
+  resolveGroupKey() {
+    const pid = this.groupByPid();
     if (!pid) return null;
     const match = /^note\.(.+)$/.exec(pid);
     return match ? match[1] : null;

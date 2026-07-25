@@ -36,6 +36,7 @@ Advanced database views and automation on top of Obsidian's native **Bases** fea
 | **Floating editor** (open a card's note in an editor floating over the board) | ✅ | ✅ |
 | **New Kanban board command** (scaffold a folder + sample notes + open the board) | ✅ | ✅ |
 | **Predefined column sets** (apply an ordered, colored, done-marked layout in one click) | ✅ | ✅ |
+| **Native Bases view** (a "Kanban" view type inside the Bases dropdown; Obsidian 1.10+) | ✅ | ✅ |
 | **Kanban color-coded columns & cards** (stable color per column value) | ✅ | ✅ |
 | **Kanban card metadata** (due / priority / owner / tags on the card) | ✅ | ✅ |
 | **Semantic card chips** (overdue/due-soon pill, priority badge, tag pills) | ✅ | ✅ |

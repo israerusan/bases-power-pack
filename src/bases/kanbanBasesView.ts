@@ -46,6 +46,11 @@ interface DropCtx {
 	groupKey: string | null;
 	columnOf: Map<string, Column>;
 	entryOf: Map<string, BasesEntry>;
+	/** Every rendered column (incl. empty/extra ones) — the move-to menu + column
+	 * reorder seed both need the FULL set, not just columns that hold cards. */
+	columns: Column[];
+	/** The full displayed column order (names), the seed for a header-drag reorder. */
+	names: string[];
 }
 
 /**
@@ -92,7 +97,10 @@ export class KanbanBasesView extends BasesView {
 			this.empty(board, "No results", "Add notes, or adjust this base's filters.");
 			return;
 		}
-		if (groups.length === 1 && !this.hasKey(groups[0])) {
+		// One keyless group means EITHER no Group by is set, OR it's set but no note has a
+		// value yet. Only show the "choose a Group by" prompt in the first case — in the
+		// second, fall through and render the "(no value)" column + the add-column tile.
+		if (groups.length === 1 && !this.hasKey(groups[0]) && this.groupByPid() === null) {
 			this.empty(
 				board,
 				"Choose a Group by property",
@@ -111,8 +119,8 @@ export class KanbanBasesView extends BasesView {
 				entryOf.set(entry.file.path, entry);
 			}
 		}
-		const ctx: DropCtx = { groupKey, columnOf, entryOf };
 		const names = columns.map((c) => c.name);
+		const ctx: DropCtx = { groupKey, columnOf, entryOf, columns, names };
 
 		for (const col of columns) this.renderColumn(board, col, names, ctx, colored);
 		if (groupKey) this.renderAddColumnTile(board, groupKey);
@@ -272,7 +280,7 @@ export class KanbanBasesView extends BasesView {
 			colEl.removeClass("is-col-drop-target");
 			const movedCol = e.dataTransfer?.getData("application/x-bpp-bcol");
 			if (movedCol && ctx.groupKey) {
-				void this.reorderColumn(movedCol, col.name, ctx.groupKey);
+				void this.reorderColumn(movedCol, col.name, ctx.names, ctx.groupKey);
 				return;
 			}
 			const path = e.dataTransfer?.getData("text/plain");
@@ -314,27 +322,34 @@ export class KanbanBasesView extends BasesView {
 		const from = ctx.columnOf.get(path);
 		const crossColumn = !from || from.value !== col.value;
 
-		const rest = col.entries.filter((e) => e.file.path !== path);
-		const items: RankItem[] = rest.map((e) => ({ id: e.file.path, rank: this.rankOf(e) }));
-		items.push({ id: path, rank: this.rankOf(moved) });
+		// Plan against the destination column's current order — `col.entries` already
+		// contains the moved card in its sorted place for a same-column move, and omits
+		// it for a cross-column move, exactly what planReorder expects (the standalone
+		// board does the same). Appending it here instead would misfire planReorder's
+		// no-op guard on any drop targeting the LAST slot, dropping the rank write.
+		const items: RankItem[] = col.entries.map((e) => ({ id: e.file.path, rank: this.rankOf(e) }));
+		const rest = items.filter((i) => i.id !== path);
 		let index: number;
 		if (target === null) index = rest.length;
 		else {
-			const pos = rest.findIndex((e) => e.file.path === target.file.path);
+			const pos = rest.findIndex((i) => i.id === target.file.path);
 			if (pos === -1) return;
 			index = before ? pos : pos + 1;
 		}
 		const rankWrites = planReorder(items, path, index);
+		if (rankWrites.length === 0 && !crossColumn) return; // already in place — no write
 		const rankById = new Map(rankWrites.map((w) => [w.id, w.rank]));
 
 		try {
-			await this.app.fileManager.processFrontMatter(moved.file, (fm: Record<string, unknown>) => {
-				if (crossColumn) {
-					if (col.value === "") delete fm[ctx.groupKey!];
-					else fm[ctx.groupKey!] = col.value;
-				}
-				if (rankById.has(path)) fm[RANK_PROP] = rankById.get(path);
-			});
+			if (crossColumn || rankById.has(path)) {
+				await this.app.fileManager.processFrontMatter(moved.file, (fm: Record<string, unknown>) => {
+					if (crossColumn) {
+						if (col.value === "") delete fm[ctx.groupKey!];
+						else fm[ctx.groupKey!] = col.value;
+					}
+					if (rankById.has(path)) fm[RANK_PROP] = rankById.get(path);
+				});
+			}
 			for (const write of rankWrites) {
 				if (write.id === path) continue;
 				const neighbour = ctx.entryOf.get(write.id);
@@ -393,9 +408,10 @@ export class KanbanBasesView extends BasesView {
 
 	// ---- mutations (settings shared with the standalone board) ----------------
 
-	private async reorderColumn(moved: string, target: string, groupKey: string): Promise<void> {
-		const current = this.plugin.settings.kanbanColumnOrder[groupKey] ?? this.currentColumnNames();
-		this.plugin.settings.kanbanColumnOrder[groupKey] = reorderColumns(current, moved, target);
+	private async reorderColumn(moved: string, target: string, names: string[], groupKey: string): Promise<void> {
+		// Seed from the FULL displayed order (incl. "(no value)" + extra columns), not a
+		// possibly-incomplete saved order — else an unrelated drag reshuffles the rest.
+		this.plugin.settings.kanbanColumnOrder[groupKey] = reorderColumns(names, moved, target);
 		await this.plugin.saveSettings({ invalidateResolved: false });
 		this.onDataUpdated();
 	}
@@ -528,17 +544,8 @@ export class KanbanBasesView extends BasesView {
 	// ---- helpers --------------------------------------------------------------
 
 	private otherColumnNames(col: Column, ctx: DropCtx): Column[] {
-		const seen = new Map<string, Column>();
-		for (const c of ctx.columnOf.values()) if (c.name !== col.name) seen.set(c.name, c);
-		return [...seen.values()];
-	}
-
-	private currentColumnNames(): string[] {
-		const names = new Set<string>();
-		for (const g of this.safeGroups()) {
-			if (this.hasKey(g) && g.key) names.add(g.key.toString());
-		}
-		return [...names];
+		// From the FULL column set so an empty/extra column is a valid move target too.
+		return ctx.columns.filter((c) => c.name !== col.name);
 	}
 
 	private hueFor(name: string): string {
@@ -615,22 +622,31 @@ export class KanbanBasesView extends BasesView {
 		}
 	}
 
-	private resolveGroupKey(): string | null {
+	/** The raw group-by property id ("note.status" / "file.name" / …), or null when no
+	 * Group by is configured. The typings don't expose it, so read the untyped config
+	 * paths the reference plugins use, then getAsPropertyId. */
+	private groupByPid(): string | null {
 		const cfg = this.config as unknown as {
 			getAsPropertyId?: (k: string) => string | null;
 			groupBy?: { property?: string } | string;
 		};
-		let pid: string | null = null;
 		const gb = cfg.groupBy;
-		if (gb && typeof gb === "object" && typeof gb.property === "string") pid = gb.property;
-		else if (typeof gb === "string") pid = gb;
-		if (!pid && typeof cfg.getAsPropertyId === "function") {
+		if (gb && typeof gb === "object" && typeof gb.property === "string") return gb.property;
+		if (typeof gb === "string") return gb;
+		if (typeof cfg.getAsPropertyId === "function") {
 			try {
-				pid = cfg.getAsPropertyId("groupBy");
+				return cfg.getAsPropertyId("groupBy");
 			} catch {
-				pid = null;
+				return null;
 			}
 		}
+		return null;
+	}
+
+	/** The writable frontmatter key backing the group-by, or null (→ a read-only board).
+	 * Only a `note.*` property is writable; a `file.*`/`formula.*` group stays read-only. */
+	private resolveGroupKey(): string | null {
+		const pid = this.groupByPid();
 		if (!pid) return null;
 		const match = /^note\.(.+)$/.exec(pid);
 		return match ? match[1] : null;
