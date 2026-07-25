@@ -2271,10 +2271,10 @@ __export(main_exports, {
   default: () => BasesPowerPackPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian13 = require("obsidian");
+var import_obsidian14 = require("obsidian");
 
 // src/settings.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // src/views/inputSuggest.ts
 var import_obsidian = require("obsidian");
@@ -2328,7 +2328,7 @@ var FolderSuggest = class extends import_obsidian.AbstractInputSuggest {
 };
 
 // src/views/kanbanView.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 
 // src/engine/expression.ts
 var OPERATORS = [
@@ -2931,377 +2931,7 @@ function makeRow(note, formulas = {}) {
 }
 
 // src/views/abstractView.ts
-var import_obsidian4 = require("obsidian");
-
-// src/views/modals.ts
-var import_obsidian2 = require("obsidian");
-var FloatingEditModal = class extends import_obsidian2.Modal {
-  constructor(app, file) {
-    super(app);
-    this.file = file;
-    this.leaf = null;
-  }
-  onOpen() {
-    this.modalEl.addClass("bpp-float-edit");
-    this.titleEl.setText(this.file.basename);
-    let leaf;
-    try {
-      const LeafCtor = import_obsidian2.WorkspaceLeaf;
-      leaf = new LeafCtor(this.app);
-    } catch (e) {
-      this.fallbackToSplit();
-      return;
-    }
-    this.leaf = leaf;
-    leaf.openFile(this.file, { active: false }).then(
-      () => {
-        var _a;
-        if (this.leaf !== leaf) return;
-        const el = (_a = leaf.view) == null ? void 0 : _a.containerEl;
-        if (!el) {
-          this.fallbackToSplit();
-          return;
-        }
-        this.contentEl.empty();
-        this.contentEl.appendChild(el);
-      },
-      () => {
-        if (this.leaf !== leaf) return;
-        this.fallbackToSplit();
-      }
-    );
-  }
-  onClose() {
-    var _a;
-    (_a = this.leaf) == null ? void 0 : _a.detach();
-    this.leaf = null;
-    this.contentEl.empty();
-  }
-  /** Public-API degradation: open the note in a split pane instead. Detach any rogue
-   * leaf we created first (it was never in the workspace) so it can't leak. */
-  fallbackToSplit() {
-    var _a;
-    const file = this.file;
-    (_a = this.leaf) == null ? void 0 : _a.detach();
-    this.leaf = null;
-    this.close();
-    void this.app.workspace.getLeaf("split").openFile(file);
-  }
-};
-var PromptModal = class extends import_obsidian2.Modal {
-  constructor(app, opts) {
-    super(app);
-    this.opts = opts;
-    this.value = opts.value;
-  }
-  onOpen() {
-    this.titleEl.setText(this.opts.title);
-    const submit = () => {
-      this.close();
-      this.opts.onSubmit(this.value);
-    };
-    new import_obsidian2.Setting(this.contentEl).addText((text) => {
-      text.setValue(this.value).onChange((v) => this.value = v);
-      if (this.opts.placeholder) text.setPlaceholder(this.opts.placeholder);
-      text.inputEl.addEventListener("keydown", (evt) => {
-        if (evt.key === "Enter") {
-          evt.preventDefault();
-          submit();
-        }
-      });
-      window.setTimeout(() => {
-        text.inputEl.focus();
-        text.inputEl.select();
-      }, 0);
-    });
-    new import_obsidian2.Setting(this.contentEl).addButton((b) => b.setButtonText("Cancel").onClick(() => this.close())).addButton((b) => {
-      var _a;
-      return b.setButtonText((_a = this.opts.cta) != null ? _a : "Save").setCta().onClick(submit);
-    });
-  }
-  onClose() {
-    this.contentEl.empty();
-  }
-};
-var ConfirmModal = class extends import_obsidian2.Modal {
-  constructor(app, opts) {
-    super(app);
-    this.opts = opts;
-  }
-  onOpen() {
-    this.titleEl.setText(this.opts.title);
-    this.contentEl.createEl("p", { text: this.opts.body });
-    new import_obsidian2.Setting(this.contentEl).addButton((b) => b.setButtonText("Cancel").onClick(() => this.close())).addButton(
-      (b) => b.setButtonText(this.opts.cta).setWarning().onClick(() => {
-        this.close();
-        this.opts.onConfirm();
-      })
-    );
-  }
-  onClose() {
-    this.contentEl.empty();
-  }
-};
-var BulkEditModal = class extends import_obsidian2.Modal {
-  constructor(app, count, onApply) {
-    super(app);
-    this.prop = "";
-    this.op = "set";
-    this.value = "";
-    this.count = count;
-    this.onApply = onApply;
-  }
-  onOpen() {
-    this.titleEl.setText(`Bulk edit ${this.count} note${this.count === 1 ? "" : "s"}`);
-    let valueSetting = null;
-    new import_obsidian2.Setting(this.contentEl).setName("Property").setDesc("Frontmatter key to change on every note in the current view.").addText((t) => t.setPlaceholder("status").setValue(this.prop).onChange((v) => this.prop = v.trim()));
-    new import_obsidian2.Setting(this.contentEl).setName("Operation").addDropdown((dd) => {
-      dd.addOption("set", "Set to value");
-      dd.addOption("clear", "Clear (remove)");
-      dd.addOption("toggle", "Toggle true/false");
-      dd.setValue(this.op).onChange((v) => {
-        this.op = v;
-        if (valueSetting) valueSetting.settingEl.toggleClass("bpp-hidden", this.op !== "set");
-      });
-    });
-    valueSetting = new import_obsidian2.Setting(this.contentEl).setName("Value").addText((t) => t.setPlaceholder("done").setValue(this.value).onChange((v) => this.value = v));
-    new import_obsidian2.Setting(this.contentEl).addButton((b) => b.setButtonText("Cancel").onClick(() => this.close())).addButton(
-      (b) => b.setButtonText(`Apply to ${this.count}`).setCta().onClick(() => {
-        if (!this.prop) return;
-        this.close();
-        this.onApply(this.prop, this.op, this.value);
-      })
-    );
-  }
-  onClose() {
-    this.contentEl.empty();
-  }
-};
-
-// src/query/inlineEdit.ts
-var NUMERIC_FIELDS = /* @__PURE__ */ new Set(["priority", "order", "weight", "estimate", "progress"]);
-var LIST_FIELDS = /* @__PURE__ */ new Set(["tags", "aliases", "owners"]);
-function coerceFieldInput(field, raw, previous) {
-  const trimmed = raw.trim();
-  if (trimmed.length === 0) return { value: null, remove: true };
-  const key = field.trim().toLowerCase();
-  if (LIST_FIELDS.has(key) || Array.isArray(previous)) {
-    const parts = trimmed.split(",").map((p) => p.trim()).filter(Boolean);
-    const deduped = [...new Set(parts)];
-    return { value: deduped, remove: deduped.length === 0 };
-  }
-  const numericField = NUMERIC_FIELDS.has(key) || typeof previous === "number";
-  if (numericField && /^-?\d+(\.\d+)?$/.test(trimmed)) {
-    return { value: Number(trimmed), remove: false };
-  }
-  if (trimmed === "true" || trimmed === "false") {
-    if (typeof previous === "boolean") return { value: trimmed === "true", remove: false };
-  }
-  return { value: trimmed, remove: false };
-}
-function formatFieldForEdit(value) {
-  return toStr(value);
-}
-
-// src/query/colorRules.ts
-var NAMED_COLORS = /* @__PURE__ */ new Set([
-  "transparent",
-  "currentcolor",
-  "aliceblue",
-  "antiquewhite",
-  "aqua",
-  "aquamarine",
-  "azure",
-  "beige",
-  "bisque",
-  "black",
-  "blanchedalmond",
-  "blue",
-  "blueviolet",
-  "brown",
-  "burlywood",
-  "cadetblue",
-  "chartreuse",
-  "chocolate",
-  "coral",
-  "cornflowerblue",
-  "cornsilk",
-  "crimson",
-  "cyan",
-  "darkblue",
-  "darkcyan",
-  "darkgoldenrod",
-  "darkgray",
-  "darkgreen",
-  "darkgrey",
-  "darkkhaki",
-  "darkmagenta",
-  "darkolivegreen",
-  "darkorange",
-  "darkorchid",
-  "darkred",
-  "darksalmon",
-  "darkseagreen",
-  "darkslateblue",
-  "darkslategray",
-  "darkslategrey",
-  "darkturquoise",
-  "darkviolet",
-  "deeppink",
-  "deepskyblue",
-  "dimgray",
-  "dimgrey",
-  "dodgerblue",
-  "firebrick",
-  "floralwhite",
-  "forestgreen",
-  "fuchsia",
-  "gainsboro",
-  "ghostwhite",
-  "gold",
-  "goldenrod",
-  "gray",
-  "green",
-  "greenyellow",
-  "grey",
-  "honeydew",
-  "hotpink",
-  "indianred",
-  "indigo",
-  "ivory",
-  "khaki",
-  "lavender",
-  "lavenderblush",
-  "lawngreen",
-  "lemonchiffon",
-  "lightblue",
-  "lightcoral",
-  "lightcyan",
-  "lightgoldenrodyellow",
-  "lightgray",
-  "lightgreen",
-  "lightgrey",
-  "lightpink",
-  "lightsalmon",
-  "lightseagreen",
-  "lightskyblue",
-  "lightslategray",
-  "lightslategrey",
-  "lightsteelblue",
-  "lightyellow",
-  "lime",
-  "limegreen",
-  "linen",
-  "magenta",
-  "maroon",
-  "mediumaquamarine",
-  "mediumblue",
-  "mediumorchid",
-  "mediumpurple",
-  "mediumseagreen",
-  "mediumslateblue",
-  "mediumspringgreen",
-  "mediumturquoise",
-  "mediumvioletred",
-  "midnightblue",
-  "mintcream",
-  "mistyrose",
-  "moccasin",
-  "navajowhite",
-  "navy",
-  "oldlace",
-  "olive",
-  "olivedrab",
-  "orange",
-  "orangered",
-  "orchid",
-  "palegoldenrod",
-  "palegreen",
-  "paleturquoise",
-  "palevioletred",
-  "papayawhip",
-  "peachpuff",
-  "peru",
-  "pink",
-  "plum",
-  "powderblue",
-  "purple",
-  "rebeccapurple",
-  "red",
-  "rosybrown",
-  "royalblue",
-  "saddlebrown",
-  "salmon",
-  "sandybrown",
-  "seagreen",
-  "seashell",
-  "sienna",
-  "silver",
-  "skyblue",
-  "slateblue",
-  "slategray",
-  "slategrey",
-  "snow",
-  "springgreen",
-  "steelblue",
-  "tan",
-  "teal",
-  "thistle",
-  "tomato",
-  "turquoise",
-  "violet",
-  "wheat",
-  "white",
-  "whitesmoke",
-  "yellow",
-  "yellowgreen"
-]);
-var HEX_RE = /^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
-var FUNC_RE = /^(?:rgb|rgba|hsl|hsla)\([a-zA-Z0-9\s.,%/]+\)$/;
-var VAR_RE = /^var\(--[\w-]+\)$/;
-function sanitizeColor(color) {
-  const c = typeof color === "string" ? color.trim() : "";
-  if (!c) return "";
-  if (HEX_RE.test(c) || FUNC_RE.test(c) || VAR_RE.test(c)) return c;
-  if (/^[a-zA-Z]+$/.test(c) && NAMED_COLORS.has(c.toLowerCase())) return c;
-  return "";
-}
-function resolveRowColor(row, rules) {
-  for (const rule of rules) {
-    const expr = rule.expression.trim();
-    const color = sanitizeColor(rule.color);
-    if (!expr || !color) continue;
-    const value = evaluateSafe(expr, row.scope);
-    if (toBool(value)) {
-      return { color, label: rule.label.trim(), ruleId: rule.id };
-    }
-  }
-  return null;
-}
-function normalizeColorRules(raw) {
-  if (!Array.isArray(raw)) return [];
-  const out = [];
-  const seen = /* @__PURE__ */ new Set();
-  let n = 0;
-  for (const item of raw) {
-    if (!item || typeof item !== "object") continue;
-    const r = item;
-    let id = typeof r.id === "string" && r.id ? r.id : "";
-    if (!id || seen.has(id)) {
-      do {
-        id = `rule-${++n}`;
-      } while (seen.has(id));
-    }
-    seen.add(id);
-    out.push({
-      id,
-      label: typeof r.label === "string" ? r.label : "",
-      expression: typeof r.expression === "string" ? r.expression : "",
-      color: sanitizeColor(r.color)
-    });
-  }
-  return out;
-}
+var import_obsidian5 = require("obsidian");
 
 // src/query/gantt.ts
 function toDayNumber(value) {
@@ -3670,42 +3300,6 @@ function normalize2(value) {
   return toStr(value).trim().toLocaleLowerCase();
 }
 
-// src/query/gallery.ts
-function parseString(input) {
-  let s = input.trim();
-  if (!s) return null;
-  const wiki = s.match(/^!?\[\[([^\]|]+)(?:\|[^\]]*)?\]\]$/);
-  if (wiki) s = wiki[1].trim();
-  const md = s.match(/^!?\[[^\]]*\]\((.+)\)$/);
-  if (md) {
-    s = md[1].trim();
-    const titled = s.match(/^(.*\S)\s+["'][^"']*["']$/);
-    if (titled) s = titled[1].trim();
-  }
-  s = s.replace(/^<([^>]*)>$/, "$1").trim();
-  s = s.replace(/^["']|["']$/g, "").trim();
-  if (!s) return null;
-  if (/^https?:\/\//i.test(s)) return { kind: "url", ref: s };
-  if (/^[a-z][a-z0-9+.-]*:/i.test(s) || s.startsWith("//")) return null;
-  let decoded = s;
-  try {
-    decoded = decodeURIComponent(s);
-  } catch (e) {
-    decoded = s;
-  }
-  return { kind: "vault", ref: decoded };
-}
-function parseImageRef(value) {
-  if (typeof value === "string") return parseString(value);
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const ref = typeof item === "string" ? parseString(item) : null;
-      if (ref) return ref;
-    }
-  }
-  return null;
-}
-
 // src/query/dates.ts
 function toIsoDateKey(value) {
   if (value === void 0 || value === null || value === "") return null;
@@ -3928,8 +3522,411 @@ function pivotToMarkdownTable(model, rowProp, colProp) {
   return [headerLine, divider, ...body].join("\n");
 }
 
+// src/query/rollup.ts
+var AGGREGATIONS = [
+  "count",
+  "sum",
+  "avg",
+  "min",
+  "max",
+  "unique",
+  "filled",
+  "empty",
+  "range"
+];
+function isEmpty2(v) {
+  if (v === null || v === void 0) return true;
+  if (typeof v === "string") return v.trim().length === 0;
+  if (Array.isArray(v)) return v.length === 0;
+  return false;
+}
+function computeRollup(rollup, rows) {
+  const values = rows.map((r) => evaluateSafe(rollup.expression, r.scope));
+  if (rollup.aggregation === "range") {
+    const nums = numeric2(values);
+    return nums.length ? `${formatNumber(arrMin(nums))}\u2013${formatNumber(arrMax(nums))}` : "\u2014";
+  }
+  const n = aggregateNumber(rollup.aggregation, values);
+  return n === null ? "\u2014" : formatNumber(n);
+}
+function aggregateNumber(aggregation, values) {
+  switch (aggregation) {
+    case "count":
+      return values.length;
+    case "filled":
+      return values.filter((v) => !isEmpty2(v)).length;
+    case "empty":
+      return values.filter(isEmpty2).length;
+    case "unique":
+      return new Set(values.filter((v) => !isEmpty2(v)).map(toStr)).size;
+    case "sum":
+      return numeric2(values).reduce((s, n) => s + n, 0);
+    case "avg": {
+      const nums = numeric2(values);
+      return nums.length ? nums.reduce((s, n) => s + n, 0) / nums.length : null;
+    }
+    case "min": {
+      const nums = numeric2(values);
+      return nums.length ? arrMin(nums) : null;
+    }
+    case "max": {
+      const nums = numeric2(values);
+      return nums.length ? arrMax(nums) : null;
+    }
+    case "range": {
+      const nums = numeric2(values);
+      return nums.length ? arrMax(nums) - arrMin(nums) : null;
+    }
+  }
+}
+function aggregateRows(aggregation, rows, expression) {
+  return aggregateNumber(aggregation, rows.map((r) => evaluateSafe(expression, r.scope)));
+}
+function numeric2(values) {
+  return values.map(arithNumber).filter((n) => !Number.isNaN(n));
+}
+function arrMin(nums) {
+  return nums.reduce((m, n) => n < m ? n : m);
+}
+function arrMax(nums) {
+  return nums.reduce((m, n) => n > m ? n : m);
+}
+function formatNumber(n) {
+  if (!Number.isFinite(n)) return "\u2014";
+  return String(Math.round(n * 100) / 100);
+}
+
+// src/views/viewChrome.ts
+function renderSearchControl(container, current, onInput) {
+  const wrap = container.createDiv({ cls: "bpp-lite-control" });
+  const input = wrap.createEl("input", {
+    type: "search",
+    cls: "bpp-lite-input",
+    placeholder: "Filter notes\u2026",
+    attr: { "aria-label": "Search" }
+  });
+  input.value = current;
+  input.addEventListener("input", () => onInput(input.value));
+  return input;
+}
+function renderSelect(container, label, options, current, onChange) {
+  const wrap = container.createDiv({ cls: "bpp-lite-control" });
+  wrap.createSpan({ cls: "bpp-muted", text: label });
+  const select = wrap.createEl("select", { cls: "bpp-lite-select dropdown" });
+  for (const opt of options) {
+    const optionEl = select.createEl("option", { text: opt.label, value: opt.value });
+    if (opt.value === current) optionEl.selected = true;
+  }
+  select.addEventListener("change", () => onChange(select.value));
+  return select;
+}
+function renderPropertySelect(container, label, keys, current, onChange) {
+  const values = keys.includes(current) ? keys : [current, ...keys];
+  return renderSelect(
+    container,
+    label,
+    values.map((k) => ({ value: k, label: k })),
+    current,
+    onChange
+  );
+}
+function renderContextControls(container, plugin, resolved, onChange) {
+  const bar = container.createDiv({ cls: "bpp-context" });
+  bar.createSpan({
+    cls: "bpp-muted",
+    text: resolved.baseLabel ? `Base: ${resolved.baseLabel}` : "Base: all notes"
+  });
+  if (!plugin.settings.isPro) return;
+  const filters = plugin.settings.savedFilters;
+  if (filters.length === 0) return;
+  bar.createSpan({ cls: "bpp-muted bpp-context-filter-label", text: "Filter:" });
+  const select = bar.createEl("select", { cls: "bpp-filter-select dropdown" });
+  select.createEl("option", { text: "None", value: "" });
+  for (const f of filters) {
+    const opt = select.createEl("option", { text: f.name, value: f.id });
+    if (f.id === plugin.settings.activeFilterId) opt.selected = true;
+  }
+  select.addEventListener("change", () => {
+    plugin.settings.activeFilterId = select.value;
+    void plugin.saveSettings().then(onChange);
+  });
+}
+function renderRollupBar(container, plugin, rows) {
+  if (!plugin.settings.isPro || plugin.settings.rollups.length === 0) return;
+  const bar = container.createDiv({ cls: "bpp-rollup-bar" });
+  for (const rollup of plugin.settings.rollups) {
+    const chip = bar.createDiv({ cls: "bpp-rollup" });
+    chip.createSpan({ cls: "bpp-rollup-label", text: rollup.label || rollup.aggregation });
+    chip.createSpan({ cls: "bpp-rollup-value", text: computeRollup(rollup, rows) });
+  }
+}
+
+// src/views/rowActions.ts
+var import_obsidian4 = require("obsidian");
+
+// src/query/gallery.ts
+function parseString(input) {
+  let s = input.trim();
+  if (!s) return null;
+  const wiki = s.match(/^!?\[\[([^\]|]+)(?:\|[^\]]*)?\]\]$/);
+  if (wiki) s = wiki[1].trim();
+  const md = s.match(/^!?\[[^\]]*\]\((.+)\)$/);
+  if (md) {
+    s = md[1].trim();
+    const titled = s.match(/^(.*\S)\s+["'][^"']*["']$/);
+    if (titled) s = titled[1].trim();
+  }
+  s = s.replace(/^<([^>]*)>$/, "$1").trim();
+  s = s.replace(/^["']|["']$/g, "").trim();
+  if (!s) return null;
+  if (/^https?:\/\//i.test(s)) return { kind: "url", ref: s };
+  if (/^[a-z][a-z0-9+.-]*:/i.test(s) || s.startsWith("//")) return null;
+  let decoded = s;
+  try {
+    decoded = decodeURIComponent(s);
+  } catch (e) {
+    decoded = s;
+  }
+  return { kind: "vault", ref: decoded };
+}
+function parseImageRef(value) {
+  if (typeof value === "string") return parseString(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const ref = typeof item === "string" ? parseString(item) : null;
+      if (ref) return ref;
+    }
+  }
+  return null;
+}
+
+// src/query/inlineEdit.ts
+var NUMERIC_FIELDS = /* @__PURE__ */ new Set(["priority", "order", "weight", "estimate", "progress"]);
+var LIST_FIELDS = /* @__PURE__ */ new Set(["tags", "aliases", "owners"]);
+function coerceFieldInput(field, raw, previous) {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) return { value: null, remove: true };
+  const key = field.trim().toLowerCase();
+  if (LIST_FIELDS.has(key) || Array.isArray(previous)) {
+    const parts = trimmed.split(",").map((p) => p.trim()).filter(Boolean);
+    const deduped = [...new Set(parts)];
+    return { value: deduped, remove: deduped.length === 0 };
+  }
+  const numericField = NUMERIC_FIELDS.has(key) || typeof previous === "number";
+  if (numericField && /^-?\d+(\.\d+)?$/.test(trimmed)) {
+    return { value: Number(trimmed), remove: false };
+  }
+  if (trimmed === "true" || trimmed === "false") {
+    if (typeof previous === "boolean") return { value: trimmed === "true", remove: false };
+  }
+  return { value: trimmed, remove: false };
+}
+function formatFieldForEdit(value) {
+  return toStr(value);
+}
+
+// src/query/colorRules.ts
+var NAMED_COLORS = /* @__PURE__ */ new Set([
+  "transparent",
+  "currentcolor",
+  "aliceblue",
+  "antiquewhite",
+  "aqua",
+  "aquamarine",
+  "azure",
+  "beige",
+  "bisque",
+  "black",
+  "blanchedalmond",
+  "blue",
+  "blueviolet",
+  "brown",
+  "burlywood",
+  "cadetblue",
+  "chartreuse",
+  "chocolate",
+  "coral",
+  "cornflowerblue",
+  "cornsilk",
+  "crimson",
+  "cyan",
+  "darkblue",
+  "darkcyan",
+  "darkgoldenrod",
+  "darkgray",
+  "darkgreen",
+  "darkgrey",
+  "darkkhaki",
+  "darkmagenta",
+  "darkolivegreen",
+  "darkorange",
+  "darkorchid",
+  "darkred",
+  "darksalmon",
+  "darkseagreen",
+  "darkslateblue",
+  "darkslategray",
+  "darkslategrey",
+  "darkturquoise",
+  "darkviolet",
+  "deeppink",
+  "deepskyblue",
+  "dimgray",
+  "dimgrey",
+  "dodgerblue",
+  "firebrick",
+  "floralwhite",
+  "forestgreen",
+  "fuchsia",
+  "gainsboro",
+  "ghostwhite",
+  "gold",
+  "goldenrod",
+  "gray",
+  "green",
+  "greenyellow",
+  "grey",
+  "honeydew",
+  "hotpink",
+  "indianred",
+  "indigo",
+  "ivory",
+  "khaki",
+  "lavender",
+  "lavenderblush",
+  "lawngreen",
+  "lemonchiffon",
+  "lightblue",
+  "lightcoral",
+  "lightcyan",
+  "lightgoldenrodyellow",
+  "lightgray",
+  "lightgreen",
+  "lightgrey",
+  "lightpink",
+  "lightsalmon",
+  "lightseagreen",
+  "lightskyblue",
+  "lightslategray",
+  "lightslategrey",
+  "lightsteelblue",
+  "lightyellow",
+  "lime",
+  "limegreen",
+  "linen",
+  "magenta",
+  "maroon",
+  "mediumaquamarine",
+  "mediumblue",
+  "mediumorchid",
+  "mediumpurple",
+  "mediumseagreen",
+  "mediumslateblue",
+  "mediumspringgreen",
+  "mediumturquoise",
+  "mediumvioletred",
+  "midnightblue",
+  "mintcream",
+  "mistyrose",
+  "moccasin",
+  "navajowhite",
+  "navy",
+  "oldlace",
+  "olive",
+  "olivedrab",
+  "orange",
+  "orangered",
+  "orchid",
+  "palegoldenrod",
+  "palegreen",
+  "paleturquoise",
+  "palevioletred",
+  "papayawhip",
+  "peachpuff",
+  "peru",
+  "pink",
+  "plum",
+  "powderblue",
+  "purple",
+  "rebeccapurple",
+  "red",
+  "rosybrown",
+  "royalblue",
+  "saddlebrown",
+  "salmon",
+  "sandybrown",
+  "seagreen",
+  "seashell",
+  "sienna",
+  "silver",
+  "skyblue",
+  "slateblue",
+  "slategray",
+  "slategrey",
+  "snow",
+  "springgreen",
+  "steelblue",
+  "tan",
+  "teal",
+  "thistle",
+  "tomato",
+  "turquoise",
+  "violet",
+  "wheat",
+  "white",
+  "whitesmoke",
+  "yellow",
+  "yellowgreen"
+]);
+var HEX_RE = /^#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+var FUNC_RE = /^(?:rgb|rgba|hsl|hsla)\([a-zA-Z0-9\s.,%/]+\)$/;
+var VAR_RE = /^var\(--[\w-]+\)$/;
+function sanitizeColor(color) {
+  const c = typeof color === "string" ? color.trim() : "";
+  if (!c) return "";
+  if (HEX_RE.test(c) || FUNC_RE.test(c) || VAR_RE.test(c)) return c;
+  if (/^[a-zA-Z]+$/.test(c) && NAMED_COLORS.has(c.toLowerCase())) return c;
+  return "";
+}
+function resolveRowColor(row, rules) {
+  for (const rule of rules) {
+    const expr = rule.expression.trim();
+    const color = sanitizeColor(rule.color);
+    if (!expr || !color) continue;
+    const value = evaluateSafe(expr, row.scope);
+    if (toBool(value)) {
+      return { color, label: rule.label.trim(), ruleId: rule.id };
+    }
+  }
+  return null;
+}
+function normalizeColorRules(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  let n = 0;
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const r = item;
+    let id = typeof r.id === "string" && r.id ? r.id : "";
+    if (!id || seen.has(id)) {
+      do {
+        id = `rule-${++n}`;
+      } while (seen.has(id));
+    }
+    seen.add(id);
+    out.push({
+      id,
+      label: typeof r.label === "string" ? r.label : "",
+      expression: typeof r.expression === "string" ? r.expression : "",
+      color: sanitizeColor(r.color)
+    });
+  }
+  return out;
+}
+
 // src/views/viewData.ts
-var import_obsidian3 = require("obsidian");
+var import_obsidian2 = require("obsidian");
 
 // src/query/filter.ts
 function evaluateFilter(node, scope) {
@@ -4097,7 +4094,7 @@ function buildRawNote(app, file) {
   const cache = app.metadataCache.getFileCache(file);
   const fm = { ...(_a = cache == null ? void 0 : cache.frontmatter) != null ? _a : {} };
   delete fm.position;
-  const tags = (cache ? (_b = (0, import_obsidian3.getAllTags)(cache)) != null ? _b : [] : []).map((t) => t.replace(/^#/, ""));
+  const tags = (cache ? (_b = (0, import_obsidian2.getAllTags)(cache)) != null ? _b : [] : []).map((t) => t.replace(/^#/, ""));
   return {
     path: file.path,
     name: file.basename,
@@ -4119,10 +4116,10 @@ function listBaseFiles(app) {
 async function loadBaseDefinition(app, path) {
   if (!path) return null;
   const file = app.vault.getAbstractFileByPath(path);
-  if (!(file instanceof import_obsidian3.TFile)) return null;
+  if (!(file instanceof import_obsidian2.TFile)) return null;
   try {
     const raw = await app.vault.read(file);
-    return normalizeBaseDefinition((0, import_obsidian3.parseYaml)(raw));
+    return normalizeBaseDefinition((0, import_obsidian2.parseYaml)(raw));
   } catch (e) {
     return null;
   }
@@ -4134,7 +4131,7 @@ async function writeRowProperties(plugin, path, writes, opts) {
   var _a;
   const app = plugin.app;
   const file = app.vault.getAbstractFileByPath(path);
-  if (!(file instanceof import_obsidian3.TFile) || writes.length === 0) return false;
+  if (!(file instanceof import_obsidian2.TFile) || writes.length === 0) return false;
   let inverse = [];
   try {
     await app.fileManager.processFrontMatter(file, (frontmatter) => {
@@ -4149,7 +4146,7 @@ async function writeRowProperties(plugin, path, writes, opts) {
     plugin.patchNote(file);
     return true;
   } catch (error) {
-    new import_obsidian3.Notice(`Bases Power Pack: couldn't update "${file.basename}" (${String(error)}).`);
+    new import_obsidian2.Notice(`Bases Power Pack: couldn't update "${file.basename}" (${String(error)}).`);
     return false;
   }
 }
@@ -4159,15 +4156,15 @@ async function ensureParentFolders(app, path) {
   let current = "";
   for (const part of parts) {
     current = current ? `${current}/${part}` : part;
-    const normalized = (0, import_obsidian3.normalizePath)(current);
+    const normalized = (0, import_obsidian2.normalizePath)(current);
     if (!normalized || app.vault.getAbstractFileByPath(normalized)) continue;
     await app.vault.createFolder(normalized);
   }
 }
 function uniqueNotePath(app, stem) {
-  let path = (0, import_obsidian3.normalizePath)(`${stem}.md`);
+  let path = (0, import_obsidian2.normalizePath)(`${stem}.md`);
   for (let i = 2; app.vault.getAbstractFileByPath(path) && i < 1e3; i++) {
-    path = (0, import_obsidian3.normalizePath)(`${stem} ${i}.md`);
+    path = (0, import_obsidian2.normalizePath)(`${stem} ${i}.md`);
   }
   return path;
 }
@@ -4186,7 +4183,7 @@ async function createSeededNote(plugin, folder, key, value, titleHint) {
     });
   } catch (error) {
     seeded = false;
-    new import_obsidian3.Notice(`Bases Power Pack: created the note but couldn't set "${key}" (${String(error)}).`);
+    new import_obsidian2.Notice(`Bases Power Pack: created the note but couldn't set "${key}" (${String(error)}).`);
   }
   if (seeded) plugin.seedCreatedNote(file, { [key]: value });
   else plugin.patchNote(file);
@@ -4215,147 +4212,302 @@ async function resolveViewRows(app, plugin) {
   return { rows, def, baseLabel, filterLabel };
 }
 
-// src/query/rollup.ts
-var AGGREGATIONS = [
-  "count",
-  "sum",
-  "avg",
-  "min",
-  "max",
-  "unique",
-  "filled",
-  "empty",
-  "range"
-];
-function isEmpty2(v) {
-  if (v === null || v === void 0) return true;
-  if (typeof v === "string") return v.trim().length === 0;
-  if (Array.isArray(v)) return v.length === 0;
-  return false;
-}
-function computeRollup(rollup, rows) {
-  const values = rows.map((r) => evaluateSafe(rollup.expression, r.scope));
-  if (rollup.aggregation === "range") {
-    const nums = numeric2(values);
-    return nums.length ? `${formatNumber(arrMin(nums))}\u2013${formatNumber(arrMax(nums))}` : "\u2014";
+// src/views/modals.ts
+var import_obsidian3 = require("obsidian");
+var FloatingEditModal = class extends import_obsidian3.Modal {
+  constructor(app, file) {
+    super(app);
+    this.file = file;
+    this.leaf = null;
   }
-  const n = aggregateNumber(rollup.aggregation, values);
-  return n === null ? "\u2014" : formatNumber(n);
-}
-function aggregateNumber(aggregation, values) {
-  switch (aggregation) {
-    case "count":
-      return values.length;
-    case "filled":
-      return values.filter((v) => !isEmpty2(v)).length;
-    case "empty":
-      return values.filter(isEmpty2).length;
-    case "unique":
-      return new Set(values.filter((v) => !isEmpty2(v)).map(toStr)).size;
-    case "sum":
-      return numeric2(values).reduce((s, n) => s + n, 0);
-    case "avg": {
-      const nums = numeric2(values);
-      return nums.length ? nums.reduce((s, n) => s + n, 0) / nums.length : null;
+  onOpen() {
+    this.modalEl.addClass("bpp-float-edit");
+    this.titleEl.setText(this.file.basename);
+    let leaf;
+    try {
+      const LeafCtor = import_obsidian3.WorkspaceLeaf;
+      leaf = new LeafCtor(this.app);
+    } catch (e) {
+      this.fallbackToSplit();
+      return;
     }
-    case "min": {
-      const nums = numeric2(values);
-      return nums.length ? arrMin(nums) : null;
-    }
-    case "max": {
-      const nums = numeric2(values);
-      return nums.length ? arrMax(nums) : null;
-    }
-    case "range": {
-      const nums = numeric2(values);
-      return nums.length ? arrMax(nums) - arrMin(nums) : null;
-    }
+    this.leaf = leaf;
+    leaf.openFile(this.file, { active: false }).then(
+      () => {
+        var _a;
+        if (this.leaf !== leaf) return;
+        const el = (_a = leaf.view) == null ? void 0 : _a.containerEl;
+        if (!el) {
+          this.fallbackToSplit();
+          return;
+        }
+        this.contentEl.empty();
+        this.contentEl.appendChild(el);
+      },
+      () => {
+        if (this.leaf !== leaf) return;
+        this.fallbackToSplit();
+      }
+    );
   }
-}
-function aggregateRows(aggregation, rows, expression) {
-  return aggregateNumber(aggregation, rows.map((r) => evaluateSafe(expression, r.scope)));
-}
-function numeric2(values) {
-  return values.map(arithNumber).filter((n) => !Number.isNaN(n));
-}
-function arrMin(nums) {
-  return nums.reduce((m, n) => n < m ? n : m);
-}
-function arrMax(nums) {
-  return nums.reduce((m, n) => n > m ? n : m);
-}
-function formatNumber(n) {
-  if (!Number.isFinite(n)) return "\u2014";
-  return String(Math.round(n * 100) / 100);
-}
+  onClose() {
+    var _a;
+    (_a = this.leaf) == null ? void 0 : _a.detach();
+    this.leaf = null;
+    this.contentEl.empty();
+  }
+  /** Public-API degradation: open the note in a split pane instead. Detach any rogue
+   * leaf we created first (it was never in the workspace) so it can't leak. */
+  fallbackToSplit() {
+    var _a;
+    const file = this.file;
+    (_a = this.leaf) == null ? void 0 : _a.detach();
+    this.leaf = null;
+    this.close();
+    void this.app.workspace.getLeaf("split").openFile(file);
+  }
+};
+var PromptModal = class extends import_obsidian3.Modal {
+  constructor(app, opts) {
+    super(app);
+    this.opts = opts;
+    this.value = opts.value;
+  }
+  onOpen() {
+    this.titleEl.setText(this.opts.title);
+    const submit = () => {
+      this.close();
+      this.opts.onSubmit(this.value);
+    };
+    new import_obsidian3.Setting(this.contentEl).addText((text) => {
+      text.setValue(this.value).onChange((v) => this.value = v);
+      if (this.opts.placeholder) text.setPlaceholder(this.opts.placeholder);
+      text.inputEl.addEventListener("keydown", (evt) => {
+        if (evt.key === "Enter") {
+          evt.preventDefault();
+          submit();
+        }
+      });
+      window.setTimeout(() => {
+        text.inputEl.focus();
+        text.inputEl.select();
+      }, 0);
+    });
+    new import_obsidian3.Setting(this.contentEl).addButton((b) => b.setButtonText("Cancel").onClick(() => this.close())).addButton((b) => {
+      var _a;
+      return b.setButtonText((_a = this.opts.cta) != null ? _a : "Save").setCta().onClick(submit);
+    });
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var ConfirmModal = class extends import_obsidian3.Modal {
+  constructor(app, opts) {
+    super(app);
+    this.opts = opts;
+  }
+  onOpen() {
+    this.titleEl.setText(this.opts.title);
+    this.contentEl.createEl("p", { text: this.opts.body });
+    new import_obsidian3.Setting(this.contentEl).addButton((b) => b.setButtonText("Cancel").onClick(() => this.close())).addButton(
+      (b) => b.setButtonText(this.opts.cta).setWarning().onClick(() => {
+        this.close();
+        this.opts.onConfirm();
+      })
+    );
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
+var BulkEditModal = class extends import_obsidian3.Modal {
+  constructor(app, count, onApply) {
+    super(app);
+    this.prop = "";
+    this.op = "set";
+    this.value = "";
+    this.count = count;
+    this.onApply = onApply;
+  }
+  onOpen() {
+    this.titleEl.setText(`Bulk edit ${this.count} note${this.count === 1 ? "" : "s"}`);
+    let valueSetting = null;
+    new import_obsidian3.Setting(this.contentEl).setName("Property").setDesc("Frontmatter key to change on every note in the current view.").addText((t) => t.setPlaceholder("status").setValue(this.prop).onChange((v) => this.prop = v.trim()));
+    new import_obsidian3.Setting(this.contentEl).setName("Operation").addDropdown((dd) => {
+      dd.addOption("set", "Set to value");
+      dd.addOption("clear", "Clear (remove)");
+      dd.addOption("toggle", "Toggle true/false");
+      dd.setValue(this.op).onChange((v) => {
+        this.op = v;
+        if (valueSetting) valueSetting.settingEl.toggleClass("bpp-hidden", this.op !== "set");
+      });
+    });
+    valueSetting = new import_obsidian3.Setting(this.contentEl).setName("Value").addText((t) => t.setPlaceholder("done").setValue(this.value).onChange((v) => this.value = v));
+    new import_obsidian3.Setting(this.contentEl).addButton((b) => b.setButtonText("Cancel").onClick(() => this.close())).addButton(
+      (b) => b.setButtonText(`Apply to ${this.count}`).setCta().onClick(() => {
+        if (!this.prop) return;
+        this.close();
+        this.onApply(this.prop, this.op, this.value);
+      })
+    );
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+};
 
-// src/views/viewChrome.ts
-function renderSearchControl(container, current, onInput) {
-  const wrap = container.createDiv({ cls: "bpp-lite-control" });
-  const input = wrap.createEl("input", {
-    type: "search",
-    cls: "bpp-lite-input",
-    placeholder: "Filter notes\u2026",
-    attr: { "aria-label": "Search" }
-  });
-  input.value = current;
-  input.addEventListener("input", () => onInput(input.value));
-  return input;
+// src/views/rowActions.ts
+function fileFor(env, row) {
+  const file = env.app.vault.getAbstractFileByPath(row.id);
+  return file instanceof import_obsidian4.TFile ? file : null;
 }
-function renderSelect(container, label, options, current, onChange) {
-  const wrap = container.createDiv({ cls: "bpp-lite-control" });
-  wrap.createSpan({ cls: "bpp-muted", text: label });
-  const select = wrap.createEl("select", { cls: "bpp-lite-select dropdown" });
-  for (const opt of options) {
-    const optionEl = select.createEl("option", { text: opt.label, value: opt.value });
-    if (opt.value === current) optionEl.selected = true;
-  }
-  select.addEventListener("change", () => onChange(select.value));
-  return select;
+function openRow(env, row) {
+  const file = fileFor(env, row);
+  if (file) void env.app.workspace.getLeaf(false).openFile(file);
 }
-function renderPropertySelect(container, label, keys, current, onChange) {
-  const values = keys.includes(current) ? keys : [current, ...keys];
-  return renderSelect(
-    container,
-    label,
-    values.map((k) => ({ value: k, label: k })),
-    current,
-    onChange
+function openRowToRight(env, row) {
+  const file = fileFor(env, row);
+  if (file) void env.app.workspace.getLeaf("split").openFile(file);
+}
+function coverImageSrc(env, row, prop) {
+  if (!prop) return null;
+  const ref = parseImageRef(row.scope.get(prop));
+  if (!ref) return null;
+  if (ref.kind === "url") return ref.ref;
+  const file = env.app.metadataCache.getFirstLinkpathDest(ref.ref, row.id);
+  return file ? env.app.vault.getResourcePath(file) : null;
+}
+function editFieldViaModal(env, row, field, after) {
+  const previous = row.note.frontmatter[field];
+  new PromptModal(env.app, {
+    title: `Edit "${field}"`,
+    value: formatFieldForEdit(previous),
+    placeholder: field,
+    onSubmit: (v) => {
+      const { value, remove } = coerceFieldInput(field, v, previous);
+      void writeRowProperty(env.plugin, row.id, field, value, remove, { label: `Edit "${field}"` }).then(after);
+    }
+  }).open();
+}
+function renameNote(env, row, after) {
+  const file = fileFor(env, row);
+  if (!file) return;
+  new PromptModal(env.app, {
+    title: "Rename note",
+    value: file.basename,
+    cta: "Rename",
+    onSubmit: (name) => {
+      var _a;
+      const clean = name.trim();
+      if (!clean || clean === file.basename) return;
+      const parent = ((_a = file.parent) == null ? void 0 : _a.path) ? `${file.parent.path}/` : "";
+      const target = (0, import_obsidian4.normalizePath)(`${parent}${clean}.${file.extension}`);
+      env.app.fileManager.renameFile(file, target).then(() => {
+        env.plugin.invalidateSnapshot();
+        after();
+      }).catch((e) => new import_obsidian4.Notice(`Rename failed: ${String(e)}`));
+    }
+  }).open();
+}
+function confirmDeleteNote(env, row, after) {
+  const file = fileFor(env, row);
+  if (!file) return;
+  new ConfirmModal(env.app, {
+    title: "Delete note?",
+    body: `"${file.basename}" will be moved to trash.`,
+    cta: "Delete",
+    onConfirm: () => {
+      env.app.fileManager.trashFile(file).then(() => {
+        env.plugin.invalidateSnapshot();
+        after();
+      }).catch((e) => new import_obsidian4.Notice(`Delete failed: ${String(e)}`));
+    }
+  }).open();
+}
+function addCommonRowMenuItems(env, menu, row, fields, after) {
+  menu.addItem((i) => i.setTitle("Open").setIcon("file").onClick(() => openRow(env, row)));
+  menu.addItem(
+    (i) => i.setTitle("Open to the right").setIcon("separator-vertical").onClick(() => openRowToRight(env, row))
   );
-}
-function renderContextControls(container, plugin, resolved, onChange) {
-  const bar = container.createDiv({ cls: "bpp-context" });
-  bar.createSpan({
-    cls: "bpp-muted",
-    text: resolved.baseLabel ? `Base: ${resolved.baseLabel}` : "Base: all notes"
-  });
-  if (!plugin.settings.isPro) return;
-  const filters = plugin.settings.savedFilters;
-  if (filters.length === 0) return;
-  bar.createSpan({ cls: "bpp-muted bpp-context-filter-label", text: "Filter:" });
-  const select = bar.createEl("select", { cls: "bpp-filter-select dropdown" });
-  select.createEl("option", { text: "None", value: "" });
-  for (const f of filters) {
-    const opt = select.createEl("option", { text: f.name, value: f.id });
-    if (f.id === plugin.settings.activeFilterId) opt.selected = true;
+  if (fields.length > 0) {
+    menu.addSeparator();
+    for (const field of fields) {
+      menu.addItem(
+        (i) => i.setTitle(`Edit ${field}\u2026`).setIcon("pencil").onClick(() => editFieldViaModal(env, row, field, after))
+      );
+    }
   }
-  select.addEventListener("change", () => {
-    plugin.settings.activeFilterId = select.value;
-    void plugin.saveSettings().then(onChange);
+  menu.addSeparator();
+  menu.addItem(
+    (i) => i.setTitle("Rename note\u2026").setIcon("text-cursor-input").onClick(() => renameNote(env, row, after))
+  );
+  menu.addItem((i) => i.setTitle("Delete note").setIcon("trash").onClick(() => confirmDeleteNote(env, row, after)));
+}
+function showMenuAtAnchor(menu, anchor) {
+  if (anchor instanceof MouseEvent) {
+    menu.showAtMouseEvent(anchor);
+  } else {
+    const r = anchor.getBoundingClientRect();
+    menu.showAtPosition({ x: r.right, y: r.bottom });
+  }
+}
+function makeItemAccessible(el, label, onOpen, onMenu) {
+  el.tabIndex = 0;
+  el.setAttribute("role", "group");
+  el.setAttribute("aria-label", label);
+  el.addEventListener("keydown", (evt) => {
+    if (evt.target !== el) return;
+    if (evt.key === "Enter") {
+      evt.preventDefault();
+      onOpen();
+    } else if (evt.key === "ContextMenu" || evt.key === "F10" && evt.shiftKey) {
+      evt.preventDefault();
+      onMenu(el);
+    }
   });
 }
-function renderRollupBar(container, plugin, rows) {
-  if (!plugin.settings.isPro || plugin.settings.rollups.length === 0) return;
-  const bar = container.createDiv({ cls: "bpp-rollup-bar" });
-  for (const rollup of plugin.settings.rollups) {
-    const chip = bar.createDiv({ cls: "bpp-rollup" });
-    chip.createSpan({ cls: "bpp-rollup-label", text: rollup.label || rollup.aggregation });
-    chip.createSpan({ cls: "bpp-rollup-value", text: computeRollup(rollup, rows) });
+function addOverflowButton(parent, label, openMenu) {
+  const btn = parent.createEl("button", {
+    cls: "bpp-overflow clickable-icon",
+    text: "\u22EF",
+    attr: { "aria-label": `Actions: ${label}`, "aria-haspopup": "menu" }
+  });
+  btn.addEventListener("click", (evt) => {
+    evt.stopPropagation();
+    evt.preventDefault();
+    openMenu(evt);
+  });
+  return btn;
+}
+function applyColorRule(plugin, el, row) {
+  if (!plugin.settings.isPro) return;
+  const resolved = resolveRowColor(row, plugin.settings.colorRules);
+  if (!resolved) return;
+  el.addClass("bpp-rule-colored");
+  el.style.setProperty("--bpp-rule-color", resolved.color);
+  if (resolved.label && !el.hasAttribute("title")) el.setAttr("title", resolved.label);
+}
+function dragTrulyLeft(el, evt) {
+  const to = evt.relatedTarget;
+  return !(to instanceof Node) || !el.contains(to);
+}
+function renderEmptyState(container, opts) {
+  var _a;
+  const box = container.createDiv({ cls: "bpp-emptystate" });
+  if (opts.title) box.createDiv({ cls: "bpp-emptystate-title", text: opts.title });
+  box.createDiv({ cls: "bpp-emptystate-body", text: opts.body });
+  if ((_a = opts.actions) == null ? void 0 : _a.length) {
+    const row = box.createDiv({ cls: "bpp-emptystate-actions" });
+    opts.actions.forEach((action, i) => {
+      const btn = row.createEl("button", { text: action.label, cls: i === 0 ? "mod-cta" : void 0 });
+      btn.addEventListener("click", () => action.onClick());
+    });
   }
 }
 
 // src/views/abstractView.ts
-var PowerPackView = class extends import_obsidian4.ItemView {
+var PowerPackView = class extends import_obsidian5.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.renderToken = 0;
@@ -4375,14 +4527,14 @@ var PowerPackView = class extends import_obsidian4.ItemView {
     this.drillResolver = null;
     this.drillEl = null;
     this.plugin = plugin;
-    this.scheduleRender = (0, import_obsidian4.debounce)(() => {
+    this.scheduleRender = (0, import_obsidian5.debounce)(() => {
       if (this.suppressAutoRender) {
         this.autoRenderPending = true;
         return;
       }
       void this.render();
     }, 120, false);
-    this.searchDebounce = (0, import_obsidian4.debounce)(() => void this.render(), 130, false);
+    this.searchDebounce = (0, import_obsidian5.debounce)(() => void this.render(), 130, false);
   }
   async onOpen() {
     this.renderLoadingSkeleton(this.contentEl);
@@ -4454,104 +4606,33 @@ var PowerPackView = class extends import_obsidian4.ItemView {
   isStale(token) {
     return token !== this.renderToken;
   }
+  /** The narrow env passed to the shared {@link rowActions} helpers. */
+  get rowEnv() {
+    return { app: this.app, plugin: this.plugin };
+  }
   openRow(row) {
-    const file = this.fileFor(row);
-    if (file) void this.app.workspace.getLeaf(false).openFile(file);
+    openRow(this.rowEnv, row);
   }
   openRowToRight(row) {
-    const file = this.fileFor(row);
-    if (file) void this.app.workspace.getLeaf("split").openFile(file);
+    openRowToRight(this.rowEnv, row);
   }
   fileFor(row) {
-    const file = this.app.vault.getAbstractFileByPath(row.id);
-    return file instanceof import_obsidian4.TFile ? file : null;
+    return fileFor(this.rowEnv, row);
   }
-  /**
-   * Resolve a row's cover-image property to a loadable URL, or null when there's
-   * none. A vault link/path resolves relative to the note; an http(s) URL is used
-   * as-is. Shared by the Gallery grid and the Kanban card covers so both honor the
-   * same wikilink / markdown-image / URL / list forms (see {@link parseImageRef}).
-   */
   coverImageSrc(row, prop) {
-    if (!prop) return null;
-    const ref = parseImageRef(row.scope.get(prop));
-    if (!ref) return null;
-    if (ref.kind === "url") return ref.ref;
-    const file = this.app.metadataCache.getFirstLinkpathDest(ref.ref, row.id);
-    return file ? this.app.vault.getResourcePath(file) : null;
+    return coverImageSrc(this.rowEnv, row, prop);
   }
-  /**
-   * Add the per-note actions common to every view — open, open-to-the-right,
-   * edit each configured card field, rename, delete — to a context menu. Callers
-   * (Kanban card menu, Calendar event menu, Gantt bar menu) can add their own
-   * view-specific items around these. `after` re-renders the calling view once a
-   * mutation lands.
-   */
   addCommonRowMenuItems(menu, row, fields, after) {
-    menu.addItem((i) => i.setTitle("Open").setIcon("file").onClick(() => this.openRow(row)));
-    menu.addItem(
-      (i) => i.setTitle("Open to the right").setIcon("separator-vertical").onClick(() => this.openRowToRight(row))
-    );
-    if (fields.length > 0) {
-      menu.addSeparator();
-      for (const field of fields) {
-        menu.addItem(
-          (i) => i.setTitle(`Edit ${field}\u2026`).setIcon("pencil").onClick(() => this.editFieldViaModal(row, field, after))
-        );
-      }
-    }
-    menu.addSeparator();
-    menu.addItem(
-      (i) => i.setTitle("Rename note\u2026").setIcon("text-cursor-input").onClick(() => this.renameNote(row, after))
-    );
-    menu.addItem((i) => i.setTitle("Delete note").setIcon("trash").onClick(() => this.confirmDeleteNote(row, after)));
+    addCommonRowMenuItems(this.rowEnv, menu, row, fields, after);
   }
   editFieldViaModal(row, field, after) {
-    const previous = row.note.frontmatter[field];
-    new PromptModal(this.app, {
-      title: `Edit "${field}"`,
-      value: formatFieldForEdit(previous),
-      placeholder: field,
-      onSubmit: (v) => {
-        const { value, remove } = coerceFieldInput(field, v, previous);
-        void writeRowProperty(this.plugin, row.id, field, value, remove, { label: `Edit "${field}"` }).then(after);
-      }
-    }).open();
+    editFieldViaModal(this.rowEnv, row, field, after);
   }
   renameNote(row, after) {
-    const file = this.fileFor(row);
-    if (!file) return;
-    new PromptModal(this.app, {
-      title: "Rename note",
-      value: file.basename,
-      cta: "Rename",
-      onSubmit: (name) => {
-        var _a;
-        const clean = name.trim();
-        if (!clean || clean === file.basename) return;
-        const parent = ((_a = file.parent) == null ? void 0 : _a.path) ? `${file.parent.path}/` : "";
-        const target = (0, import_obsidian4.normalizePath)(`${parent}${clean}.${file.extension}`);
-        this.app.fileManager.renameFile(file, target).then(() => {
-          this.plugin.invalidateSnapshot();
-          after();
-        }).catch((e) => new import_obsidian4.Notice(`Rename failed: ${String(e)}`));
-      }
-    }).open();
+    renameNote(this.rowEnv, row, after);
   }
   confirmDeleteNote(row, after) {
-    const file = this.fileFor(row);
-    if (!file) return;
-    new ConfirmModal(this.app, {
-      title: "Delete note?",
-      body: `"${file.basename}" will be moved to trash.`,
-      cta: "Delete",
-      onConfirm: () => {
-        this.app.fileManager.trashFile(file).then(() => {
-          this.plugin.invalidateSnapshot();
-          after();
-        }).catch((e) => new import_obsidian4.Notice(`Delete failed: ${String(e)}`));
-      }
-    }).open();
+    confirmDeleteNote(this.rowEnv, row, after);
   }
   openSettings() {
     var _a, _b;
@@ -4564,12 +4645,7 @@ var PowerPackView = class extends import_obsidian4.ItemView {
    * menu is reachable without a right-click (mobile long-press is unreliable).
    */
   showMenuAtAnchor(menu, anchor) {
-    if (anchor instanceof MouseEvent) {
-      menu.showAtMouseEvent(anchor);
-    } else {
-      const r = anchor.getBoundingClientRect();
-      menu.showAtPosition({ x: r.right, y: r.bottom });
-    }
+    showMenuAtAnchor(menu, anchor);
   }
   /**
    * Make an item element (card / event / agenda item) keyboard-operable:
@@ -4581,19 +4657,7 @@ var PowerPackView = class extends import_obsidian4.ItemView {
    * (committing an inline edit, activating the ⋯ button) don't also fire here.
    */
   makeItemAccessible(el, label, onOpen, onMenu) {
-    el.tabIndex = 0;
-    el.setAttribute("role", "group");
-    el.setAttribute("aria-label", label);
-    el.addEventListener("keydown", (evt) => {
-      if (evt.target !== el) return;
-      if (evt.key === "Enter") {
-        evt.preventDefault();
-        onOpen();
-      } else if (evt.key === "ContextMenu" || evt.key === "F10" && evt.shiftKey) {
-        evt.preventDefault();
-        onMenu(el);
-      }
-    });
+    makeItemAccessible(el, label, onOpen, onMenu);
   }
   /**
    * Add a persistent "⋯" overflow button that opens an item's action menu — the
@@ -4601,17 +4665,7 @@ var PowerPackView = class extends import_obsidian4.ItemView {
    * a right-click (dead on touch) or an HTML5 drag (dead on touch).
    */
   addOverflowButton(parent, label, openMenu) {
-    const btn = parent.createEl("button", {
-      cls: "bpp-overflow clickable-icon",
-      text: "\u22EF",
-      attr: { "aria-label": `Actions: ${label}`, "aria-haspopup": "menu" }
-    });
-    btn.addEventListener("click", (evt) => {
-      evt.stopPropagation();
-      evt.preventDefault();
-      openMenu(evt);
-    });
-    return btn;
+    return addOverflowButton(parent, label, openMenu);
   }
   /**
    * Render a toolbar "Export" button that copies the current view to the
@@ -4627,14 +4681,14 @@ var PowerPackView = class extends import_obsidian4.ItemView {
       attr: { "aria-label": "Export this view", "aria-haspopup": "menu" }
     });
     btn.addEventListener("click", (evt) => {
-      const menu = new import_obsidian4.Menu();
+      const menu = new import_obsidian5.Menu();
       for (const opt of options) {
         const locked = opt.premium === true && !this.plugin.settings.isPro;
         menu.addItem((i) => {
           i.setTitle(locked ? `${opt.label} (Premium)` : opt.label).setIcon(locked ? "lock" : "copy");
           i.onClick(() => {
             if (locked) {
-              new import_obsidian4.Notice("Export to CSV is a Premium feature \u2014 unlock Bases Power Pack to use it.");
+              new import_obsidian5.Notice("Export to CSV is a Premium feature \u2014 unlock Bases Power Pack to use it.");
               this.openSettings();
               return;
             }
@@ -4649,9 +4703,9 @@ var PowerPackView = class extends import_obsidian4.ItemView {
   async copyToClipboard(text, label) {
     try {
       await navigator.clipboard.writeText(text);
-      new import_obsidian4.Notice(`Copied ${label.toLowerCase()} to the clipboard.`);
+      new import_obsidian5.Notice(`Copied ${label.toLowerCase()} to the clipboard.`);
     } catch (error) {
-      new import_obsidian4.Notice(`Couldn't copy to the clipboard (${String(error)}).`);
+      new import_obsidian5.Notice(`Couldn't copy to the clipboard (${String(error)}).`);
     }
   }
   /**
@@ -4677,12 +4731,7 @@ var PowerPackView = class extends import_obsidian4.ItemView {
    * matches, so it composes with — and never overrides — a per-column color choice.
    */
   applyColorRule(el, row) {
-    if (!this.plugin.settings.isPro) return;
-    const resolved = resolveRowColor(row, this.plugin.settings.colorRules);
-    if (!resolved) return;
-    el.addClass("bpp-rule-colored");
-    el.style.setProperty("--bpp-rule-color", resolved.color);
-    if (resolved.label && !el.hasAttribute("title")) el.setAttr("title", resolved.label);
+    applyColorRule(this.plugin, el, row);
   }
   /**
    * True when a `dragleave` genuinely exits `el`, rather than merely crossing onto
@@ -4692,8 +4741,7 @@ var PowerPackView = class extends import_obsidian4.ItemView {
    * this so the highlight is steady.
    */
   dragTrulyLeft(el, evt) {
-    const to = evt.relatedTarget;
-    return !(to instanceof Node) || !el.contains(to);
+    return dragTrulyLeft(el, evt);
   }
   /**
    * A lightweight loading placeholder shown while the first async resolve runs, so
@@ -4755,17 +4803,7 @@ var PowerPackView = class extends import_obsidian4.ItemView {
    * this" surface instead of a blank pane.
    */
   renderEmptyState(container, opts) {
-    var _a;
-    const box = container.createDiv({ cls: "bpp-emptystate" });
-    if (opts.title) box.createDiv({ cls: "bpp-emptystate-title", text: opts.title });
-    box.createDiv({ cls: "bpp-emptystate-body", text: opts.body });
-    if ((_a = opts.actions) == null ? void 0 : _a.length) {
-      const row = box.createDiv({ cls: "bpp-emptystate-actions" });
-      opts.actions.forEach((action, i) => {
-        const btn = row.createEl("button", { text: action.label, cls: i === 0 ? "mod-cta" : void 0 });
-        btn.addEventListener("click", () => action.onClick());
-      });
-    }
+    renderEmptyState(container, opts);
   }
   /**
    * Open a drill-down panel listing the notes behind a clicked mark (a pivot cell,
@@ -4871,7 +4909,7 @@ var PowerPackView = class extends import_obsidian4.ItemView {
     }
     const openMenu = (anchor) => {
       if (anchor instanceof MouseEvent) anchor.preventDefault();
-      const menu = new import_obsidian4.Menu();
+      const menu = new import_obsidian5.Menu();
       this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, () => void this.render());
       this.showMenuAtAnchor(menu, anchor);
     };
@@ -5798,12 +5836,12 @@ var KanbanView = class extends PowerPackView {
         return;
       }
       const parent = ((_a = file.parent) == null ? void 0 : _a.path) ? `${file.parent.path}/` : "";
-      const target = (0, import_obsidian5.normalizePath)(`${parent}${next}.${file.extension}`);
+      const target = (0, import_obsidian6.normalizePath)(`${parent}${next}.${file.extension}`);
       try {
         await this.app.fileManager.renameFile(file, target);
         this.plugin.invalidateSnapshot();
       } catch (error) {
-        new import_obsidian5.Notice(`Rename failed: ${String(error)}`);
+        new import_obsidian6.Notice(`Rename failed: ${String(error)}`);
       }
       await this.render();
     };
@@ -5885,7 +5923,7 @@ var KanbanView = class extends PowerPackView {
     if (done) s.kanbanDoneValue = done.name.trim();
     await this.plugin.saveSettings({ invalidateResolved: false });
     await this.render();
-    new import_obsidian5.Notice(`Applied column set "${set.name}".`);
+    new import_obsidian6.Notice(`Applied column set "${set.name}".`);
   }
   /** Collapse or expand a column (persisted per column value, like WIP limits). */
   async toggleColumnCollapse(columnName) {
@@ -6067,7 +6105,7 @@ var KanbanView = class extends PowerPackView {
   }
   openCardMenu(anchor, row, groupBy, columns, columnName = "", laneKey = null) {
     if (anchor instanceof MouseEvent) anchor.preventDefault();
-    const menu = new import_obsidian5.Menu();
+    const menu = new import_obsidian6.Menu();
     const after = () => void this.render();
     menu.addItem(
       (i) => i.setTitle("Open in floating editor").setIcon("edit").onClick(() => this.openFloating(row))
@@ -6128,7 +6166,7 @@ var KanbanView = class extends PowerPackView {
   }
   openColumnMenu(anchor, columnName, groupBy, removable, orderedNames) {
     if (anchor instanceof MouseEvent) anchor.preventDefault();
-    const menu = new import_obsidian5.Menu();
+    const menu = new import_obsidian6.Menu();
     menu.addItem((i) => i.setTitle("Add note").setIcon("plus").onClick(() => void this.quickAddNote(columnName, groupBy)));
     menu.addItem((i) => i.setTitle("Rename column\u2026").setIcon("pencil").onClick(() => this.renameColumnValue(groupBy, columnName)));
     menu.addItem(
@@ -6229,7 +6267,7 @@ var KanbanView = class extends PowerPackView {
     const boardRows = (_a = this.lastColumnRows.get(from)) != null ? _a : [];
     const targets = boardRows.map((r) => r.note).filter((n) => toStr(n.frontmatter[key]) === from);
     if (boardRows.length > 0 && targets.length === 0) {
-      new import_obsidian5.Notice(`"${key}" is a formula or computed field \u2014 rename the value at its source, not from the board.`);
+      new import_obsidian6.Notice(`"${key}" is a formula or computed field \u2014 rename the value at its source, not from the board.`);
       return;
     }
     const vaultWide = this.plugin.getNotesSnapshot().filter((n) => toStr(n.frontmatter[key]) === from).length;
@@ -6271,14 +6309,14 @@ var KanbanView = class extends PowerPackView {
       delete collapsed[from];
     }
     await this.plugin.saveSettings();
-    new import_obsidian5.Notice(`Renamed "${from}" \u2192 "${to}" on ${ok} note${ok === 1 ? "" : "s"}.`);
+    new import_obsidian6.Notice(`Renamed "${from}" \u2192 "${to}" on ${ok} note${ok === 1 ? "" : "s"}.`);
     await this.render();
   }
   // ---- bulk edit ------------------------------------------------------------
   openBulkEdit() {
     const rows = this.lastVisibleRows;
     if (rows.length === 0) {
-      new import_obsidian5.Notice("No cards to edit.");
+      new import_obsidian6.Notice("No cards to edit.");
       return;
     }
     new BulkEditModal(this.app, rows.length, (prop, op, value) => void this.applyBulk(rows, prop, op, value)).open();
@@ -6287,7 +6325,7 @@ var KanbanView = class extends PowerPackView {
     var _a;
     const resolved = await this.plugin.getResolvedView();
     if (COMPUTED_FILE_PROPS.has(prop) || Object.prototype.hasOwnProperty.call((_a = resolved.def.formulas) != null ? _a : {}, prop)) {
-      new import_obsidian5.Notice(`"${prop}" is a computed/formula field \u2014 edit it at its source, not in bulk.`);
+      new import_obsidian6.Notice(`"${prop}" is a computed/formula field \u2014 edit it at its source, not in bulk.`);
       return;
     }
     let ok = 0;
@@ -6299,7 +6337,7 @@ var KanbanView = class extends PowerPackView {
       if (await writeRowProperties(this.plugin, row.id, [write], { batch })) ok++;
     }
     this.plugin.undo.commitBatch(batch);
-    new import_obsidian5.Notice(`Updated "${prop}" on ${ok} note${ok === 1 ? "" : "s"}.`);
+    new import_obsidian6.Notice(`Updated "${prop}" on ${ok} note${ok === 1 ? "" : "s"}.`);
     await this.render();
   }
   /** Group-by options come from the cached whole-vault frontmatter key set (not a
@@ -6448,18 +6486,18 @@ var KanbanView = class extends PowerPackView {
     if (!crossColumn && !crossLane) return;
     const resolved = await this.plugin.getResolvedView();
     if (crossColumn && this.isComputedField((_a = resolved.def.formulas) != null ? _a : {}, key)) {
-      new import_obsidian5.Notice(`"${key}" is a computed/formula field \u2014 cards grouped by it can't be moved here.`);
+      new import_obsidian6.Notice(`"${key}" is a computed/formula field \u2014 cards grouped by it can't be moved here.`);
       return;
     }
     if (crossLane && laneProp !== null && this.isComputedField((_b = resolved.def.formulas) != null ? _b : {}, laneProp)) {
-      new import_obsidian5.Notice(`"${laneProp}" is a computed/formula field \u2014 cards can't be moved across swimlanes here.`);
+      new import_obsidian6.Notice(`"${laneProp}" is a computed/formula field \u2014 cards can't be moved across swimlanes here.`);
       return;
     }
     if (crossColumn && this.plugin.settings.kanbanBlockOverWip) {
       const limit = limitFor(this.plugin.settings.kanbanWipLimits, columnName);
       const targetCount = ((_c = this.lastColumnRows.get(columnName)) != null ? _c : []).length;
       if (dropWouldExceed(targetCount, limit)) {
-        new import_obsidian5.Notice(`"${columnName}" is at its WIP limit (${limit}). Move blocked.`);
+        new import_obsidian6.Notice(`"${columnName}" is at its WIP limit (${limit}). Move blocked.`);
         await this.render();
         return;
       }
@@ -6477,7 +6515,7 @@ var KanbanView = class extends PowerPackView {
     const automationWrites = crossColumn ? writes.length - 1 - (crossLane ? 1 : 0) : 0;
     const ok = await writeRowProperties(this.plugin, row.id, writes, { label: `Move to "${columnName}"` });
     if (ok && automationWrites > 0) {
-      new import_obsidian5.Notice(`Moved to "${columnName}" \xB7 ${automationWrites} automation write${automationWrites === 1 ? "" : "s"}.`);
+      new import_obsidian6.Notice(`Moved to "${columnName}" \xB7 ${automationWrites} automation write${automationWrites === 1 ? "" : "s"}.`);
     }
     await this.render();
   }
@@ -6575,31 +6613,31 @@ var KanbanView = class extends PowerPackView {
     const rankProp = this.rankProp;
     const group = groupBy || "status";
     if (rankProp === group || laneProp !== null && rankProp === laneProp) {
-      new import_obsidian5.Notice(`Manual order property ("${rankProp}") must differ from the group-by and swimlane properties \u2014 pick a separate numeric property in settings.`);
+      new import_obsidian6.Notice(`Manual order property ("${rankProp}") must differ from the group-by and swimlane properties \u2014 pick a separate numeric property in settings.`);
       return;
     }
     const resolved = await this.plugin.getResolvedView();
     const movedRow = resolved.rows.find((r) => r.id === rowId);
     if (!movedRow) return;
     if (COMPUTED_FILE_PROPS.has(rankProp) || Object.prototype.hasOwnProperty.call((_a = resolved.def.formulas) != null ? _a : {}, rankProp)) {
-      new import_obsidian5.Notice(`"${rankProp}" is a computed/formula field \u2014 pick a plain property for the manual order.`);
+      new import_obsidian6.Notice(`"${rankProp}" is a computed/formula field \u2014 pick a plain property for the manual order.`);
       return;
     }
     const crossColumn = toStr(movedRow.scope.get(group)) !== columnName;
     const crossLane = laneProp !== null && this.laneKeyOf(movedRow, laneProp) !== laneKey;
     if (crossColumn && this.isComputedField((_b = resolved.def.formulas) != null ? _b : {}, group)) {
-      new import_obsidian5.Notice(`"${group}" is a computed/formula field \u2014 cards grouped by it can't be moved here.`);
+      new import_obsidian6.Notice(`"${group}" is a computed/formula field \u2014 cards grouped by it can't be moved here.`);
       return;
     }
     if (crossLane && laneProp !== null && this.isComputedField((_c = resolved.def.formulas) != null ? _c : {}, laneProp)) {
-      new import_obsidian5.Notice(`"${laneProp}" is a computed/formula field \u2014 cards can't be moved across swimlanes here.`);
+      new import_obsidian6.Notice(`"${laneProp}" is a computed/formula field \u2014 cards can't be moved across swimlanes here.`);
       return;
     }
     if (crossColumn && this.plugin.settings.kanbanBlockOverWip) {
       const limit = limitFor(this.plugin.settings.kanbanWipLimits, columnName);
       const targetCount = ((_d = this.lastColumnRows.get(columnName)) != null ? _d : []).length;
       if (dropWouldExceed(targetCount, limit)) {
-        new import_obsidian5.Notice(`"${columnName}" is at its WIP limit (${limit}). Move blocked.`);
+        new import_obsidian6.Notice(`"${columnName}" is at its WIP limit (${limit}). Move blocked.`);
         await this.render();
         return;
       }
@@ -6845,9 +6883,9 @@ var KanbanView = class extends PowerPackView {
           await writeRowProperty(this.plugin, file.path, swimProp, laneKey, false, { label: "Set swimlane" });
         }
       }
-      new import_obsidian5.Notice(`Created ${file.basename}`);
+      new import_obsidian6.Notice(`Created ${file.basename}`);
     } catch (error) {
-      new import_obsidian5.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
+      new import_obsidian6.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
     }
     await this.render();
   }
@@ -6874,7 +6912,7 @@ var KanbanView = class extends PowerPackView {
     });
     const moveBtn = bar.createEl("button", { cls: "bpp-lite-btn", text: "Move to column \u25BE" });
     moveBtn.addEventListener("click", (evt) => {
-      const menu = new import_obsidian5.Menu();
+      const menu = new import_obsidian6.Menu();
       for (const name of columnNames) {
         menu.addItem((i) => i.setTitle(name).setIcon("arrow-right").onClick(() => void this.moveSelectionToColumn(groupBy, name, null)));
       }
@@ -6905,11 +6943,11 @@ var KanbanView = class extends PowerPackView {
     }
     const movingColumn = targetRows.filter((r) => toStr(r.scope.get(group)) !== columnName);
     if (movingColumn.length > 0 && this.isComputedField(formulas, group)) {
-      new import_obsidian5.Notice(`"${group}" is a computed/formula field \u2014 cards grouped by it can't be moved here.`);
+      new import_obsidian6.Notice(`"${group}" is a computed/formula field \u2014 cards grouped by it can't be moved here.`);
       return;
     }
     if (laneProp !== null && this.isComputedField(formulas, laneProp)) {
-      new import_obsidian5.Notice(`"${laneProp}" is a computed/formula field \u2014 cards can't be moved across swimlanes here.`);
+      new import_obsidian6.Notice(`"${laneProp}" is a computed/formula field \u2014 cards can't be moved across swimlanes here.`);
       return;
     }
     if (this.plugin.settings.kanbanBlockOverWip && movingColumn.length > 0) {
@@ -6917,7 +6955,7 @@ var KanbanView = class extends PowerPackView {
       if (limit !== null) {
         const targetCount = ((_b = this.lastColumnRows.get(columnName)) != null ? _b : []).length;
         if (targetCount + movingColumn.length > limit) {
-          new import_obsidian5.Notice(`"${columnName}" would exceed its WIP limit (${limit}). Move blocked.`);
+          new import_obsidian6.Notice(`"${columnName}" would exceed its WIP limit (${limit}). Move blocked.`);
           return;
         }
       }
@@ -6941,7 +6979,7 @@ var KanbanView = class extends PowerPackView {
     }
     this.plugin.undo.commitBatch(batch);
     this.selected.clear();
-    new import_obsidian5.Notice(`Moved ${moved} card${moved === 1 ? "" : "s"} to "${columnName}".`);
+    new import_obsidian6.Notice(`Moved ${moved} card${moved === 1 ? "" : "s"} to "${columnName}".`);
     await this.render();
   }
   async quickAddNote(columnName, groupBy) {
@@ -6954,9 +6992,9 @@ var KanbanView = class extends PowerPackView {
         columnName,
         title
       );
-      new import_obsidian5.Notice(`Created ${file.basename}`);
+      new import_obsidian6.Notice(`Created ${file.basename}`);
     } catch (error) {
-      new import_obsidian5.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
+      new import_obsidian6.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
     }
     await this.render();
   }
@@ -7035,7 +7073,7 @@ function genId(prefix) {
   if (c == null ? void 0 : c.randomUUID) return `${prefix}-${c.randomUUID()}`;
   return `${prefix}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
 }
-var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
+var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -7062,8 +7100,8 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
     startBtn.addEventListener("click", () => {
       void this.plugin.activateView(VIEW_TYPE_KANBAN);
     });
-    new import_obsidian6.Setting(containerEl).setName("License").setHeading();
-    new import_obsidian6.Setting(containerEl).setName("License key").setDesc("Enter your premium license key. Verified offline \u2014 no account or server required.").addText(
+    new import_obsidian7.Setting(containerEl).setName("License").setHeading();
+    new import_obsidian7.Setting(containerEl).setName("License key").setDesc("Enter your premium license key. Verified offline \u2014 no account or server required.").addText(
       (text) => text.setPlaceholder("payload.signature").setValue(this.plugin.settings.licenseKey).onChange((value) => {
         this.plugin.settings.licenseKey = value;
         void this.plugin.refreshLicense(true).then((changed) => {
@@ -7094,8 +7132,8 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
         text: `Key not accepted: ${typeof reason === "string" ? reason : ""}`
       });
     }
-    new import_obsidian6.Setting(containerEl).setName("Kanban view (Lite)").setHeading();
-    new import_obsidian6.Setting(containerEl).setName("Group by property").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("Kanban view (Lite)").setHeading();
+    new import_obsidian7.Setting(containerEl).setName("Group by property").setDesc(
       "Frontmatter property (or, with premium, a formula) used to build kanban columns. The Outline view also reads it to decide which notes count as done."
     ).addText(
       (text) => this.keySuggest(text).setValue(this.plugin.settings.kanbanGroupBy).onChange((value) => {
@@ -7103,7 +7141,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
         void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Done value").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("Done value").setDesc(
       'The group value treated as "done" \u2014 used by the Kanban "Hide done" toggle and the Outline progress bars. e.g. done, Complete, Shipped.'
     ).addText(
       (text) => text.setPlaceholder("done").setValue(this.plugin.settings.kanbanDoneValue).onChange((value) => {
@@ -7111,7 +7149,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
         void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Card detail fields").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("Card detail fields").setDesc(
       "Comma-separated raw properties shown on cards and editable from every view's menu, e.g. due, priority, owner, tags."
     ).addText(
       (text) => text.setValue(this.plugin.settings.kanbanCardFields.join(", ")).onChange((value) => {
@@ -7119,7 +7157,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
         void this.plugin.saveSettings();
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Card image property").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("Card image property").setDesc(
       "Optional frontmatter property holding a cover image shown at the top of each kanban card \u2014 a path, [[wikilink]], markdown image, or URL. Leave blank for no covers."
     ).addText(
       (text) => this.keySuggest(text).setPlaceholder("(none)").setValue(this.plugin.settings.kanbanCardImageProp).onChange((value) => {
@@ -7127,19 +7165,19 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
         void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Quick add folder").setDesc("Optional folder for the kanban + button. Leave blank to create notes at the vault root.").addText(
+    new import_obsidian7.Setting(containerEl).setName("Quick add folder").setDesc("Optional folder for the kanban + button. Leave blank to create notes at the vault root.").addText(
       (text) => this.folderSuggest(text).setValue(this.plugin.settings.kanbanQuickAddFolder).onChange((value) => {
         this.plugin.settings.kanbanQuickAddFolder = value.trim();
         void this.plugin.saveSettings();
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Color columns").setDesc("Tint each column and its cards with a stable color derived from the column value. Add new columns directly from the board with the \u201C+ Add column\u201D tile.").addToggle(
+    new import_obsidian7.Setting(containerEl).setName("Color columns").setDesc("Tint each column and its cards with a stable color derived from the column value. Add new columns directly from the board with the \u201C+ Add column\u201D tile.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.kanbanColorColumns).onChange((value) => {
         this.plugin.settings.kanbanColorColumns = value;
         void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Enforce WIP limits").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("Enforce WIP limits").setDesc(
       "Set a per-column work-in-progress limit by right-clicking a column header on the board. When on, a move that would push a column past its limit is blocked; when off, over-limit columns are only flagged in red."
     ).addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.kanbanBlockOverWip).onChange((value) => {
@@ -7147,7 +7185,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
         void this.plugin.saveSettings();
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Manual order property").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("Manual order property").setDesc(
       'Numeric frontmatter property written when you hand-order cards. With the default "Manual" sort, drag a card between two others to reorder it \u2014 its position is saved here.'
     ).addText(
       (text) => this.keySuggest(text).setPlaceholder("rank").setValue(this.plugin.settings.kanbanRankProp).onChange((value) => {
@@ -7155,7 +7193,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
         void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Swimlane property").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("Swimlane property").setDesc(
       "A second property that splits the board into horizontal bands (swimlanes) \u2014 e.g. owner or project \u2014 with columns still grouped by the group-by property. Leave blank for a flat board; also switchable from the board's Swimlanes control."
     ).addText(
       (text) => this.keySuggest(text).setPlaceholder("(none)").setValue(this.plugin.settings.kanbanSwimlaneBy).onChange((value) => {
@@ -7163,16 +7201,16 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
         void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Card click opens").setDesc("What a plain click on a card does. The card menu always offers both, and modifier-click still multi-selects.").addDropdown(
+    new import_obsidian7.Setting(containerEl).setName("Card click opens").setDesc("What a plain click on a card does. The card menu always offers both, and modifier-click still multi-selects.").addDropdown(
       (dd) => dd.addOption("tab", "Open in a tab").addOption("floating", "Open in a floating editor").setValue(this.plugin.settings.kanbanCardClickAction).onChange((v) => {
         this.plugin.settings.kanbanCardClickAction = v === "floating" ? "floating" : "tab";
         void this.plugin.saveSettings({ invalidateResolved: false });
       })
     );
     this.renderColumnSets(containerEl);
-    new import_obsidian6.Setting(containerEl).setName("Premium").setHeading();
+    new import_obsidian7.Setting(containerEl).setName("Premium").setHeading();
     const premiumIn = (parent, name, desc, render) => {
-      const setting = new import_obsidian6.Setting(parent).setName(name).setDesc(desc);
+      const setting = new import_obsidian7.Setting(parent).setName(name).setDesc(desc);
       if (!this.plugin.settings.isPro) {
         setting.settingEl.addClass("bpp-setting-locked");
         setting.descEl.appendText(" (Premium)");
@@ -7183,7 +7221,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
     };
     const premium = (name, desc, render) => premiumIn(containerEl, name, desc, render);
     const subHeading = (name) => {
-      new import_obsidian6.Setting(containerEl).setName(name).setHeading();
+      new import_obsidian7.Setting(containerEl).setName(name).setHeading();
     };
     const viewSection = (title, liteSummary, build) => {
       const details = containerEl.createEl("details", { cls: "bpp-settings-section" });
@@ -7525,7 +7563,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
     return text;
   }
   renderColumnSets(containerEl) {
-    new import_obsidian6.Setting(containerEl).setName("Column sets").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("Column sets").setDesc(
       `Predefined column layouts \u2014 an ordered set of columns, each with a color and an optional "done" marker. Apply one from the board's Column set control to set the group-by, order, colors, and done value in one step.`
     ).setHeading();
     const swatches = [
@@ -7542,7 +7580,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
     const saveRedraw = () => void save().then(() => this.display());
     const sets = this.plugin.settings.kanbanColumnSets;
     sets.forEach((set) => {
-      const head = new import_obsidian6.Setting(containerEl).setClass("bpp-colset-head");
+      const head = new import_obsidian7.Setting(containerEl).setClass("bpp-colset-head");
       head.addText(
         (t) => t.setPlaceholder("Set name").setValue(set.name).onChange((v) => {
           set.name = v;
@@ -7568,7 +7606,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
         })
       );
       set.columns.forEach((col, ci) => {
-        const row = new import_obsidian6.Setting(containerEl).setClass("bpp-colset-col");
+        const row = new import_obsidian7.Setting(containerEl).setClass("bpp-colset-col");
         row.addText(
           (t) => t.setPlaceholder("Column value").setValue(col.name).onChange((v) => {
             col.name = v;
@@ -7612,7 +7650,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
         );
       });
     });
-    new import_obsidian6.Setting(containerEl).addButton(
+    new import_obsidian7.Setting(containerEl).addButton(
       (b) => b.setButtonText("Add column set").setCta().onClick(() => {
         this.plugin.settings.kanbanColumnSets.push({
           id: genId("cols"),
@@ -7629,12 +7667,12 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
     );
   }
   renderColorRules(containerEl) {
-    new import_obsidian6.Setting(containerEl).setName("Color rules").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("Color rules").setDesc(
       'Color cards, calendar events, and Gantt bars by rule. The first matching rule wins \u2014 order by priority with the arrows. Expressions use the formula engine, e.g. due < today() or priority == "high".'
     ).setHeading();
     const rules = this.plugin.settings.colorRules;
     rules.forEach((rule, index) => {
-      const row = new import_obsidian6.Setting(containerEl);
+      const row = new import_obsidian7.Setting(containerEl);
       if (!rule.expression.trim()) row.setDesc("No expression yet \u2014 this rule is inactive.");
       row.addColorPicker(
         (cp) => (
@@ -7688,7 +7726,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
         })
       );
     });
-    new import_obsidian6.Setting(containerEl).addButton(
+    new import_obsidian7.Setting(containerEl).addButton(
       (b) => b.setButtonText("Add color rule").setCta().onClick(() => {
         this.plugin.settings.colorRules.push({ id: genId("color"), label: "", expression: "", color: "#e53935" });
         void this.plugin.saveSettings().then(() => this.display());
@@ -7696,12 +7734,12 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
     );
   }
   renderAutomations(containerEl) {
-    new import_obsidian6.Setting(containerEl).setName("Move Rules").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("Move Rules").setDesc(
       "When a card's trigger property enters a value (e.g. dragged into a Kanban column), run these frontmatter actions automatically."
     ).setHeading();
     for (const rule of this.plugin.settings.automations) {
       const box = containerEl.createDiv({ cls: "bpp-rule" });
-      new import_obsidian6.Setting(box).setName("When").addToggle(
+      new import_obsidian7.Setting(box).setName("When").addToggle(
         (t) => t.setTooltip("Enable this rule").setValue(rule.enabled).onChange((v) => {
           rule.enabled = v;
           void this.plugin.saveSettings();
@@ -7728,7 +7766,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
         })
       );
       for (const action of rule.actions) {
-        const row = new import_obsidian6.Setting(box).setClass("bpp-rule-action");
+        const row = new import_obsidian7.Setting(box).setClass("bpp-rule-action");
         row.addText(
           (t) => t.setPlaceholder("property").setValue(action.prop).onChange((v) => {
             action.prop = v.trim();
@@ -7757,14 +7795,14 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
           })
         );
       }
-      new import_obsidian6.Setting(box).addButton(
+      new import_obsidian7.Setting(box).addButton(
         (b) => b.setButtonText("Add action").onClick(() => {
           rule.actions.push({ prop: "", type: "set", value: "" });
           void this.plugin.saveSettings().then(() => this.display());
         })
       );
     }
-    new import_obsidian6.Setting(containerEl).addButton(
+    new import_obsidian7.Setting(containerEl).addButton(
       (b) => b.setButtonText("Add rule").setCta().onClick(() => {
         this.plugin.settings.automations.push({
           id: genId("rule"),
@@ -7779,9 +7817,9 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
     );
   }
   renderRollups(containerEl) {
-    new import_obsidian6.Setting(containerEl).setName("Roll-ups").setDesc("Aggregate an expression across the rows in each view (shown as a summary bar).").setHeading();
+    new import_obsidian7.Setting(containerEl).setName("Roll-ups").setDesc("Aggregate an expression across the rows in each view (shown as a summary bar).").setHeading();
     for (const rollup of this.plugin.settings.rollups) {
-      const row = new import_obsidian6.Setting(containerEl);
+      const row = new import_obsidian7.Setting(containerEl);
       row.addText(
         (t) => t.setPlaceholder("Label").setValue(rollup.label).onChange((v) => {
           rollup.label = v;
@@ -7812,7 +7850,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
         })
       );
     }
-    new import_obsidian6.Setting(containerEl).addButton(
+    new import_obsidian7.Setting(containerEl).addButton(
       (b) => b.setButtonText("Add roll-up").setCta().onClick(() => {
         this.plugin.settings.rollups.push({
           id: genId("rollup"),
@@ -7825,9 +7863,9 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
     );
   }
   renderSavedFilters(containerEl) {
-    new import_obsidian6.Setting(containerEl).setName("Saved filters").setDesc(`Named filter expressions selectable from each view's toolbar, e.g. status != "done" && priority > 2.`).setHeading();
+    new import_obsidian7.Setting(containerEl).setName("Saved filters").setDesc(`Named filter expressions selectable from each view's toolbar, e.g. status != "done" && priority > 2.`).setHeading();
     for (const filter of this.plugin.settings.savedFilters) {
-      const row = new import_obsidian6.Setting(containerEl);
+      const row = new import_obsidian7.Setting(containerEl);
       row.addText(
         (t) => t.setPlaceholder("Name").setValue(filter.name).onChange((v) => {
           filter.name = v;
@@ -7853,7 +7891,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian6.PluginSettingTab {
         })
       );
     }
-    new import_obsidian6.Setting(containerEl).addButton(
+    new import_obsidian7.Setting(containerEl).addButton(
       (b) => b.setButtonText("Add saved filter").setCta().onClick(() => {
         this.plugin.settings.savedFilters.push({
           id: genId("filter"),
@@ -7917,7 +7955,7 @@ _LicenseManager.PRODUCT = "bases-power-pack";
 var LicenseManager = _LicenseManager;
 
 // src/bases/kanbanBasesView.ts
-var import_obsidian7 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 var KANBAN_BASES_VIEW_ID = "kanban";
 var RANK_PROP = "rank";
 var RANK_PROP_ID = `note.${RANK_PROP}`;
@@ -7931,7 +7969,7 @@ var COLOR_SWATCHES = [
   ["Purple", 270],
   ["Pink", 320]
 ];
-var KanbanBasesView = class extends import_obsidian7.BasesView {
+var KanbanBasesView = class extends import_obsidian8.BasesView {
   constructor(controller, containerEl, plugin) {
     super(controller);
     this.plugin = plugin;
@@ -8196,13 +8234,13 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
         }
       }
     } catch (error) {
-      new import_obsidian7.Notice(`Bases Power Pack: could not move the card (${String(error)}).`);
+      new import_obsidian8.Notice(`Bases Power Pack: could not move the card (${String(error)}).`);
     }
   }
   // ---- menus ----------------------------------------------------------------
   openCardMenu(anchor, entry, col, ctx) {
     anchor.preventDefault();
-    const menu = new import_obsidian7.Menu();
+    const menu = new import_obsidian8.Menu();
     menu.addItem((i) => i.setTitle("Open").setIcon("file").onClick(() => void this.app.workspace.getLeaf(false).openFile(entry.file)));
     menu.addItem((i) => i.setTitle("Open to the right").setIcon("separator-vertical").onClick(() => void this.app.workspace.getLeaf("split").openFile(entry.file)));
     if (ctx.groupKey) {
@@ -8218,7 +8256,7 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
   }
   openColumnMenu(anchor, col, names, ctx) {
     anchor.preventDefault();
-    const menu = new import_obsidian7.Menu();
+    const menu = new import_obsidian8.Menu();
     if (ctx.groupKey) {
       menu.addItem((i) => i.setTitle("Add note").setIcon("plus").onClick(() => void this.addNote(col, ctx.groupKey)));
       menu.addItem((i) => i.setTitle("Rename column\u2026").setIcon("pencil").onClick(() => this.renameColumn(col, ctx.groupKey)));
@@ -8287,9 +8325,9 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
     try {
       const value = col.value || col.name;
       const file = await createSeededNote(this.plugin, this.plugin.settings.kanbanQuickAddFolder, groupKey, value, `New ${value}`);
-      new import_obsidian7.Notice(`Created ${file.basename}`);
+      new import_obsidian8.Notice(`Created ${file.basename}`);
     } catch (error) {
-      new import_obsidian7.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
+      new import_obsidian8.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
     }
   }
   renameNote(entry) {
@@ -8302,8 +8340,8 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
         const clean = name.trim();
         if (!clean || clean === entry.file.basename) return;
         const parent = ((_a = entry.file.parent) == null ? void 0 : _a.path) ? `${entry.file.parent.path}/` : "";
-        const target = (0, import_obsidian7.normalizePath)(`${parent}${clean}.${entry.file.extension}`);
-        this.app.fileManager.renameFile(entry.file, target).catch((e) => new import_obsidian7.Notice(`Rename failed: ${String(e)}`));
+        const target = (0, import_obsidian8.normalizePath)(`${parent}${clean}.${entry.file.extension}`);
+        this.app.fileManager.renameFile(entry.file, target).catch((e) => new import_obsidian8.Notice(`Rename failed: ${String(e)}`));
       }
     }).open();
   }
@@ -8312,12 +8350,12 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
       title: "Delete note?",
       body: `"${entry.file.basename}" will be moved to trash.`,
       cta: "Delete",
-      onConfirm: () => void this.app.fileManager.trashFile(entry.file).catch((e) => new import_obsidian7.Notice(`Delete failed: ${String(e)}`))
+      onConfirm: () => void this.app.fileManager.trashFile(entry.file).catch((e) => new import_obsidian8.Notice(`Delete failed: ${String(e)}`))
     }).open();
   }
   renameColumn(col, groupKey) {
     if (col.value === "") {
-      new import_obsidian7.Notice("The (no value) column can't be renamed.");
+      new import_obsidian8.Notice("The (no value) column can't be renamed.");
       return;
     }
     new PromptModal(this.app, {
@@ -8358,7 +8396,7 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
     const order = this.plugin.settings.kanbanColumnOrder[groupKey];
     if (order) this.plugin.settings.kanbanColumnOrder[groupKey] = order.map((n) => n === col.value ? to : n);
     await this.plugin.saveSettings({ invalidateResolved: false });
-    new import_obsidian7.Notice(`Renamed "${col.value}" \u2192 "${to}" on ${ok} note${ok === 1 ? "" : "s"}.`);
+    new import_obsidian8.Notice(`Renamed "${col.value}" \u2192 "${to}" on ${ok} note${ok === 1 ? "" : "s"}.`);
   }
   // ---- helpers --------------------------------------------------------------
   otherColumnNames(col, ctx) {
@@ -8459,7 +8497,7 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
 };
 
 // src/views/calendarView.ts
-var import_obsidian8 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 var VIEW_TYPE_CALENDAR = "bpp-calendar-view";
 var CalendarView = class extends PowerPackView {
   constructor() {
@@ -8707,7 +8745,7 @@ var CalendarView = class extends PowerPackView {
   openEventMenu(anchor, row, dateProp) {
     if (anchor instanceof MouseEvent) anchor.preventDefault();
     const after = () => void this.render();
-    const menu = new import_obsidian8.Menu();
+    const menu = new import_obsidian9.Menu();
     menu.addItem(
       (i) => i.setTitle("Reschedule\u2026").setIcon("calendar-clock").onClick(() => {
         var _a;
@@ -8720,7 +8758,7 @@ var CalendarView = class extends PowerPackView {
           onSubmit: (v) => {
             const key = toIsoDateKey(v);
             if (!key) {
-              new import_obsidian8.Notice("Enter a date as YYYY-MM-DD.");
+              new import_obsidian9.Notice("Enter a date as YYYY-MM-DD.");
               return;
             }
             void this.reschedule(row.id, dateProp, key);
@@ -8792,7 +8830,7 @@ var CalendarView = class extends PowerPackView {
   async reschedule(rowId, dateProp, targetKey) {
     var _a;
     const file = this.app.vault.getAbstractFileByPath(rowId);
-    if (!(file instanceof import_obsidian8.TFile)) return;
+    if (!(file instanceof import_obsidian9.TFile)) return;
     const cache = this.app.metadataCache.getFileCache(file);
     const original = (_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a[dateProp];
     await writeRowProperty(this.plugin, rowId, dateProp, rescheduleDateValue(original, targetKey), false, {
@@ -8809,16 +8847,16 @@ var CalendarView = class extends PowerPackView {
         key,
         `Note ${key}`
       );
-      new import_obsidian8.Notice(`Created ${file.basename}`);
+      new import_obsidian9.Notice(`Created ${file.basename}`);
     } catch (error) {
-      new import_obsidian8.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
+      new import_obsidian9.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
     }
     await this.render();
   }
 };
 
 // src/views/ganttView.ts
-var import_obsidian9 = require("obsidian");
+var import_obsidian10 = require("obsidian");
 var VIEW_TYPE_GANTT = "bpp-gantt-view";
 var ZOOM_PRESETS = [
   { label: "Quarter", px: 4 },
@@ -9143,7 +9181,7 @@ var GanttView = class extends PowerPackView {
   openBarMenu(anchor, row, startProp, endProp) {
     if (anchor instanceof MouseEvent) anchor.preventDefault();
     const after = () => void this.render();
-    const menu = new import_obsidian9.Menu();
+    const menu = new import_obsidian10.Menu();
     menu.addItem(
       (i) => i.setTitle("Set start date\u2026").setIcon("calendar").onClick(() => this.setDateViaPrompt(row, startProp, "start"))
     );
@@ -9166,7 +9204,7 @@ var GanttView = class extends PowerPackView {
       onSubmit: (v) => {
         const key = toIsoDateKey(v);
         if (!key) {
-          new import_obsidian9.Notice("Enter a date as YYYY-MM-DD.");
+          new import_obsidian10.Notice("Enter a date as YYYY-MM-DD.");
           return;
         }
         void writeRowProperty(this.plugin, row.id, prop, rescheduleDateValue(raw, key), false, {
@@ -9236,7 +9274,7 @@ function valueToDateString(value) {
 }
 
 // src/views/hierarchyView.ts
-var import_obsidian10 = require("obsidian");
+var import_obsidian11 = require("obsidian");
 
 // src/query/hierarchy.ts
 function baseName(path) {
@@ -9753,7 +9791,7 @@ var HierarchyView = class extends PowerPackView {
     var _a;
     if (anchor instanceof MouseEvent) anchor.preventDefault();
     const after = () => void this.render();
-    const menu = new import_obsidian10.Menu();
+    const menu = new import_obsidian11.Menu();
     menu.addItem((i) => i.setTitle("Add child note").setIcon("plus").onClick(() => void this.addChildNote(id, parentProp)));
     menu.addItem(
       (i) => i.setTitle("Set parent\u2026").setIcon("indent").onClick(() => this.setParentViaPrompt(row, id, forest, parentProp))
@@ -9782,7 +9820,7 @@ var HierarchyView = class extends PowerPackView {
     const check = canReparent(childId, newParentId, byId);
     if (!check.ok) {
       if (check.reason && check.reason !== "already there" && check.reason !== "already a root") {
-        new import_obsidian10.Notice(`Can't move: ${check.reason}.`);
+        new import_obsidian11.Notice(`Can't move: ${check.reason}.`);
       }
       return;
     }
@@ -9819,9 +9857,9 @@ var HierarchyView = class extends PowerPackView {
         parentId,
         "New child"
       );
-      new import_obsidian10.Notice(`Created ${file.basename}`);
+      new import_obsidian11.Notice(`Created ${file.basename}`);
     } catch (error) {
-      new import_obsidian10.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
+      new import_obsidian11.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
     }
     await this.render();
   }
@@ -10695,7 +10733,7 @@ function formatValue(n) {
 }
 
 // src/views/galleryView.ts
-var import_obsidian11 = require("obsidian");
+var import_obsidian12 = require("obsidian");
 var VIEW_TYPE_GALLERY = "bpp-gallery-view";
 var GalleryView = class extends PowerPackView {
   getViewType() {
@@ -10814,7 +10852,7 @@ var GalleryView = class extends PowerPackView {
   }
   openCardMenu(anchor, row) {
     if (anchor instanceof MouseEvent) anchor.preventDefault();
-    const menu = new import_obsidian11.Menu();
+    const menu = new import_obsidian12.Menu();
     this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, () => void this.render());
     this.showMenuAtAnchor(menu, anchor);
   }
@@ -10826,7 +10864,7 @@ var GalleryView = class extends PowerPackView {
 };
 
 // src/views/feedView.ts
-var import_obsidian12 = require("obsidian");
+var import_obsidian13 = require("obsidian");
 var VIEW_TYPE_FEED = "bpp-feed-view";
 var FILE_DATE_OPTIONS = [
   { value: "file.mtime", label: "Modified date" },
@@ -10985,7 +11023,7 @@ var FeedView = class extends PowerPackView {
   }
   openItemMenu(anchor, row) {
     if (anchor instanceof MouseEvent) anchor.preventDefault();
-    const menu = new import_obsidian12.Menu();
+    const menu = new import_obsidian13.Menu();
     this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, () => void this.render());
     this.showMenuAtAnchor(menu, anchor);
   }
@@ -11025,7 +11063,7 @@ var VIEW_NAME_TO_TYPE = {
   gallery: VIEW_TYPE_GALLERY,
   feed: VIEW_TYPE_FEED
 };
-var BasesPowerPackPlugin = class extends import_obsidian13.Plugin {
+var BasesPowerPackPlugin = class extends import_obsidian14.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -11060,19 +11098,19 @@ var BasesPowerPackPlugin = class extends import_obsidian13.Plugin {
     this.registerEvent(this.app.metadataCache.on("changed", (file) => this.patchNote(file)));
     this.registerEvent(
       this.app.vault.on("create", (file) => {
-        if (file instanceof import_obsidian13.TFile) this.patchNote(file);
+        if (file instanceof import_obsidian14.TFile) this.patchNote(file);
         else this.invalidateSnapshot();
       })
     );
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
-        if (file instanceof import_obsidian13.TFile) this.removeNote(file.path);
+        if (file instanceof import_obsidian14.TFile) this.removeNote(file.path);
         else this.invalidateSnapshot();
       })
     );
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
-        if (file instanceof import_obsidian13.TFile) {
+        if (file instanceof import_obsidian14.TFile) {
           this.removeNote(oldPath);
           this.patchNote(file);
         } else {
@@ -11082,7 +11120,7 @@ var BasesPowerPackPlugin = class extends import_obsidian13.Plugin {
     );
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof import_obsidian13.TFile && file.extension === "base") this.invalidateResolved();
+        if (file instanceof import_obsidian14.TFile && file.extension === "base") this.invalidateResolved();
       })
     );
     this.registerView(VIEW_TYPE_KANBAN, (leaf) => new KanbanView(leaf, this));
@@ -11167,7 +11205,7 @@ var BasesPowerPackPlugin = class extends import_obsidian13.Plugin {
         await this.refreshLicense();
         this.refreshViews();
         const message = this.settings.isPro ? "Premium active." : this.licenseError ? `License: ${this.licenseError}` : "Lite tier (no valid license).";
-        new import_obsidian13.Notice(message);
+        new import_obsidian14.Notice(message);
       }
     });
     this.addSettingTab(new BasesPowerPackSettingTab(this.app, this));
@@ -11278,7 +11316,7 @@ var BasesPowerPackPlugin = class extends import_obsidian13.Plugin {
     }
     const missed = entry.notes.length - ok;
     const detail = missed > 0 ? ` (${missed} no longer at ${missed === 1 ? "its" : "their"} original path)` : "";
-    new import_obsidian13.Notice(`Undid "${entry.label}" \u2014 restored ${ok} note${ok === 1 ? "" : "s"}${detail}.`);
+    new import_obsidian14.Notice(`Undid "${entry.label}" \u2014 restored ${ok} note${ok === 1 ? "" : "s"}${detail}.`);
     this.refreshViews();
   }
   queueHierarchyRetarget(newPath, oldPath) {
@@ -11319,7 +11357,7 @@ var BasesPowerPackPlugin = class extends import_obsidian13.Plugin {
     }
     this.undo.commitBatch(batch);
     if (ok > 0) {
-      new import_obsidian13.Notice(`Bases Power Pack: repointed ${ok} child note${ok === 1 ? "" : "s"} after rename.`);
+      new import_obsidian14.Notice(`Bases Power Pack: repointed ${ok} child note${ok === 1 ? "" : "s"} after rename.`);
       this.refreshViews();
     }
   }
@@ -11328,21 +11366,21 @@ var BasesPowerPackPlugin = class extends import_obsidian13.Plugin {
       openView: async (view, basePath) => {
         const viewType = VIEW_NAME_TO_TYPE[view];
         if (!viewType) {
-          new import_obsidian13.Notice(`Bases Power Pack: unknown view "${String(view)}".`);
+          new import_obsidian14.Notice(`Bases Power Pack: unknown view "${String(view)}".`);
           return false;
         }
         if (PREMIUM_VIEW_TYPES.includes(viewType) && !this.settings.isPro) {
-          new import_obsidian13.Notice("Bases Power Pack: this view requires a premium license.");
+          new import_obsidian14.Notice("Bases Power Pack: this view requires a premium license.");
           return false;
         }
         if (basePath) {
           if (!this.settings.isPro) {
-            new import_obsidian13.Notice("Bases Power Pack: opening a base as the data source requires premium.");
+            new import_obsidian14.Notice("Bases Power Pack: opening a base as the data source requires premium.");
             return false;
           }
-          const file = this.app.vault.getAbstractFileByPath((0, import_obsidian13.normalizePath)(basePath));
-          if (!(file instanceof import_obsidian13.TFile) || file.extension !== "base") {
-            new import_obsidian13.Notice("Bases Power Pack: base file not found.");
+          const file = this.app.vault.getAbstractFileByPath((0, import_obsidian14.normalizePath)(basePath));
+          if (!(file instanceof import_obsidian14.TFile) || file.extension !== "base") {
+            new import_obsidian14.Notice("Bases Power Pack: base file not found.");
             return false;
           }
           if (this.settings.activeBasePath !== file.path) {
@@ -11379,7 +11417,7 @@ var BasesPowerPackPlugin = class extends import_obsidian13.Plugin {
       ];
       let created = 0;
       for (const [title, status] of samples) {
-        const path = (0, import_obsidian13.normalizePath)(`${folder}/${title}.md`);
+        const path = (0, import_obsidian14.normalizePath)(`${folder}/${title}.md`);
         if (!vault.getAbstractFileByPath(path)) {
           const file = await vault.create(path, `---
 status: ${status}
@@ -11396,11 +11434,11 @@ status: ${status}
       await this.saveSettings();
       await this.activateView(VIEW_TYPE_KANBAN);
       this.refreshViews();
-      new import_obsidian13.Notice(
+      new import_obsidian14.Notice(
         created > 0 ? `Kanban board ready \u2014 added ${created} sample note${created === 1 ? "" : "s"} in "${folder}".` : "Opened your Kanban board (grouped by status)."
       );
     } catch (error) {
-      new import_obsidian13.Notice(`Bases Power Pack: could not create the board (${String(error)}).`);
+      new import_obsidian14.Notice(`Bases Power Pack: could not create the board (${String(error)}).`);
     }
   }
   /** Reveal (or create) a leaf hosting the given view type. */

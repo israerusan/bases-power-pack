@@ -1,23 +1,10 @@
-import {
-	ItemView,
-	Menu,
-	Notice,
-	TFile,
-	WorkspaceLeaf,
-	debounce,
-	normalizePath,
-	type Debouncer,
-} from "obsidian";
+import { ItemView, Menu, Notice, TFile, WorkspaceLeaf, debounce, type Debouncer } from "obsidian";
 import type BasesPowerPackPlugin from "../main";
 import type { Row } from "../model/row";
-import { PromptModal, ConfirmModal } from "./modals";
-import { coerceFieldInput, formatFieldForEdit } from "../query/inlineEdit";
-import { resolveRowColor } from "../query/colorRules";
 import { formatCardField } from "../query/kanban";
-import { parseImageRef } from "../query/gallery";
 import { buildMarkdownTable } from "../query/export";
-import { writeRowProperty } from "./viewData";
 import { renderSearchControl } from "./viewChrome";
+import * as rowActions from "./rowActions";
 
 /** A drill-down request: the notes behind a clicked number, plus how to label the
  * panel that lists them. Returned lazily by a resolver so the panel can refresh
@@ -170,116 +157,41 @@ export abstract class PowerPackView extends ItemView {
 		return token !== this.renderToken;
 	}
 
+	/** The narrow env passed to the shared {@link rowActions} helpers. */
+	protected get rowEnv(): rowActions.RowActionEnv {
+		return { app: this.app, plugin: this.plugin };
+	}
+
 	protected openRow(row: Row): void {
-		const file = this.fileFor(row);
-		if (file) void this.app.workspace.getLeaf(false).openFile(file);
+		rowActions.openRow(this.rowEnv, row);
 	}
 
 	protected openRowToRight(row: Row): void {
-		const file = this.fileFor(row);
-		if (file) void this.app.workspace.getLeaf("split").openFile(file);
+		rowActions.openRowToRight(this.rowEnv, row);
 	}
 
 	protected fileFor(row: Row): TFile | null {
-		const file = this.app.vault.getAbstractFileByPath(row.id);
-		return file instanceof TFile ? file : null;
+		return rowActions.fileFor(this.rowEnv, row);
 	}
 
-	/**
-	 * Resolve a row's cover-image property to a loadable URL, or null when there's
-	 * none. A vault link/path resolves relative to the note; an http(s) URL is used
-	 * as-is. Shared by the Gallery grid and the Kanban card covers so both honor the
-	 * same wikilink / markdown-image / URL / list forms (see {@link parseImageRef}).
-	 */
 	protected coverImageSrc(row: Row, prop: string): string | null {
-		if (!prop) return null;
-		const ref = parseImageRef(row.scope.get(prop));
-		if (!ref) return null;
-		if (ref.kind === "url") return ref.ref;
-		const file = this.app.metadataCache.getFirstLinkpathDest(ref.ref, row.id);
-		return file ? this.app.vault.getResourcePath(file) : null;
+		return rowActions.coverImageSrc(this.rowEnv, row, prop);
 	}
 
-	/**
-	 * Add the per-note actions common to every view — open, open-to-the-right,
-	 * edit each configured card field, rename, delete — to a context menu. Callers
-	 * (Kanban card menu, Calendar event menu, Gantt bar menu) can add their own
-	 * view-specific items around these. `after` re-renders the calling view once a
-	 * mutation lands.
-	 */
 	protected addCommonRowMenuItems(menu: Menu, row: Row, fields: string[], after: () => void): void {
-		menu.addItem((i) => i.setTitle("Open").setIcon("file").onClick(() => this.openRow(row)));
-		menu.addItem((i) =>
-			i.setTitle("Open to the right").setIcon("separator-vertical").onClick(() => this.openRowToRight(row))
-		);
-		if (fields.length > 0) {
-			menu.addSeparator();
-			for (const field of fields) {
-				menu.addItem((i) =>
-					i.setTitle(`Edit ${field}…`).setIcon("pencil").onClick(() => this.editFieldViaModal(row, field, after))
-				);
-			}
-		}
-		menu.addSeparator();
-		menu.addItem((i) =>
-			i.setTitle("Rename note…").setIcon("text-cursor-input").onClick(() => this.renameNote(row, after))
-		);
-		menu.addItem((i) => i.setTitle("Delete note").setIcon("trash").onClick(() => this.confirmDeleteNote(row, after)));
+		rowActions.addCommonRowMenuItems(this.rowEnv, menu, row, fields, after);
 	}
 
 	protected editFieldViaModal(row: Row, field: string, after: () => void): void {
-		const previous = row.note.frontmatter[field];
-		new PromptModal(this.app, {
-			title: `Edit "${field}"`,
-			value: formatFieldForEdit(previous),
-			placeholder: field,
-			onSubmit: (v) => {
-				const { value, remove } = coerceFieldInput(field, v, previous);
-				void writeRowProperty(this.plugin, row.id, field, value, remove, { label: `Edit "${field}"` }).then(after);
-			},
-		}).open();
+		rowActions.editFieldViaModal(this.rowEnv, row, field, after);
 	}
 
 	protected renameNote(row: Row, after: () => void): void {
-		const file = this.fileFor(row);
-		if (!file) return;
-		new PromptModal(this.app, {
-			title: "Rename note",
-			value: file.basename,
-			cta: "Rename",
-			onSubmit: (name) => {
-				const clean = name.trim();
-				if (!clean || clean === file.basename) return;
-				const parent = file.parent?.path ? `${file.parent.path}/` : "";
-				const target = normalizePath(`${parent}${clean}.${file.extension}`);
-				this.app.fileManager
-					.renameFile(file, target)
-					.then(() => {
-						this.plugin.invalidateSnapshot();
-						after();
-					})
-					.catch((e: unknown) => new Notice(`Rename failed: ${String(e)}`));
-			},
-		}).open();
+		rowActions.renameNote(this.rowEnv, row, after);
 	}
 
 	protected confirmDeleteNote(row: Row, after: () => void): void {
-		const file = this.fileFor(row);
-		if (!file) return;
-		new ConfirmModal(this.app, {
-			title: "Delete note?",
-			body: `"${file.basename}" will be moved to trash.`,
-			cta: "Delete",
-			onConfirm: () => {
-				this.app.fileManager
-					.trashFile(file)
-					.then(() => {
-						this.plugin.invalidateSnapshot();
-						after();
-					})
-					.catch((e: unknown) => new Notice(`Delete failed: ${String(e)}`));
-			},
-		}).open();
+		rowActions.confirmDeleteNote(this.rowEnv, row, after);
 	}
 
 	protected openSettings(): void {
@@ -293,12 +205,7 @@ export abstract class PowerPackView extends ItemView {
 	 * menu is reachable without a right-click (mobile long-press is unreliable).
 	 */
 	protected showMenuAtAnchor(menu: Menu, anchor: MouseEvent | HTMLElement): void {
-		if (anchor instanceof MouseEvent) {
-			menu.showAtMouseEvent(anchor);
-		} else {
-			const r = anchor.getBoundingClientRect();
-			menu.showAtPosition({ x: r.right, y: r.bottom });
-		}
+		rowActions.showMenuAtAnchor(menu, anchor);
 	}
 
 	/**
@@ -316,19 +223,7 @@ export abstract class PowerPackView extends ItemView {
 		onOpen: () => void,
 		onMenu: (anchor: HTMLElement) => void
 	): void {
-		el.tabIndex = 0;
-		el.setAttribute("role", "group");
-		el.setAttribute("aria-label", label);
-		el.addEventListener("keydown", (evt) => {
-			if (evt.target !== el) return;
-			if (evt.key === "Enter") {
-				evt.preventDefault();
-				onOpen();
-			} else if (evt.key === "ContextMenu" || (evt.key === "F10" && evt.shiftKey)) {
-				evt.preventDefault();
-				onMenu(el);
-			}
-		});
+		rowActions.makeItemAccessible(el, label, onOpen, onMenu);
 	}
 
 	/**
@@ -341,17 +236,7 @@ export abstract class PowerPackView extends ItemView {
 		label: string,
 		openMenu: (anchor: MouseEvent | HTMLElement) => void
 	): HTMLButtonElement {
-		const btn = parent.createEl("button", {
-			cls: "bpp-overflow clickable-icon",
-			text: "⋯",
-			attr: { "aria-label": `Actions: ${label}`, "aria-haspopup": "menu" },
-		});
-		btn.addEventListener("click", (evt) => {
-			evt.stopPropagation();
-			evt.preventDefault();
-			openMenu(evt);
-		});
-		return btn;
+		return rowActions.addOverflowButton(parent, label, openMenu);
 	}
 
 	/**
@@ -421,12 +306,7 @@ export abstract class PowerPackView extends ItemView {
 	 * matches, so it composes with — and never overrides — a per-column color choice.
 	 */
 	protected applyColorRule(el: HTMLElement, row: Row): void {
-		if (!this.plugin.settings.isPro) return;
-		const resolved = resolveRowColor(row, this.plugin.settings.colorRules);
-		if (!resolved) return;
-		el.addClass("bpp-rule-colored");
-		el.style.setProperty("--bpp-rule-color", resolved.color);
-		if (resolved.label && !el.hasAttribute("title")) el.setAttr("title", resolved.label);
+		rowActions.applyColorRule(this.plugin, el, row);
 	}
 
 	/**
@@ -437,8 +317,7 @@ export abstract class PowerPackView extends ItemView {
 	 * this so the highlight is steady.
 	 */
 	protected dragTrulyLeft(el: HTMLElement, evt: DragEvent): boolean {
-		const to = evt.relatedTarget;
-		return !(to instanceof Node) || !el.contains(to);
+		return rowActions.dragTrulyLeft(el, evt);
 	}
 
 	/**
@@ -508,16 +387,7 @@ export abstract class PowerPackView extends ItemView {
 		container: HTMLElement,
 		opts: { title?: string; body: string; actions?: Array<{ label: string; onClick: () => void }> }
 	): void {
-		const box = container.createDiv({ cls: "bpp-emptystate" });
-		if (opts.title) box.createDiv({ cls: "bpp-emptystate-title", text: opts.title });
-		box.createDiv({ cls: "bpp-emptystate-body", text: opts.body });
-		if (opts.actions?.length) {
-			const row = box.createDiv({ cls: "bpp-emptystate-actions" });
-			opts.actions.forEach((action, i) => {
-				const btn = row.createEl("button", { text: action.label, cls: i === 0 ? "mod-cta" : undefined });
-				btn.addEventListener("click", () => action.onClick());
-			});
-		}
+		rowActions.renderEmptyState(container, opts);
 	}
 
 	/**
