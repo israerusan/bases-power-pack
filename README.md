@@ -4,27 +4,35 @@ Turn Obsidian **Bases** into a real planning workspace: a genuinely useful free 
 
 > **Start free. Upgrade once.** Bases Power Pack has a free Lite tier, and Premium unlocks with a **~$29 one-time** license.
 
+[Buy Premium / purchase info](#buy-premium) · [See premium views](#premium-views) · [Compare Lite vs Premium](#what-you-get)
+
 ## See it in action
 
 ![Move a card across columns and reorder it in one gesture](docs/assets/hero-drag.gif)
 
 _Move a card across columns and reorder it in one gesture._
 
-![Push work cleanly from review to done without leaving the board](docs/assets/review-to-done.gif)
+![Kanban board with rich card metadata and covers](docs/assets/hero-board.png)
 
-_Push work cleanly from review to done without leaving the board._
+_A free Kanban board that already looks and behaves like a real workflow tool, not a crippled teaser._
 
-![Kanban board with rich card metadata](docs/assets/hero-board.png)
+## Premium views
 
-_Kanban cards can show due dates, priority, owners, and more — without turning into YAML sludge._
+![Gantt timeline with draggable planning bars](docs/assets/gantt-premium.png)
 
-![Workflow completion after a drag](docs/assets/review-done.png)
+_Gantt turns your notes into a real timeline: drag bars to move work, resize them to change duration, and plan against milestones._
 
-_One drag can move the work and leave the board in a cleaner state._
+![Dashboard with KPI cards and distribution chart](docs/assets/dashboard-premium.png)
+
+_Dashboard gives you KPI cards and visual distribution without exporting your vault into some other analytics toy._
+
+![Board analytics modal with throughput and workload breakdowns](docs/assets/analytics-premium.png)
+
+_Analytics makes the board answer the obvious management questions: throughput, workload, bottlenecks, and what is aging badly._
 
 ## Why people buy it
 
-- **The free tier is actually useful.** You get a real Kanban board, not a crippled teaser.
+- **The free tier is actually useful.** You get a real Kanban board, not a bait-and-switch demo.
 - **It writes back to your notes.** Drag a card, reschedule a date, resize a timeline bar — the frontmatter updates.
 - **It reduces note janitor work.** Inline edits, bulk edit, search, saved filters, and automation keep you in the workflow instead of babysitting YAML.
 - **Premium adds planning depth, not filler.** Calendar, Gantt, Dashboard, Gallery, Pivot, Feed, formulas, roll-ups, and `.base` workflows are the upgrade story.
@@ -42,6 +50,7 @@ _One drag can move the work and leave the board in a cleaner state._
 | Dashboard + Pivot + Gallery + Feed views | — | ✅ |
 | Formulas, roll-ups, saved filters, `.base`-driven workflows | — | ✅ |
 | Move Rules automation, CSV export, color rules | — | ✅ |
+| Board Analytics | — | ✅ |
 
 ## Views at a glance
 
@@ -53,6 +62,7 @@ _One drag can move the work and leave the board in a cleaner state._
 - **Dashboard** — KPI cards and distribution charts over your current dataset.
 - **Gallery** — visual card grid with cover images and metadata pills.
 - **Feed** — reverse-chronological stream grouped by day, week, or month.
+- **Analytics** — a premium board analytics modal for throughput, workload, bottlenecks, and aging work.
 
 ## 2-minute quick start
 
@@ -61,22 +71,23 @@ _One drag can move the work and leave the board in a cleaner state._
 3. Drag a card to another column and watch the note update.
 4. Click **⋯** on a card to edit, rename, move, or delete.
 5. Use **search** to narrow the board and **Export** to copy it out.
-6. If you want planning views and database-style workflows, unlock Premium.
+6. If you want planning views, analytics, and database-style workflows, unlock Premium.
 
-## Premium activation
+## Buy Premium
 
 Premium is a **one-time unlock**, not a subscription.
 
-1. Buy a license.
-2. Paste the key into **Settings → Bases Power Pack → License**.
-3. Premium views and features unlock immediately.
+Current purchase info:
+- Buy/start here: https://github.com/israerusan/bases-power-pack/issues/new?title=Premium%20license%20request
+- Author profile: https://github.com/israerusan
+- Already purchased? Paste your key into **Settings → Bases Power Pack → License**
+
+Premium unlocks:
+- Calendar, Gantt, Outline, Pivot, Dashboard, Gallery, and Feed views
+- Analytics, formulas, roll-ups, saved filters, and `.base`-driven workflows
+- Move Rules automation, CSV export, and rule-based color coding
 
 Your key is verified **offline**. No account, no always-on server, no mandatory cloud dependency.
-
-Premium includes:
-- Calendar, Gantt, Outline, Pivot, Dashboard, Gallery, and Feed views
-- formulas, roll-ups, saved filters, and `.base`-driven workflows
-- Move Rules automation, CSV export, and rule-based color coding
 
 ## Commands
 

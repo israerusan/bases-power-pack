@@ -209,7 +209,7 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	licenseKey: "",
 	isPro: false,
 	licenseEmail: "",
-	purchaseUrl: "https://buymeacoffee.com/vaultspotlight/e/560211",
+	purchaseUrl: "https://github.com/israerusan/bases-power-pack#buy-premium",
 	kanbanGroupBy: "status",
 	kanbanDoneValue: "done",
 	kanbanCardFields: ["due", "priority"],
@@ -351,7 +351,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 				);
 			const cta = status.createDiv({ cls: "bpp-premium-summary-cta" });
 			const link = cta.createEl("a", {
-				text: "Get Bases Power Pack premium",
+				text: "Buy Premium / purchase info",
 				href: this.plugin.settings.purchaseUrl,
 			});
 			link.setAttr("target", "_blank");
@@ -367,8 +367,8 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 		}
 
 		// (The purchase URL is an author/config concern, not a buyer setting — it's
-		// hardcoded via DEFAULT_SETTINGS.purchaseUrl, matching Vault Spotlight, rather
-		// than exposed as an editable field cluttering the License section.)
+		// hardcoded via DEFAULT_SETTINGS.purchaseUrl rather than exposed as an editable
+		// field cluttering the License section.)
 
 		// ---- Kanban (lite) ---------------------------------------------------
 		new Setting(containerEl).setName("Kanban view (Lite)").setHeading();

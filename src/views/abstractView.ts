@@ -562,8 +562,8 @@ export abstract class PowerPackView extends ItemView {
 			for (const f of features) ul.createEl("li", { text: f });
 		}
 		const actions = box.createDiv({ cls: "bpp-upgrade-actions" });
-		const buy = actions.createEl("button", { text: "Get Premium — ~$29 one-time", cls: "mod-cta" });
-		buy.addEventListener("click", () => this.openSettings());
+		const buy = actions.createEl("button", { text: "Buy Premium / purchase info", cls: "mod-cta" });
+		buy.addEventListener("click", () => window.open(this.plugin.settings.purchaseUrl, "_blank", "noopener,noreferrer"));
 		const enter = actions.createEl("button", { text: "Already purchased? Enter your license key" });
 		enter.addEventListener("click", () => this.openSettings());
 	}
