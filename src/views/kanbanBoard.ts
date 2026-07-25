@@ -15,6 +15,7 @@ import {
 } from "../query/kanban";
 import { toIsoDateKey, todayIso } from "../query/dates";
 import { avatarFor, progressPercent } from "../query/cardLayout";
+import { childStats, computeBlockers, indexByName, indexChildren } from "../query/relations";
 import { computeRollup } from "../query/rollup";
 import { buildQuickAddTitle } from "../query/kanbanActions";
 import { coerceFieldInput, formatFieldForEdit } from "../query/inlineEdit";
@@ -171,6 +172,15 @@ export class KanbanBoard implements HoverParent {
 	/** Cards selected via modifier-click, by row id. Dragging any selected card moves
 	 * the whole set; the selection bar acts on it in bulk. */
 	private selected = new Set<string>();
+	/** Parent cards whose nested subtask list is expanded (by row id). Session-scoped —
+	 * lives for the life of the board (reset when the view closes). */
+	private expanded = new Set<string>();
+	/** Rows indexed by lower-cased basename, rebuilt each render — resolves dependency
+	 * links for the Blocked badge. */
+	private rowsByName = new Map<string, Row>();
+	/** Children indexed by lower-cased parent basename (O(rows) per render), so a card's
+	 * subtasks are an O(1) lookup instead of a per-card rescan. Empty when subtasks off. */
+	private childrenIndex = new Map<string, Row[]>();
 	/** Touch drag layer (pointer-based), rebuilt each render. Mouse keeps HTML5 DnD. */
 	private touch: TouchDragController | null = null;
 	/** The swimlane keys shown in the last render, in display order — the target set
@@ -295,6 +305,11 @@ export class KanbanBoard implements HoverParent {
 			columnOrder: this.plugin.settings.kanbanColumnOrder[groupBy] ?? [],
 		});
 		const columns = model.columns;
+		// Basename indexes for dependency + parent link resolution (Blocked badge + subtasks).
+		const dependsOn = this.plugin.settings.kanbanDependsProp.trim();
+		const subtasksOn = this.plugin.settings.kanbanSubtasksProp.trim();
+		this.rowsByName = dependsOn ? indexByName(input.rows) : new Map<string, Row>();
+		this.childrenIndex = subtasksOn ? indexChildren(input.rows, subtasksOn) : new Map<string, Row[]>();
 		this.lastVisibleRows = model.visibleRows;
 		this.lastDisplayColumns = model.displayColumns;
 		this.lastColumnRows = model.trueMembership;
@@ -576,6 +591,58 @@ export class KanbanBoard implements HoverParent {
 					},
 				});
 				track.createDiv({ cls: "bpp-card-progress-bar" }).setCssProps({ "--bpp-progress": `${pct}%` });
+			}
+		}
+		// Dependencies: a Blocked badge when a linked dependency isn't at the done value.
+		const doneOf = (r: Row): boolean => isRowDone(r, ctx.groupBy, this.plugin.settings.kanbanDoneValue);
+		const dependsProp = this.plugin.settings.kanbanDependsProp.trim();
+		if (dependsProp) {
+			const blockers = computeBlockers(row, dependsProp, this.rowsByName, doneOf);
+			if (blockers.length > 0) {
+				const names = blockers.map((b) => b.name).join(", ");
+				const badge = card.createDiv({ cls: "bpp-card-blocked" });
+				badge.createSpan({ cls: "bpp-card-blocked-icon", text: "⛔", attr: { "aria-hidden": "true" } });
+				badge.createSpan({ text: `Blocked by ${blockers.length}` });
+				badge.setAttr("title", `Blocked by: ${names}`);
+				badge.setAttr("aria-label", `Blocked by ${names}`);
+			}
+		}
+		// Nested cards: a parent card shows a subtask count + an expandable list of children.
+		const subtasksProp = this.plugin.settings.kanbanSubtasksProp.trim();
+		if (subtasksProp) {
+			const children = (this.childrenIndex.get(row.name.toLowerCase()) ?? []).filter((c) => c.id !== row.id);
+			if (children.length > 0) {
+				const stats = childStats(children, doneOf);
+				const open = this.expanded.has(row.id);
+				const bar = card.createDiv({ cls: "bpp-card-subtasks" });
+				bar.addEventListener("click", (evt) => evt.stopPropagation()); // never open the note
+				const toggle = bar.createEl("button", {
+					cls: "bpp-card-subtasks-toggle clickable-icon",
+					attr: { "aria-expanded": String(open), "aria-label": `${open ? "Collapse" : "Expand"} subtasks` },
+				});
+				toggle.createSpan({ text: open ? "▾" : "▸", attr: { "aria-hidden": "true" } });
+				bar.createSpan({ cls: "bpp-card-subtasks-count", text: `${stats.done}/${stats.total} subtasks` });
+				toggle.addEventListener("click", (evt) => {
+					evt.stopPropagation();
+					if (open) this.expanded.delete(row.id);
+					else this.expanded.add(row.id);
+					this.host.requestRender();
+				});
+				if (open) {
+					const list = card.createDiv({ cls: "bpp-card-children" });
+					for (const child of children) {
+						const item = list.createDiv({ cls: "bpp-card-child" });
+						if (doneOf(child)) item.addClass("is-done");
+						item.createSpan({ cls: "bpp-card-child-name", text: child.name });
+						const status = toStr(child.scope.get(ctx.groupBy));
+						if (status) item.createSpan({ cls: "bpp-card-child-status", text: status });
+						item.setAttr("title", `Open ${child.name}`);
+						item.addEventListener("click", (evt) => {
+							evt.stopPropagation();
+							rowActions.openRow(this.host.rowEnv, child);
+						});
+					}
+				}
 			}
 		}
 		card.addEventListener("dragstart", (event) => {

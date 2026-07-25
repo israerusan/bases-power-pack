@@ -125,6 +125,12 @@ export interface BasesPowerPackSettings {
 	/** A person/assignee frontmatter property rendered as a colored initials avatar on the
 	 * card head. "" = no avatar. */
 	kanbanCardAvatarProp: string;
+	/** A frontmatter property listing a card's dependencies (wikilinks/paths). A card with
+	 * a dependency that isn't "done" shows a Blocked badge. "" = off. */
+	kanbanDependsProp: string;
+	/** A frontmatter property linking a card to its parent, for nested cards: a parent card
+	 * shows a subtask count and an expandable list of its children. "" = off. */
+	kanbanSubtasksProp: string;
 
 	/** Feed / timeline (premium) */
 	feedDateProp: string;
@@ -223,6 +229,8 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	kanbanCardProgressProp: "",
 	kanbanCardProgressMax: 100,
 	kanbanCardAvatarProp: "",
+	kanbanDependsProp: "",
+	kanbanSubtasksProp: "",
 	feedDateProp: "file.mtime",
 	feedGranularity: "day",
 	calendarDateProp: "due",
@@ -458,6 +466,36 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.kanbanCardAvatarProp)
 					.onChange((value) => {
 						this.plugin.settings.kanbanCardAvatarProp = value.trim();
+						void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Dependency property")
+			.setDesc(
+				"Optional property listing a card's dependencies as [[links]] (e.g. blockedBy, depends). A card whose dependency isn't at the \"done\" value shows a Blocked badge naming what's still blocking it. Leave blank for off."
+			)
+			.addText((text) =>
+				this.keySuggest(text)
+					.setPlaceholder("(none)")
+					.setValue(this.plugin.settings.kanbanDependsProp)
+					.onChange((value) => {
+						this.plugin.settings.kanbanDependsProp = value.trim();
+						void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Subtasks (parent) property")
+			.setDesc(
+				"Optional property linking a card to its parent as a [[link]] (e.g. parent). A parent card then shows a subtask count and an expandable list of its child cards. Leave blank for off."
+			)
+			.addText((text) =>
+				this.keySuggest(text)
+					.setPlaceholder("(none)")
+					.setValue(this.plugin.settings.kanbanSubtasksProp)
+					.onChange((value) => {
+						this.plugin.settings.kanbanSubtasksProp = value.trim();
 						void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
 					})
 			);

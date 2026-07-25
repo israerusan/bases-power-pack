@@ -369,6 +369,84 @@
   transition: width 120ms ease;
 }
 
+/* Dependencies: a "Blocked" badge on cards with unfinished dependencies */
+.bpp-card-blocked {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 0.72em;
+  font-weight: 600;
+  color: var(--text-on-accent, #fff);
+  background: var(--color-red, #e5484d);
+}
+
+.bpp-card-blocked-icon {
+  font-size: 0.9em;
+  line-height: 1;
+}
+
+/* Nested cards: subtask count + expandable child list */
+.bpp-card-subtasks {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  font-size: 0.76em;
+  color: var(--text-muted);
+}
+
+.bpp-card-subtasks-toggle {
+  padding: 0 2px;
+  height: auto;
+  line-height: 1;
+}
+
+.bpp-card-children {
+  margin-top: 4px;
+  padding-left: 8px;
+  border-left: 2px solid var(--background-modifier-border);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.bpp-card-child {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78em;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.bpp-card-child:hover {
+  background: var(--background-modifier-hover);
+}
+
+.bpp-card-child.is-done .bpp-card-child-name {
+  text-decoration: line-through;
+  color: var(--text-muted);
+}
+
+.bpp-card-child-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bpp-card-child-status {
+  flex: 0 0 auto;
+  font-size: 0.9em;
+  color: var(--text-muted);
+  opacity: 0.85;
+}
+
 /* Context bar (base + saved-filter switcher) */
 .bpp-context {
   display: flex;

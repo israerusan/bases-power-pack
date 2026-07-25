@@ -24,6 +24,7 @@ await build({
 			export * as kanban from "./src/query/kanban.ts";
 			export * as swimlane from "./src/query/swimlane.ts";
 			export * as cardLayout from "./src/query/cardLayout.ts";
+			export * as relations from "./src/query/relations.ts";
 			export * as autoscroll from "./src/views/autoscroll.ts";
 			export * as colorRules from "./src/query/colorRules.ts";
 			export * as pivot from "./src/query/pivot.ts";
@@ -48,7 +49,7 @@ await build({
 });
 
 const m = await import(`file://${outfile.replace(/\\/g, "/")}`);
-const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, hierarchy, kanban, swimlane, cardLayout, autoscroll, colorRules, pivot, dashboard, gallery, ranking, exporter, feed, kanbanActions, base, resolve, rowmod } = m;
+const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, hierarchy, kanban, swimlane, cardLayout, relations, autoscroll, colorRules, pivot, dashboard, gallery, ranking, exporter, feed, kanbanActions, base, resolve, rowmod } = m;
 
 /** Build a Row-like object with the given frontmatter/name for the pure engines. */
 function makeTestRow(name, fm) {
@@ -1436,6 +1437,54 @@ assert.equal(
 	cardLayout.avatarFor("John Doe").hue,
 	"hue is stable for the same name"
 );
+
+// ---- relations: dependencies + nested cards --------------------------------
+assert.deepEqual(relations.parseLinks("[[Task A]]"), ["Task A"], "wikilink → basename");
+assert.deepEqual(relations.parseLinks("[[folder/Task B|Alias]]"), ["Task B"], "link target basename, not alias; path stripped");
+assert.deepEqual(relations.parseLinks("Task C, Task D"), ["Task C", "Task D"], "comma list → names");
+assert.deepEqual(relations.parseLinks(["[[A]]", "B"]), ["A", "B"], "array of links");
+assert.deepEqual(relations.parseLinks("[[X.md]]"), ["X"], "trailing .md stripped");
+assert.deepEqual(relations.parseLinks(""), [], "blank → none");
+
+const relRows = [
+	srow("T1", { status: "todo", dep: "[[T2]], [[T3]]" }),
+	srow("T2", { status: "doing" }),
+	srow("T3", { status: "done" }),
+	srow("C1", { status: "todo", parent: "[[T1]]" }),
+	srow("C2", { status: "done", parent: "[[T1]]" }),
+	srow("C3", { status: "todo", parent: "[[Other]]" }),
+];
+const relDone = (r) => r.note.frontmatter.status === "done";
+const relByName = relations.indexByName(relRows);
+assert.deepEqual(
+	relations.computeBlockers(relRows[0], "dep", relByName, relDone).map((r) => r.name),
+	["T2"],
+	"unmet blocker T2 (doing); T3 is done and ignored"
+);
+assert.deepEqual(
+	relations.computeBlockers(srow("S", { dep: "[[S]]" }), "dep", relations.indexByName([srow("S", {})]), relDone).map((r) => r.name),
+	[],
+	"self-dependency ignored"
+);
+assert.deepEqual(
+	relations.childrenOf(relRows[0], "parent", relRows).map((r) => r.name).sort(),
+	["C1", "C2"],
+	"children link back to the parent by basename"
+);
+assert.deepEqual(
+	relations.childStats(relations.childrenOf(relRows[0], "parent", relRows), relDone),
+	{ done: 1, total: 2 },
+	"1 of 2 subtasks done"
+);
+// indexChildren: same result as childrenOf, but O(rows) built once and O(1) per lookup.
+const childIdx = relations.indexChildren(relRows, "parent");
+assert.deepEqual(
+	(childIdx.get("t1") ?? []).map((r) => r.name).sort(),
+	["C1", "C2"],
+	"indexChildren buckets children under the parent basename"
+);
+assert.equal(childIdx.get("other")?.length, 1, "a child under a different parent is indexed there");
+assert.equal(childIdx.get("t2"), undefined, "a parent with no children isn't in the index");
 
 // ---- auto-scroll velocity --------------------------------------------------
 // Calm middle → no scroll.

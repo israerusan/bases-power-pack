@@ -5008,6 +5008,52 @@ function avatarFor(value) {
   return { initials, hue: columnHue(name) };
 }
 
+// src/query/relations.ts
+function parseLinks(value) {
+  const parts = Array.isArray(value) ? value.map((v) => toStr(v)) : toStr(value).split(",");
+  return parts.map((p) => p.trim().replace(/^\[\[/, "").replace(/\]\]$/, "").trim()).map((p) => {
+    var _a;
+    return p.includes("|") ? (_a = p.split("|")[0]) != null ? _a : p : p;
+  }).map((p) => {
+    var _a;
+    return ((_a = p.split(/[/\\]/).pop()) != null ? _a : p).replace(/\.md$/i, "").trim();
+  }).filter(Boolean);
+}
+function indexByName(rows) {
+  const map = /* @__PURE__ */ new Map();
+  for (const row of rows) map.set(row.name.toLowerCase(), row);
+  return map;
+}
+function computeBlockers(row, dependsProp, byName, isDone) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const name of parseLinks(row.scope.get(dependsProp))) {
+    const dep = byName.get(name.toLowerCase());
+    if (dep && dep.id !== row.id && !seen.has(dep.id) && !isDone(dep)) {
+      seen.add(dep.id);
+      out.push(dep);
+    }
+  }
+  return out;
+}
+function indexChildren(rows, parentProp) {
+  const map = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    for (const pname of parseLinks(row.scope.get(parentProp))) {
+      const key = pname.toLowerCase();
+      const arr = map.get(key);
+      if (arr) arr.push(row);
+      else map.set(key, [row]);
+    }
+  }
+  return map;
+}
+function childStats(children, isDone) {
+  let done = 0;
+  for (const c of children) if (isDone(c)) done++;
+  return { done, total: children.length };
+}
+
 // src/query/kanbanActions.ts
 function buildQuickAddTitle(columnName, now = /* @__PURE__ */ new Date()) {
   const yyyy = now.getFullYear();
@@ -5475,6 +5521,15 @@ var KanbanBoard = class {
     /** Cards selected via modifier-click, by row id. Dragging any selected card moves
      * the whole set; the selection bar acts on it in bulk. */
     this.selected = /* @__PURE__ */ new Set();
+    /** Parent cards whose nested subtask list is expanded (by row id). Session-scoped —
+     * lives for the life of the board (reset when the view closes). */
+    this.expanded = /* @__PURE__ */ new Set();
+    /** Rows indexed by lower-cased basename, rebuilt each render — resolves dependency
+     * links for the Blocked badge. */
+    this.rowsByName = /* @__PURE__ */ new Map();
+    /** Children indexed by lower-cased parent basename (O(rows) per render), so a card's
+     * subtasks are an O(1) lookup instead of a per-card rescan. Empty when subtasks off. */
+    this.childrenIndex = /* @__PURE__ */ new Map();
     /** Touch drag layer (pointer-based), rebuilt each render. Mouse keeps HTML5 DnD. */
     this.touch = null;
     /** The swimlane keys shown in the last render, in display order — the target set
@@ -5584,6 +5639,10 @@ var KanbanBoard = class {
       columnOrder: (_b = this.plugin.settings.kanbanColumnOrder[groupBy]) != null ? _b : []
     });
     const columns = model.columns;
+    const dependsOn = this.plugin.settings.kanbanDependsProp.trim();
+    const subtasksOn = this.plugin.settings.kanbanSubtasksProp.trim();
+    this.rowsByName = dependsOn ? indexByName(input.rows) : /* @__PURE__ */ new Map();
+    this.childrenIndex = subtasksOn ? indexChildren(input.rows, subtasksOn) : /* @__PURE__ */ new Map();
     this.lastVisibleRows = model.visibleRows;
     this.lastDisplayColumns = model.displayColumns;
     this.lastColumnRows = model.trueMembership;
@@ -5747,7 +5806,7 @@ var KanbanBoard = class {
    * the lane value in a swimlane cell.
    */
   renderCard(container, row, columnName, ctx) {
-    var _a;
+    var _a, _b;
     const card = container.createDiv({ cls: "bpp-card" });
     card.setAttr("data-bpp-row", row.id);
     if (this.selected.has(row.id)) card.addClass("is-selected");
@@ -5816,13 +5875,63 @@ var KanbanBoard = class {
         track.createDiv({ cls: "bpp-card-progress-bar" }).setCssProps({ "--bpp-progress": `${pct}%` });
       }
     }
+    const doneOf = (r) => isRowDone(r, ctx.groupBy, this.plugin.settings.kanbanDoneValue);
+    const dependsProp = this.plugin.settings.kanbanDependsProp.trim();
+    if (dependsProp) {
+      const blockers = computeBlockers(row, dependsProp, this.rowsByName, doneOf);
+      if (blockers.length > 0) {
+        const names = blockers.map((b) => b.name).join(", ");
+        const badge = card.createDiv({ cls: "bpp-card-blocked" });
+        badge.createSpan({ cls: "bpp-card-blocked-icon", text: "\u26D4", attr: { "aria-hidden": "true" } });
+        badge.createSpan({ text: `Blocked by ${blockers.length}` });
+        badge.setAttr("title", `Blocked by: ${names}`);
+        badge.setAttr("aria-label", `Blocked by ${names}`);
+      }
+    }
+    const subtasksProp = this.plugin.settings.kanbanSubtasksProp.trim();
+    if (subtasksProp) {
+      const children = ((_a = this.childrenIndex.get(row.name.toLowerCase())) != null ? _a : []).filter((c) => c.id !== row.id);
+      if (children.length > 0) {
+        const stats = childStats(children, doneOf);
+        const open = this.expanded.has(row.id);
+        const bar = card.createDiv({ cls: "bpp-card-subtasks" });
+        bar.addEventListener("click", (evt) => evt.stopPropagation());
+        const toggle = bar.createEl("button", {
+          cls: "bpp-card-subtasks-toggle clickable-icon",
+          attr: { "aria-expanded": String(open), "aria-label": `${open ? "Collapse" : "Expand"} subtasks` }
+        });
+        toggle.createSpan({ text: open ? "\u25BE" : "\u25B8", attr: { "aria-hidden": "true" } });
+        bar.createSpan({ cls: "bpp-card-subtasks-count", text: `${stats.done}/${stats.total} subtasks` });
+        toggle.addEventListener("click", (evt) => {
+          evt.stopPropagation();
+          if (open) this.expanded.delete(row.id);
+          else this.expanded.add(row.id);
+          this.host.requestRender();
+        });
+        if (open) {
+          const list = card.createDiv({ cls: "bpp-card-children" });
+          for (const child of children) {
+            const item = list.createDiv({ cls: "bpp-card-child" });
+            if (doneOf(child)) item.addClass("is-done");
+            item.createSpan({ cls: "bpp-card-child-name", text: child.name });
+            const status = toStr(child.scope.get(ctx.groupBy));
+            if (status) item.createSpan({ cls: "bpp-card-child-status", text: status });
+            item.setAttr("title", `Open ${child.name}`);
+            item.addEventListener("click", (evt) => {
+              evt.stopPropagation();
+              openRow(this.host.rowEnv, child);
+            });
+          }
+        }
+      }
+    }
     card.addEventListener("dragstart", (event) => {
-      var _a2, _b;
+      var _a2, _b2;
       card.addClass("is-dragging");
       this.cardDragActive = true;
       this.dismissCardHover();
       (_a2 = event.dataTransfer) == null ? void 0 : _a2.setData("text/plain", row.id);
-      (_b = event.dataTransfer) == null ? void 0 : _b.setData(DND_ROW, row.id);
+      (_b2 = event.dataTransfer) == null ? void 0 : _b2.setData(DND_ROW, row.id);
       if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
     });
     card.addEventListener("dragend", () => {
@@ -5860,7 +5969,7 @@ var KanbanBoard = class {
         sourcePath: row.id
       });
     });
-    if (this.canWrite) (_a = this.touch) == null ? void 0 : _a.attach(card, row.id);
+    if (this.canWrite) (_b = this.touch) == null ? void 0 : _b.attach(card, row.id);
   }
   /**
    * Rename a card's note in place: swap the title for an input, commit on Enter/blur via
@@ -7309,6 +7418,8 @@ var DEFAULT_SETTINGS = {
   kanbanCardProgressProp: "",
   kanbanCardProgressMax: 100,
   kanbanCardAvatarProp: "",
+  kanbanDependsProp: "",
+  kanbanSubtasksProp: "",
   feedDateProp: "file.mtime",
   feedGranularity: "day",
   calendarDateProp: "due",
@@ -7462,6 +7573,22 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
     ).addText(
       (text) => this.keySuggest(text).setPlaceholder("(none)").setValue(this.plugin.settings.kanbanCardAvatarProp).onChange((value) => {
         this.plugin.settings.kanbanCardAvatarProp = value.trim();
+        void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
+      })
+    );
+    new import_obsidian7.Setting(containerEl).setName("Dependency property").setDesc(
+      `Optional property listing a card's dependencies as [[links]] (e.g. blockedBy, depends). A card whose dependency isn't at the "done" value shows a Blocked badge naming what's still blocking it. Leave blank for off.`
+    ).addText(
+      (text) => this.keySuggest(text).setPlaceholder("(none)").setValue(this.plugin.settings.kanbanDependsProp).onChange((value) => {
+        this.plugin.settings.kanbanDependsProp = value.trim();
+        void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
+      })
+    );
+    new import_obsidian7.Setting(containerEl).setName("Subtasks (parent) property").setDesc(
+      "Optional property linking a card to its parent as a [[link]] (e.g. parent). A parent card then shows a subtask count and an expandable list of its child cards. Leave blank for off."
+    ).addText(
+      (text) => this.keySuggest(text).setPlaceholder("(none)").setValue(this.plugin.settings.kanbanSubtasksProp).onChange((value) => {
+        this.plugin.settings.kanbanSubtasksProp = value.trim();
         void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
       })
     );
