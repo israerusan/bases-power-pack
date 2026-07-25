@@ -209,7 +209,7 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	licenseKey: "",
 	isPro: false,
 	licenseEmail: "",
-	purchaseUrl: "https://github.com/israerusan/bases-power-pack#buy-premium",
+	purchaseUrl: "https://buymeacoffee.com/vaultspotlight/e/560211",
 	kanbanGroupBy: "status",
 	kanbanDoneValue: "done",
 	kanbanCardFields: ["due", "priority"],

@@ -78,7 +78,7 @@ _Analytics makes the board answer the obvious management questions: throughput, 
 Premium is a **one-time unlock**, not a subscription.
 
 Current purchase info:
-- Buy/start here: https://github.com/israerusan/bases-power-pack/issues/new?title=Premium%20license%20request
+- Buy/start here: https://buymeacoffee.com/vaultspotlight/e/560211
 - Author profile: https://github.com/israerusan
 - Already purchased? Paste your key into **Settings → Bases Power Pack → License**
 
