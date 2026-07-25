@@ -159,10 +159,10 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.registerView(VIEW_TYPE_FEED, (leaf) => new FeedView(leaf, this));
 
 		// Register the Kanban board as a hover-link source so the core Page Preview
-		// plugin shows a card's note preview on a PLAIN hover (defaultMod: false). The
-		// board fires the "hover-link" event with this same id as its source; without
-		// this registration Page Preview would require holding Ctrl/Cmd (or ignore it).
-		this.registerHoverLinkSource(VIEW_TYPE_KANBAN, { display: "Bases Power Pack kanban", defaultMod: false });
+		// plugin can show a card's note preview. defaultMod: TRUE (Ctrl/Cmd + hover) —
+		// a plain-hover popover physically covers the card and blocks the drag, so the
+		// preview requires the modifier and drag always works.
+		this.registerHoverLinkSource(VIEW_TYPE_KANBAN, { display: "Bases Power Pack kanban", defaultMod: true });
 
 		// Native Bases view: a "Kanban" option inside the Bases view dropdown (Obsidian
 		// ≥1.10). Additive — the standalone views above are unaffected. registerBasesView

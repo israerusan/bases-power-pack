@@ -11094,7 +11094,7 @@ var BasesPowerPackPlugin = class extends import_obsidian13.Plugin {
     this.registerView(VIEW_TYPE_DASHBOARD, (leaf) => new DashboardView(leaf, this));
     this.registerView(VIEW_TYPE_GALLERY, (leaf) => new GalleryView(leaf, this));
     this.registerView(VIEW_TYPE_FEED, (leaf) => new FeedView(leaf, this));
-    this.registerHoverLinkSource(VIEW_TYPE_KANBAN, { display: "Bases Power Pack kanban", defaultMod: false });
+    this.registerHoverLinkSource(VIEW_TYPE_KANBAN, { display: "Bases Power Pack kanban", defaultMod: true });
     this.registerBasesView(KANBAN_BASES_VIEW_ID, {
       name: "Kanban",
       icon: "layout-dashboard",
