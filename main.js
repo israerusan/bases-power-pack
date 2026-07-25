@@ -2327,8 +2327,8 @@ var FolderSuggest = class extends import_obsidian.AbstractInputSuggest {
   }
 };
 
-// src/views/kanbanView.ts
-var import_obsidian6 = require("obsidian");
+// src/views/abstractView.ts
+var import_obsidian5 = require("obsidian");
 
 // src/engine/expression.ts
 var OPERATORS = [
@@ -2877,62 +2877,6 @@ function evaluateSafe(source, scope) {
   }
 }
 
-// src/model/row.ts
-var COMPUTED_FILE_PROPS = /* @__PURE__ */ new Set([
-  "file.name",
-  "file.path",
-  "file.folder",
-  "file.ext",
-  "file.tags",
-  "file.ctime",
-  "file.mtime",
-  "file.size"
-]);
-function fileProps(note) {
-  return {
-    "file.name": note.name,
-    "file.path": note.path,
-    "file.folder": note.folder,
-    "file.ext": note.ext,
-    "file.tags": note.tags,
-    "file.ctime": note.ctime,
-    "file.mtime": note.mtime,
-    "file.size": note.size
-  };
-}
-function makeScope(note, formulas = {}) {
-  const base = { ...note.frontmatter, ...fileProps(note) };
-  const memo = /* @__PURE__ */ new Map();
-  const inProgress = /* @__PURE__ */ new Set();
-  const scope = {
-    get(name) {
-      if (name in base) return base[name];
-      if (name in formulas) {
-        if (memo.has(name)) return memo.get(name);
-        if (inProgress.has(name)) return null;
-        inProgress.add(name);
-        let result = null;
-        try {
-          result = compileExpression(formulas[name]).eval(scope);
-        } catch (e) {
-          result = null;
-        }
-        inProgress.delete(name);
-        memo.set(name, result);
-        return result;
-      }
-      return void 0;
-    }
-  };
-  return scope;
-}
-function makeRow(note, formulas = {}) {
-  return { id: note.path, name: note.name, note, scope: makeScope(note, formulas) };
-}
-
-// src/views/abstractView.ts
-var import_obsidian5 = require("obsidian");
-
 // src/query/gantt.ts
 function toDayNumber(value) {
   if (!value) return null;
@@ -3255,6 +3199,9 @@ function compareRankValue(a, b) {
   if (av === null) return 1;
   if (bv === null) return -1;
   return av - bv;
+}
+function compareRowsByRank(a, b, rankProp) {
+  return compareRankValue(a.scope.get(rankProp), b.scope.get(rankProp)) || compareText(a.name, b.name);
 }
 function compareNumberValue(a, b) {
   const av = numberOrNull(a);
@@ -3945,6 +3892,59 @@ function normalizeColorRules(raw) {
 
 // src/views/viewData.ts
 var import_obsidian2 = require("obsidian");
+
+// src/model/row.ts
+var COMPUTED_FILE_PROPS = /* @__PURE__ */ new Set([
+  "file.name",
+  "file.path",
+  "file.folder",
+  "file.ext",
+  "file.tags",
+  "file.ctime",
+  "file.mtime",
+  "file.size"
+]);
+function fileProps(note) {
+  return {
+    "file.name": note.name,
+    "file.path": note.path,
+    "file.folder": note.folder,
+    "file.ext": note.ext,
+    "file.tags": note.tags,
+    "file.ctime": note.ctime,
+    "file.mtime": note.mtime,
+    "file.size": note.size
+  };
+}
+function makeScope(note, formulas = {}) {
+  const base = { ...note.frontmatter, ...fileProps(note) };
+  const memo = /* @__PURE__ */ new Map();
+  const inProgress = /* @__PURE__ */ new Set();
+  const scope = {
+    get(name) {
+      if (name in base) return base[name];
+      if (name in formulas) {
+        if (memo.has(name)) return memo.get(name);
+        if (inProgress.has(name)) return null;
+        inProgress.add(name);
+        let result = null;
+        try {
+          result = compileExpression(formulas[name]).eval(scope);
+        } catch (e) {
+          result = null;
+        }
+        inProgress.delete(name);
+        memo.set(name, result);
+        return result;
+      }
+      return void 0;
+    }
+  };
+  return scope;
+}
+function makeRow(note, formulas = {}) {
+  return { id: note.path, name: note.name, note, scope: makeScope(note, formulas) };
+}
 
 // src/query/filter.ts
 function evaluateFilter(node, scope) {
@@ -4981,6 +4981,9 @@ var PowerPackView = class extends import_obsidian5.ItemView {
   }
 };
 
+// src/views/kanbanBoard.ts
+var import_obsidian6 = require("obsidian");
+
 // src/query/kanbanActions.ts
 function buildQuickAddTitle(columnName, now = /* @__PURE__ */ new Date()) {
   const yyyy = now.getFullYear();
@@ -5083,6 +5086,9 @@ var DND_TREE = "application/x-bpp-tree";
 
 // src/query/swimlane.ts
 var SWIMLANE_EMPTY = "(empty)";
+function laneWrite(laneProp, laneKey) {
+  return laneKey === SWIMLANE_EMPTY || laneKey === null ? { key: laneProp, remove: true } : { key: laneProp, value: laneKey };
+}
 var DEFAULT_MAX_LANES = 30;
 function laneKeyOf(row, laneProp) {
   return toStr(row.scope.get(laneProp)).trim() || SWIMLANE_EMPTY;
@@ -5408,13 +5414,8 @@ var TouchDragController = class {
   }
 };
 
-// src/views/kanbanView.ts
-var VIEW_TYPE_KANBAN = "bpp-kanban-view";
+// src/views/kanbanBoard.ts
 var SORT_OPTIONS = [
-  // The default. Drag a card between two others to hand-order it — the position is
-  // saved to a `rank` property. (The old board split this into "Default order" +
-  // "Manual (drag)"; a saved "rank" now resolves to this single mode, which behaves
-  // identically, so the two are merged into one discoverable option.)
   { value: "manual", label: "Manual \u2014 drag to reorder" },
   { value: "name-asc", label: "Name \u2191" },
   { value: "name-desc", label: "Name \u2193" },
@@ -5422,21 +5423,33 @@ var SORT_OPTIONS = [
   { value: "priority-desc", label: "Priority" },
   { value: "mtime-desc", label: "Recently changed" }
 ];
-var KanbanView = class extends PowerPackView {
-  constructor() {
-    super(...arguments);
+var KanbanBoard = class {
+  constructor(plugin, host) {
+    this.plugin = plugin;
+    this.host = host;
+    /** The snapshot the current DOM was rendered from — read by interaction handlers
+     * (search text, hover source) so they act against what the user is looking at. */
+    this.input = {
+      revision: 0,
+      rows: [],
+      formulas: {},
+      searchQuery: "",
+      showControls: true,
+      groupBy: "status",
+      swimlaneProp: "",
+      hoverSource: ""
+    };
     /** The currently visible (filtered) rows, captured for the bulk-edit action. */
     this.lastVisibleRows = [];
-    /** TRUE column membership — resolved (base/filter-scoped) rows grouped by
-     * value, ignoring the transient quick-search. Drives WIP badges/enforcement,
-     * per-column roll-ups, and the column-rename target set. */
+    /** TRUE column membership — resolved (base/filter-scoped) rows grouped by value,
+     * ignoring the transient quick-search. Drives WIP badges/enforcement, per-column
+     * roll-ups, and the column-rename target set. */
     this.lastColumnRows = /* @__PURE__ */ new Map();
-    /** The rows AS DISPLAYED per column (search-filtered, in the active sort order)
-     * — the basis for a manual drag-to-reorder, which reads the shown rank order. */
+    /** The rows AS DISPLAYED per column (search-filtered, in the active sort order) —
+     * the basis for a manual drag-to-reorder, which reads the shown rank order. */
     this.lastDisplayColumns = /* @__PURE__ */ new Map();
     /** Cards selected via modifier-click, by row id. Dragging any selected card moves
-     * the whole set; the selection bar acts on it in bulk. Plain click is unchanged
-     * (opens the note), so selection is strictly additive to the existing behavior. */
+     * the whole set; the selection bar acts on it in bulk. */
     this.selected = /* @__PURE__ */ new Set();
     /** Touch drag layer (pointer-based), rebuilt each render. Mouse keeps HTML5 DnD. */
     this.touch = null;
@@ -5452,18 +5465,16 @@ var KanbanView = class extends PowerPackView {
     /** Edge auto-scroll driver for mouse (HTML5) drags over the board. */
     this.boardScroller = null;
   }
-  /** Tear down any open Page Preview popover this view owns (on mousedown / dragstart),
-   * so it can't block a drag. */
-  dismissCardHover() {
-    var _a;
-    const hp = this.hoverPopover;
-    if (hp) {
-      (_a = hp.hoverEl) == null ? void 0 : _a.remove();
-      this.hoverPopover = null;
-    }
+  /** The visible (search-filtered) rows of the last render — the standalone toolbar's
+   * export builders read this at click time. */
+  get visibleRows() {
+    return this.lastVisibleRows;
   }
-  /** The swimlane (second group-by) property, or "" when off. Free — horizontal
-   * bands split the board by a second property (the flat board is "None"). */
+  /** The rows-as-displayed per column of the last render, for the "copy board" export. */
+  get displayColumns() {
+    return this.lastDisplayColumns;
+  }
+  // ---- settings-derived getters (board reads settings directly) --------------
   get swimlaneProp() {
     const p = (this.plugin.settings.kanbanSwimlaneBy || "").trim();
     return p && p !== (this.plugin.settings.kanbanGroupBy || "status") ? p : "";
@@ -5474,14 +5485,11 @@ var KanbanView = class extends PowerPackView {
   get rankProp() {
     return this.plugin.settings.kanbanRankProp || "rank";
   }
-  /** Manual drag-to-reorder is live in the hand-order sort — "manual" (the
-   * default) or the legacy "rank" alias — but not while a name/due/priority sort
-   * governs the order, where a hand-set rank would be invisible. */
+  /** Manual drag-to-reorder is live in the hand-order sort — "manual" (the default) or
+   * the legacy "rank" alias — but not while a name/due/priority sort governs the order. */
   get reorderEnabled() {
     return this.sortBy === "manual" || this.sortBy === "rank";
   }
-  /** Sort + hide-done are persisted per group-by property, so the board reopens
-   * exactly as you left it (they were session-only fields before 1.11). */
   get sortBy() {
     const v = this.plugin.settings.kanbanSortBy[this.groupByProp];
     return SORT_OPTIONS.some((o) => o.value === v) ? v : "manual";
@@ -5489,69 +5497,43 @@ var KanbanView = class extends PowerPackView {
   get hideDoneColumn() {
     return this.plugin.settings.kanbanHideDone[this.groupByProp] === true;
   }
-  async setSortBy(value) {
-    if (value === "manual") delete this.plugin.settings.kanbanSortBy[this.groupByProp];
-    else this.plugin.settings.kanbanSortBy[this.groupByProp] = value;
-    await this.plugin.saveSettings({ invalidateResolved: false });
-    await this.render();
-  }
-  async setHideDone(value) {
-    if (value) this.plugin.settings.kanbanHideDone[this.groupByProp] = true;
-    else delete this.plugin.settings.kanbanHideDone[this.groupByProp];
-    await this.plugin.saveSettings({ invalidateResolved: false });
-    await this.render();
-  }
-  getViewType() {
-    return VIEW_TYPE_KANBAN;
-  }
-  getDisplayText() {
-    return "Power Pack: Kanban";
-  }
-  getIcon() {
-    return "layout-dashboard";
-  }
-  async onClose() {
+  /** Open the plugin's settings tab — the empty-state "Choose another property" CTA. */
+  openSettings() {
     var _a, _b;
-    (_a = this.boardScroller) == null ? void 0 : _a.stop();
-    this.boardScroller = null;
-    (_b = this.touch) == null ? void 0 : _b.destroy();
-    this.touch = null;
-    await super.onClose();
+    (_a = this.plugin.app.setting) == null ? void 0 : _a.open();
+    (_b = this.plugin.app.setting) == null ? void 0 : _b.openTabById(this.plugin.manifest.id);
   }
-  async render() {
+  /** Un-hide the Done column (the empty-state "Show done" action). Presentational. */
+  async showDone() {
+    delete this.plugin.settings.kanbanHideDone[this.groupByProp];
+    await this.plugin.saveSettings({ invalidateResolved: false });
+    this.host.requestRender();
+  }
+  /** Tear down any open Page Preview popover this board owns (on mousedown / dragstart),
+   * so it can't block a drag. */
+  dismissCardHover() {
+    var _a;
+    const hp = this.hoverPopover;
+    if (hp) {
+      (_a = hp.hoverEl) == null ? void 0 : _a.remove();
+      this.hoverPopover = null;
+    }
+  }
+  // ---- render ---------------------------------------------------------------
+  /**
+   * Render the board into the host container from the given snapshot. The host has
+   * already painted its toolbar into the same container; this appends the board grid
+   * (and, when cards are selected, the selection bar) after it.
+   */
+  render(input) {
     var _a, _b, _c, _d, _e;
-    const token = ++this.renderToken;
-    const resolved = await this.plugin.getResolvedView();
-    if (this.isStale(token)) return;
-    const groupBy = this.plugin.settings.kanbanGroupBy || "status";
-    const container = this.contentEl;
-    this.captureSearchState();
-    container.empty();
-    container.addClass("bpp-view");
-    const header = container.createDiv({ cls: "bpp-toolbar" });
-    header.createEl("h3", { text: "Kanban" });
-    if (!this.plugin.settings.isPro) header.createEl("span", { cls: "bpp-badge bpp-badge-lite", text: "Lite" });
-    header.createEl("span", { cls: "bpp-muted", text: `grouped by "${groupBy}"` });
-    this.renderUndoButton(header);
-    this.addExportButton(header, [
-      {
-        label: "Copy board as Markdown",
-        build: () => buildMarkdownBoard(
-          [...this.lastDisplayColumns].map(([name, rows]) => ({ name, rows })),
-          this.plugin.settings.kanbanCardFields
-        )
-      },
-      { label: "Copy as Markdown table", build: () => buildMarkdownTable(this.lastVisibleRows, this.exportFields(groupBy)) },
-      { label: "Export as CSV", premium: true, build: () => buildCsv(this.lastVisibleRows, this.exportFields(groupBy)) }
-    ]);
-    renderContextControls(container, this.plugin, resolved, () => void this.render());
-    this.renderLiteControls(container);
-    renderRollupBar(container, this.plugin, resolved.rows);
-    this.renderHintBar(container, "kanban", "Drag a card between two others to reorder it \u2022 Drag to another column to change status \u2022 \u22EF for more actions \u2022 Undo reverses the last change");
+    this.input = input;
+    const groupBy = input.groupBy || "status";
+    const container = this.host.containerEl;
     const extraColumns = (_a = this.plugin.settings.kanbanExtraColumns[groupBy]) != null ? _a : [];
-    const model = buildBoardModel(resolved.rows, {
+    const model = buildBoardModel(input.rows, {
       groupBy,
-      search: this.searchQuery,
+      search: input.searchQuery,
       hideColumn: this.hideDoneColumn ? this.plugin.settings.kanbanDoneValue : "",
       sortBy: this.sortBy,
       rankProp: this.rankProp,
@@ -5565,37 +5547,31 @@ var KanbanView = class extends PowerPackView {
     const columnRows = model.trueMembership;
     const orderedNames = model.orderedNames;
     const colored = this.plugin.settings.kanbanColorColumns;
-    const swimProp = this.swimlaneProp;
+    const swimProp = input.swimlaneProp;
     const board = container.createDiv({ cls: "bpp-kanban-board" });
     if (colored) board.addClass("is-colored");
     if (swimProp) board.addClass("is-swimlaned");
     this.wireBoardAutoScroll(board);
     (_c = this.touch) == null ? void 0 : _c.destroy();
     this.touch = this.makeTouchController(board, groupBy, swimProp);
-    const rowById = new Map(resolved.rows.map((row) => [row.id, row]));
+    const rowById = new Map(input.rows.map((row) => [row.id, row]));
     if (columns.length === 0) {
-      if (this.searchQuery || this.hideDoneColumn) {
+      if (input.searchQuery || this.hideDoneColumn) {
         const actions = [];
-        if (this.searchQuery) {
-          actions.push({
-            label: "Clear search",
-            onClick: () => {
-              this.searchQuery = "";
-              void this.render();
-            }
-          });
+        if (input.searchQuery) {
+          actions.push({ label: "Clear search", onClick: () => this.host.setSearch("") });
         }
         if (this.hideDoneColumn) {
-          actions.push({ label: "Show done", onClick: () => void this.setHideDone(false) });
+          actions.push({ label: "Show done", onClick: () => void this.showDone() });
         }
-        this.renderEmptyState(board, {
+        renderEmptyState(board, {
           title: "No cards match",
           body: "No cards match the current filters.",
           actions
         });
-        if (!this.searchQuery) this.renderAddColumnTile(board, groupBy);
+        if (!input.searchQuery) this.renderAddColumnTile(board, groupBy);
       } else {
-        this.renderEmptyState(board, {
+        renderEmptyState(board, {
           title: "Start here",
           body: `Power Pack groups your notes by the "${groupBy}" property. Add "${groupBy}: To Do" to a note's frontmatter, or add a column below to begin.`,
           actions: [{ label: "Choose another property", onClick: () => this.openSettings() }]
@@ -5619,7 +5595,7 @@ var KanbanView = class extends PowerPackView {
       laneKey: null
     };
     if (swimProp) {
-      this.renderSwimlaneBoard(board, resolved.rows, columns, columnRows, {
+      this.renderSwimlaneBoard(board, input.rows, columns, columnRows, {
         groupBy,
         swimProp,
         extraColumns,
@@ -5691,7 +5667,7 @@ var KanbanView = class extends PowerPackView {
         attr: { "aria-label": `Add note to ${column.name}` }
       });
       addButton.addEventListener("click", () => void this.quickAddNote(column.name, groupBy));
-      this.addOverflowButton(
+      addOverflowButton(
         actions,
         `column ${column.name}`,
         (a) => this.openColumnMenu(a, column.name, groupBy, removable, orderedNames)
@@ -5716,24 +5692,23 @@ var KanbanView = class extends PowerPackView {
       }
       for (const row of column.rows) this.renderCard(col, row, column.name, cardCtx);
     }
-    if (!this.searchQuery) this.renderAddColumnTile(board, groupBy);
+    if (!input.searchQuery) this.renderAddColumnTile(board, groupBy);
     this.renderSelectionBar(container, groupBy, orderedNames);
   }
   /**
    * Render one card into a column/cell. Extracted from the flat board loop so the
-   * swimlane board renders cards through the exact same path — no divergent second
-   * copy of the chip/edit/drag/selection wiring. `ctx.laneKey` is null on the flat
-   * board and the lane value in a swimlane cell (it routes the reorder + the card
-   * menu's move actions to the lane-aware handlers).
+   * swimlane board renders cards through the exact same path — no divergent second copy
+   * of the chip/edit/drag/selection wiring. `ctx.laneKey` is null on the flat board and
+   * the lane value in a swimlane cell.
    */
   renderCard(container, row, columnName, ctx) {
     var _a;
     const card = container.createDiv({ cls: "bpp-card" });
     card.setAttr("data-bpp-row", row.id);
     if (this.selected.has(row.id)) card.addClass("is-selected");
-    this.applyColorRule(card, row);
+    applyColorRule(this.plugin, card, row);
     card.draggable = true;
-    const coverSrc = this.coverImageSrc(row, this.plugin.settings.kanbanCardImageProp);
+    const coverSrc = coverImageSrc(this.host.rowEnv, row, this.plugin.settings.kanbanCardImageProp);
     if (coverSrc) {
       card.addClass("has-cover");
       card.createEl("img", {
@@ -5753,7 +5728,7 @@ var KanbanView = class extends PowerPackView {
       evt.stopPropagation();
       this.beginTitleRename(card, titleEl, row);
     });
-    this.addOverflowButton(head, row.name, openMenu);
+    addOverflowButton(head, row.name, openMenu);
     const isDone = isRowDone(row, ctx.groupBy, this.plugin.settings.kanbanDoneValue);
     for (const field of ctx.metaFields) {
       const display = formatCardField(row, field);
@@ -5793,7 +5768,7 @@ var KanbanView = class extends PowerPackView {
         this.openCardDefault(row);
       }
     });
-    this.makeItemAccessible(card, row.name, () => this.openRow(row), openMenu);
+    makeItemAccessible(card, row.name, () => openRow(this.host.rowEnv, row), openMenu);
     card.addEventListener("contextmenu", (evt) => openMenu(evt));
     card.addEventListener("keydown", (evt) => {
       if (evt.target === card && evt.key === "F2") {
@@ -5804,9 +5779,9 @@ var KanbanView = class extends PowerPackView {
     card.addEventListener("mousedown", () => this.dismissCardHover());
     card.addEventListener("mouseover", (event) => {
       if (this.cardDragActive) return;
-      this.app.workspace.trigger("hover-link", {
+      this.plugin.app.workspace.trigger("hover-link", {
         event,
-        source: VIEW_TYPE_KANBAN,
+        source: this.input.hoverSource,
         hoverParent: this,
         targetEl: card,
         linktext: row.id,
@@ -5816,13 +5791,12 @@ var KanbanView = class extends PowerPackView {
     (_a = this.touch) == null ? void 0 : _a.attach(card, row.id);
   }
   /**
-   * Rename a card's note in place: swap the title for an input, commit on Enter/blur
-   * via {@link fileFor} + `fileManager.renameFile`, Escape cancels. Background
-   * re-renders are held during the edit (beginInteraction) so a vault change can't
-   * yank the input, exactly like {@link beginInlineEdit}.
+   * Rename a card's note in place: swap the title for an input, commit on Enter/blur via
+   * `fileFor` + `fileManager.renameFile`, Escape cancels. Background re-renders are held
+   * during the edit (beginInteraction) so a vault change can't yank the input.
    */
   beginTitleRename(card, titleEl, row) {
-    const file = this.fileFor(row);
+    const file = fileFor(this.host.rowEnv, row);
     if (!file) return;
     const original = file.basename;
     card.draggable = false;
@@ -5832,10 +5806,10 @@ var KanbanView = class extends PowerPackView {
     input.value = original;
     input.focus();
     input.select();
-    this.beginInteraction();
+    this.host.beginInteraction();
     let settled = false;
     const finish = () => {
-      this.endInteraction();
+      this.host.endInteraction();
       card.draggable = true;
     };
     const commit = async () => {
@@ -5845,18 +5819,18 @@ var KanbanView = class extends PowerPackView {
       const next = input.value.trim();
       finish();
       if (!next || next === original) {
-        await this.render();
+        this.host.requestRender();
         return;
       }
       const parent = ((_a = file.parent) == null ? void 0 : _a.path) ? `${file.parent.path}/` : "";
       const target = (0, import_obsidian6.normalizePath)(`${parent}${next}.${file.extension}`);
       try {
-        await this.app.fileManager.renameFile(file, target);
+        await this.plugin.app.fileManager.renameFile(file, target);
         this.plugin.invalidateSnapshot();
       } catch (error) {
         new import_obsidian6.Notice(`Rename failed: ${String(error)}`);
       }
-      await this.render();
+      this.host.requestRender();
     };
     input.addEventListener("click", (event) => event.stopPropagation());
     input.addEventListener("keydown", (event) => {
@@ -5867,7 +5841,7 @@ var KanbanView = class extends PowerPackView {
         event.preventDefault();
         settled = true;
         finish();
-        void this.render();
+        this.host.requestRender();
       }
     });
     input.addEventListener("blur", () => void commit());
@@ -5895,62 +5869,10 @@ var KanbanView = class extends PowerPackView {
       }
     });
   }
-  async addExtraColumn(groupBy, name) {
-    var _a;
-    const map = this.plugin.settings.kanbanExtraColumns;
-    const existing = (_a = map[groupBy]) != null ? _a : [];
-    if (!existing.some((n) => n.toLocaleLowerCase() === name.toLocaleLowerCase())) {
-      map[groupBy] = [...existing, name];
-      await this.plugin.saveSettings({ invalidateResolved: false });
-    }
-    await this.render();
-  }
-  async removeExtraColumn(groupBy, name) {
-    var _a;
-    const map = this.plugin.settings.kanbanExtraColumns;
-    const next = ((_a = map[groupBy]) != null ? _a : []).filter((n) => n !== name);
-    if (next.length > 0) map[groupBy] = next;
-    else delete map[groupBy];
-    await this.plugin.saveSettings({ invalidateResolved: false });
-    await this.render();
-  }
-  /**
-   * Apply a predefined column set: set the group-by, the column order, per-column
-   * colors, the visible (droppable) columns, and the done value — all in one write.
-   * Only settings maps change (no note is touched), so it's presentational.
-   */
-  async applyColumnSet(set) {
-    const s = this.plugin.settings;
-    const group = set.groupBy.trim() || "status";
-    const names = set.columns.map((c) => c.name.trim()).filter(Boolean);
-    s.kanbanGroupBy = group;
-    s.kanbanColumnOrder[group] = names;
-    s.kanbanExtraColumns[group] = names;
-    for (const col of set.columns) {
-      const name = col.name.trim();
-      if (!name) continue;
-      if (col.hue.trim()) s.kanbanColorOverrides[name] = col.hue.trim();
-      else delete s.kanbanColorOverrides[name];
-    }
-    const done = set.columns.find((c) => c.done && c.name.trim());
-    if (done) s.kanbanDoneValue = done.name.trim();
-    await this.plugin.saveSettings({ invalidateResolved: false });
-    await this.render();
-    new import_obsidian6.Notice(`Applied column set "${set.name}".`);
-  }
-  /** Collapse or expand a column (persisted per column value, like WIP limits). */
-  async toggleColumnCollapse(columnName) {
-    const map = this.plugin.settings.kanbanCollapsedColumns;
-    if (map[columnName]) delete map[columnName];
-    else map[columnName] = true;
-    await this.plugin.saveSettings({ invalidateResolved: false });
-    await this.render();
-  }
   /**
    * Rename a column in place: swap the header label for an input, then route the
-   * committed value through {@link applyColumnRename} (which confirms a large
-   * frontmatter rewrite and carries the column's color/order/WIP identity across).
-   * Escape cancels. Used by the header double-click and the column menu.
+   * committed value through {@link applyColumnRename}. Escape cancels. Used by the header
+   * double-click and the column menu.
    */
   beginColumnRename(labelSpan, columnName, groupBy) {
     const dragEl = labelSpan.closest('[draggable="true"]');
@@ -5961,14 +5883,14 @@ var KanbanView = class extends PowerPackView {
     input.value = columnName;
     input.focus();
     input.select();
-    this.beginInteraction();
+    this.host.beginInteraction();
     let settled = false;
     const commit = async () => {
       if (settled) return;
       settled = true;
       const next = input.value.trim();
-      this.endInteraction();
-      await this.render();
+      this.host.endInteraction();
+      this.host.requestRender();
       if (next && next !== columnName) this.applyColumnRename(groupBy, columnName, next);
     };
     input.addEventListener("click", (event) => event.stopPropagation());
@@ -5979,19 +5901,16 @@ var KanbanView = class extends PowerPackView {
       } else if (event.key === "Escape") {
         event.preventDefault();
         settled = true;
-        this.endInteraction();
-        void this.render();
+        this.host.endInteraction();
+        this.host.requestRender();
       }
     });
     input.addEventListener("blur", () => void commit());
   }
   /**
-   * A card metadata line the user can click to edit the underlying frontmatter.
-   * Known field shapes render as semantic chips — a due pill flagged
-   * overdue/soon, a priority badge, tag pills — so card state is scannable
-   * instead of identical grey "key: value" lines; anything else keeps the plain
-   * line. Every variant shares the same click-to-edit wiring (beginInlineEdit
-   * empties the line and swaps in the input regardless of content).
+   * A card metadata line the user can click to edit the underlying frontmatter. Known
+   * field shapes render as semantic chips; anything else keeps the plain line. Every
+   * variant shares the same click-to-edit wiring.
    */
   renderEditableField(card, row, field, display, ctx) {
     const line = card.createDiv({ cls: "bpp-card-meta bpp-card-meta-editable" });
@@ -6038,8 +5957,7 @@ var KanbanView = class extends PowerPackView {
         chip.setAttr("tabindex", "0");
         const filter = (evt) => {
           evt.stopPropagation();
-          this.searchQuery = part;
-          void this.render();
+          this.host.setSearch(part);
         };
         chip.addEventListener("click", filter);
         chip.addEventListener("keydown", (evt) => {
@@ -6075,15 +5993,15 @@ var KanbanView = class extends PowerPackView {
     input.value = useDate ? prevStr : formatFieldForEdit(previous);
     input.focus();
     if (input.type === "text") input.select();
-    this.beginInteraction();
+    this.host.beginInteraction();
     let settled = false;
     const commit = async () => {
       if (settled) return;
       settled = true;
-      this.endInteraction();
+      this.host.endInteraction();
       const { value, remove } = coerceFieldInput(field, input.value, previous);
       await writeRowProperty(this.plugin, row.id, field, value, remove, { label: `Edit "${field}"` });
-      await this.render();
+      this.host.requestRender();
     };
     input.addEventListener("click", (event) => event.stopPropagation());
     input.addEventListener("keydown", (event) => {
@@ -6093,8 +6011,8 @@ var KanbanView = class extends PowerPackView {
       } else if (event.key === "Escape") {
         event.preventDefault();
         settled = true;
-        this.endInteraction();
-        void this.render();
+        this.host.endInteraction();
+        this.host.requestRender();
       }
     });
     input.addEventListener("blur", () => void commit());
@@ -6104,22 +6022,21 @@ var KanbanView = class extends PowerPackView {
     return (_a = this.plugin.settings.kanbanColorOverrides[name]) != null ? _a : String(columnHue(name));
   }
   // ---- context menus --------------------------------------------------------
-  /** Open a note in the floating editor (a real editor over the board); falls back
-   * to a split pane inside the modal if the private leaf path is unavailable. */
+  /** Open a note in the floating editor (a real editor over the board). */
   openFloating(row) {
-    const file = this.fileFor(row);
+    const file = fileFor(this.host.rowEnv, row);
     if (!file) return;
-    new FloatingEditModal(this.app, file).open();
+    new FloatingEditModal(this.plugin.app, file).open();
   }
   /** What a plain card click does — a tab (default) or the floating editor. */
   openCardDefault(row) {
     if (this.plugin.settings.kanbanCardClickAction === "floating") this.openFloating(row);
-    else this.openRow(row);
+    else openRow(this.host.rowEnv, row);
   }
   openCardMenu(anchor, row, groupBy, columns, columnName = "", laneKey = null) {
     if (anchor instanceof MouseEvent) anchor.preventDefault();
     const menu = new import_obsidian6.Menu();
-    const after = () => void this.render();
+    const after = () => this.host.requestRender();
     menu.addItem(
       (i) => i.setTitle("Open in floating editor").setIcon("edit").onClick(() => this.openFloating(row))
     );
@@ -6156,21 +6073,20 @@ var KanbanView = class extends PowerPackView {
         menu.addSeparator();
       }
     }
-    this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, after);
-    this.showMenuAtAnchor(menu, anchor);
+    addCommonRowMenuItems(this.host.rowEnv, menu, row, this.plugin.settings.kanbanCardFields, after);
+    showMenuAtAnchor(menu, anchor);
   }
   /** Nudge a card one slot up (-1) or down (+1) within its cell's hand-order — the
-   * keyboard/touch equivalent of dragging it between its neighbours. Plans against
-   * the cell's true rank order, so it's exact even with a search active. */
+   * keyboard/touch equivalent of dragging it between its neighbours. */
   async moveCardWithinColumn(row, groupBy, columnName, laneKey, dir) {
     const laneProp = laneKey === null ? null : this.swimlaneProp || null;
     const group = groupBy || "status";
     const rankProp = this.rankProp;
     const resolved = await this.plugin.getResolvedView();
     const cell = resolved.rows.filter(
-      (r) => toStr(r.scope.get(group)) === columnName && (laneProp === null || this.laneKeyOf(r, laneProp) === laneKey)
+      (r) => toStr(r.scope.get(group)) === columnName && (laneProp === null || laneKeyOf(r, laneProp) === laneKey)
     );
-    const sorted = [...cell].sort((a, b) => this.compareByRank(a, b, rankProp));
+    const sorted = [...cell].sort((a, b) => compareRowsByRank(a, b, rankProp));
     const idx = sorted.findIndex((r) => r.id === row.id);
     if (idx === -1) return;
     const targetIdx = idx + dir;
@@ -6223,47 +6139,10 @@ var KanbanView = class extends PowerPackView {
         (i) => i.setTitle("Remove empty column").setIcon("trash").onClick(() => void this.removeExtraColumn(groupBy, columnName))
       );
     }
-    this.showMenuAtAnchor(menu, anchor);
-  }
-  /** Swap a column with its neighbor `delta` slots away and persist the full order. */
-  async moveColumnBy(groupBy, orderedNames, columnName, delta) {
-    const idx = orderedNames.indexOf(columnName);
-    const to = idx + delta;
-    if (idx === -1 || to < 0 || to >= orderedNames.length) return;
-    const next = [...orderedNames];
-    [next[idx], next[to]] = [next[to], next[idx]];
-    this.plugin.settings.kanbanColumnOrder[groupBy] = next;
-    await this.plugin.saveSettings({ invalidateResolved: false });
-    await this.render();
-  }
-  // ---- menu actions ---------------------------------------------------------
-  /** Prompt for a column's WIP limit; a blank or non-positive entry clears it. */
-  setWipLimit(columnName) {
-    const current = this.plugin.settings.kanbanWipLimits[columnName];
-    new PromptModal(this.app, {
-      title: `WIP limit for "${columnName}"`,
-      value: current ? String(current) : "",
-      placeholder: "e.g. 5 (blank = no limit)",
-      cta: "Save",
-      onSubmit: (v) => void this.applyWipLimit(columnName, sanitizeWipLimit(v))
-    }).open();
-  }
-  async applyWipLimit(columnName, limit) {
-    const map = this.plugin.settings.kanbanWipLimits;
-    if (limit === null) delete map[columnName];
-    else map[columnName] = limit;
-    await this.plugin.saveSettings({ invalidateResolved: false });
-    await this.render();
-  }
-  async setColumnColor(columnName, hue) {
-    const map = this.plugin.settings.kanbanColorOverrides;
-    if (hue === null) delete map[columnName];
-    else map[columnName] = String(hue);
-    await this.plugin.saveSettings({ invalidateResolved: false });
-    await this.render();
+    showMenuAtAnchor(menu, anchor);
   }
   renameColumnValue(groupBy, columnName) {
-    new PromptModal(this.app, {
+    new PromptModal(this.plugin.app, {
       title: `Rename column "${columnName}"`,
       value: columnName,
       placeholder: "New value",
@@ -6287,7 +6166,7 @@ var KanbanView = class extends PowerPackView {
     const excluded = Math.max(0, vaultWide - targets.length);
     const run = () => void this.doColumnRename(groupBy, key, from, to, targets);
     if (targets.length > 5 || excluded > 0) {
-      new ConfirmModal(this.app, {
+      new ConfirmModal(this.plugin.app, {
         title: "Rename column?",
         body: `This rewrites "${key}: ${from}" \u2192 "${to}" on ${targets.length} note${targets.length === 1 ? "" : "s"} in this board.` + (excluded > 0 ? ` ${excluded} matching note${excluded === 1 ? "" : "s"} outside the current base/filter ${excluded === 1 ? "is" : "are"} left unchanged.` : ""),
         cta: "Rename",
@@ -6323,16 +6202,17 @@ var KanbanView = class extends PowerPackView {
     }
     await this.plugin.saveSettings();
     new import_obsidian6.Notice(`Renamed "${from}" \u2192 "${to}" on ${ok} note${ok === 1 ? "" : "s"}.`);
-    await this.render();
+    this.host.requestRender();
   }
   // ---- bulk edit ------------------------------------------------------------
+  /** Open the bulk-edit modal over the visible cards (invoked from the host toolbar). */
   openBulkEdit() {
     const rows = this.lastVisibleRows;
     if (rows.length === 0) {
       new import_obsidian6.Notice("No cards to edit.");
       return;
     }
-    new BulkEditModal(this.app, rows.length, (prop, op, value) => void this.applyBulk(rows, prop, op, value)).open();
+    new BulkEditModal(this.plugin.app, rows.length, (prop, op, value) => void this.applyBulk(rows, prop, op, value)).open();
   }
   async applyBulk(rows, prop, op, value) {
     var _a;
@@ -6351,13 +6231,791 @@ var KanbanView = class extends PowerPackView {
     }
     this.plugin.undo.commitBatch(batch);
     new import_obsidian6.Notice(`Updated "${prop}" on ${ok} note${ok === 1 ? "" : "s"}.`);
+    this.host.requestRender();
+  }
+  // ---- column chrome (settings mutations) -----------------------------------
+  // These change only presentation maps (order/color/collapse/WIP/extra columns), never
+  // a note, so they save with `invalidateResolved:false` and re-render via the host.
+  async addExtraColumn(groupBy, name) {
+    var _a;
+    const map = this.plugin.settings.kanbanExtraColumns;
+    const existing = (_a = map[groupBy]) != null ? _a : [];
+    if (!existing.some((n) => n.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+      map[groupBy] = [...existing, name];
+      await this.plugin.saveSettings({ invalidateResolved: false });
+    }
+    this.host.requestRender();
+  }
+  async removeExtraColumn(groupBy, name) {
+    var _a;
+    const map = this.plugin.settings.kanbanExtraColumns;
+    const next = ((_a = map[groupBy]) != null ? _a : []).filter((n) => n !== name);
+    if (next.length > 0) map[groupBy] = next;
+    else delete map[groupBy];
+    await this.plugin.saveSettings({ invalidateResolved: false });
+    this.host.requestRender();
+  }
+  /**
+   * Apply a predefined column set: set the group-by, the column order, per-column
+   * colors, the visible (droppable) columns, and the done value — all in one write.
+   */
+  async applyColumnSet(set) {
+    const s = this.plugin.settings;
+    const group = set.groupBy.trim() || "status";
+    const names = set.columns.map((c) => c.name.trim()).filter(Boolean);
+    s.kanbanGroupBy = group;
+    s.kanbanColumnOrder[group] = names;
+    s.kanbanExtraColumns[group] = names;
+    for (const col of set.columns) {
+      const name = col.name.trim();
+      if (!name) continue;
+      if (col.hue.trim()) s.kanbanColorOverrides[name] = col.hue.trim();
+      else delete s.kanbanColorOverrides[name];
+    }
+    const done = set.columns.find((c) => c.done && c.name.trim());
+    if (done) s.kanbanDoneValue = done.name.trim();
+    await this.plugin.saveSettings({ invalidateResolved: false });
+    this.host.requestRender();
+    new import_obsidian6.Notice(`Applied column set "${set.name}".`);
+  }
+  /** Collapse or expand a column (persisted per column value, like WIP limits). */
+  async toggleColumnCollapse(columnName) {
+    const map = this.plugin.settings.kanbanCollapsedColumns;
+    if (map[columnName]) delete map[columnName];
+    else map[columnName] = true;
+    await this.plugin.saveSettings({ invalidateResolved: false });
+    this.host.requestRender();
+  }
+  async moveColumnBy(groupBy, orderedNames, columnName, delta) {
+    const idx = orderedNames.indexOf(columnName);
+    const to = idx + delta;
+    if (idx === -1 || to < 0 || to >= orderedNames.length) return;
+    const next = [...orderedNames];
+    [next[idx], next[to]] = [next[to], next[idx]];
+    this.plugin.settings.kanbanColumnOrder[groupBy] = next;
+    await this.plugin.saveSettings({ invalidateResolved: false });
+    this.host.requestRender();
+  }
+  /** Prompt for a column's WIP limit; a blank or non-positive entry clears it. */
+  setWipLimit(columnName) {
+    const current = this.plugin.settings.kanbanWipLimits[columnName];
+    new PromptModal(this.plugin.app, {
+      title: `WIP limit for "${columnName}"`,
+      value: current ? String(current) : "",
+      placeholder: "e.g. 5 (blank = no limit)",
+      cta: "Save",
+      onSubmit: (v) => void this.applyWipLimit(columnName, sanitizeWipLimit(v))
+    }).open();
+  }
+  async applyWipLimit(columnName, limit) {
+    const map = this.plugin.settings.kanbanWipLimits;
+    if (limit === null) delete map[columnName];
+    else map[columnName] = limit;
+    await this.plugin.saveSettings({ invalidateResolved: false });
+    this.host.requestRender();
+  }
+  async setColumnColor(columnName, hue) {
+    const map = this.plugin.settings.kanbanColorOverrides;
+    if (hue === null) delete map[columnName];
+    else map[columnName] = String(hue);
+    await this.plugin.saveSettings({ invalidateResolved: false });
+    this.host.requestRender();
+  }
+  async reorderColumn(groupBy, orderedNames, moved, target) {
+    const next = reorderColumns(orderedNames, moved, target);
+    this.plugin.settings.kanbanColumnOrder[groupBy] = next;
+    await this.plugin.saveSettings({ invalidateResolved: false });
+    this.host.requestRender();
+  }
+  // ---- drag / drop wiring ---------------------------------------------------
+  /** The whole column is a drop target for two kinds of drag: a card (move the note to
+   * this column) and a column header (reorder columns). Told apart by the transfer type. */
+  wireColumnDrop(columnEl, columnName, groupBy, rowById, orderedNames) {
+    columnEl.addEventListener("dragover", (event) => {
+      var _a, _b;
+      const types = (_b = (_a = event.dataTransfer) == null ? void 0 : _a.types) != null ? _b : [];
+      const isColumn = types.includes(DND_COLUMN);
+      const isRow = types.includes(DND_ROW);
+      if (!isColumn && !isRow) return;
+      event.preventDefault();
+      columnEl.addClass(isColumn ? "is-col-drop-target" : "is-drop-target");
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    });
+    columnEl.addEventListener("dragleave", (event) => {
+      if (!dragTrulyLeft(columnEl, event)) return;
+      columnEl.removeClass("is-drop-target");
+      columnEl.removeClass("is-col-drop-target");
+    });
+    columnEl.addEventListener("drop", (event) => {
+      var _a, _b, _c, _d;
+      event.preventDefault();
+      columnEl.removeClass("is-drop-target");
+      columnEl.removeClass("is-col-drop-target");
+      (_a = this.boardScroller) == null ? void 0 : _a.stop();
+      const draggedColumn = (_b = event.dataTransfer) == null ? void 0 : _b.getData(DND_COLUMN);
+      if (draggedColumn) {
+        void this.reorderColumn(groupBy, orderedNames, draggedColumn, columnName);
+        return;
+      }
+      const rowId = ((_c = event.dataTransfer) == null ? void 0 : _c.getData(DND_ROW)) || ((_d = event.dataTransfer) == null ? void 0 : _d.getData("text/plain"));
+      if (!rowId) return;
+      if (this.selected.has(rowId) && this.selected.size > 1) {
+        void this.moveSelectionToColumn(groupBy, columnName, null);
+        return;
+      }
+      const row = rowById.get(rowId);
+      if (!row) return;
+      void this.moveRowToColumn(row, groupBy, columnName);
+    });
+  }
+  makeColumnDraggable(columnEl, colHead, columnName) {
+    colHead.draggable = true;
+    colHead.addEventListener("dragstart", (event) => {
+      var _a;
+      columnEl.addClass("is-col-dragging");
+      (_a = event.dataTransfer) == null ? void 0 : _a.setData(DND_COLUMN, columnName);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    });
+    colHead.addEventListener("dragend", () => {
+      var _a;
+      columnEl.removeClass("is-col-dragging");
+      (_a = this.boardScroller) == null ? void 0 : _a.stop();
+    });
+  }
+  /**
+   * Move a card to a column: write the group property, then apply any premium Move Rules
+   * that fire on entering this value — all in one transaction.
+   */
+  async moveRowToColumn(row, groupBy, columnName, laneProp = null, laneKey = null) {
+    var _a, _b, _c;
+    const key = groupBy || "status";
+    const crossColumn = toStr(row.scope.get(key)) !== columnName;
+    const crossLane = laneProp !== null && laneKeyOf(row, laneProp) !== laneKey;
+    if (!crossColumn && !crossLane) return;
+    const resolved = await this.plugin.getResolvedView();
+    if (crossColumn && this.isComputedField((_a = resolved.def.formulas) != null ? _a : {}, key)) {
+      new import_obsidian6.Notice(`"${key}" is a computed/formula field \u2014 cards grouped by it can't be moved here.`);
+      return;
+    }
+    if (crossLane && laneProp !== null && this.isComputedField((_b = resolved.def.formulas) != null ? _b : {}, laneProp)) {
+      new import_obsidian6.Notice(`"${laneProp}" is a computed/formula field \u2014 cards can't be moved across swimlanes here.`);
+      return;
+    }
+    if (crossColumn && this.plugin.settings.kanbanBlockOverWip) {
+      const limit = limitFor(this.plugin.settings.kanbanWipLimits, columnName);
+      const targetCount = ((_c = this.lastColumnRows.get(columnName)) != null ? _c : []).length;
+      if (dropWouldExceed(targetCount, limit)) {
+        new import_obsidian6.Notice(`"${columnName}" is at its WIP limit (${limit}). Move blocked.`);
+        this.host.requestRender();
+        return;
+      }
+    }
+    const writes = [];
+    if (crossColumn) {
+      writes.push({ key, value: columnName });
+      if (this.plugin.settings.isPro) {
+        const matched = rulesForTransition(this.plugin.settings.automations, key, columnName);
+        writes.push(...computeRuleWrites(matched, row.note.frontmatter, /* @__PURE__ */ new Date()));
+      }
+    }
+    if (crossLane && laneProp !== null) writes.push(laneWrite(laneProp, laneKey));
+    if (writes.length === 0) return;
+    const automationWrites = crossColumn ? writes.length - 1 - (crossLane ? 1 : 0) : 0;
+    const ok = await writeRowProperties(this.plugin, row.id, writes, { label: `Move to "${columnName}"` });
+    if (ok && automationWrites > 0) {
+      new import_obsidian6.Notice(`Moved to "${columnName}" \xB7 ${automationWrites} automation write${automationWrites === 1 ? "" : "s"}.`);
+    }
+    this.host.requestRender();
+  }
+  /**
+   * Make one card a drop target for a manual reorder: the pointer's half of the card
+   * decides whether an incoming card lands before or after it, shown with an insertion
+   * line. Stops propagation so the column-level "move to column" drop doesn't also fire.
+   */
+  wireCardReorder(cardEl, targetRow, columnName, groupBy, laneKey = null) {
+    cardEl.addEventListener("dragover", (event) => {
+      var _a, _b;
+      if (!((_b = (_a = event.dataTransfer) == null ? void 0 : _a.types) != null ? _b : []).includes(DND_ROW)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      const before = this.isBeforeHalf(cardEl, event);
+      cardEl.toggleClass("is-reorder-before", before);
+      cardEl.toggleClass("is-reorder-after", !before);
+    });
+    cardEl.addEventListener("dragleave", (event) => {
+      if (!dragTrulyLeft(cardEl, event)) return;
+      cardEl.removeClass("is-reorder-before");
+      cardEl.removeClass("is-reorder-after");
+    });
+    cardEl.addEventListener("drop", (event) => {
+      var _a, _b, _c;
+      const rowId = ((_a = event.dataTransfer) == null ? void 0 : _a.getData(DND_ROW)) || ((_b = event.dataTransfer) == null ? void 0 : _b.getData("text/plain"));
+      cardEl.removeClass("is-reorder-before");
+      cardEl.removeClass("is-reorder-after");
+      if (!rowId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      (_c = this.boardScroller) == null ? void 0 : _c.stop();
+      if (this.selected.has(rowId) && this.selected.size > 1) {
+        void this.moveSelectionToColumn(groupBy, columnName, laneKey);
+        return;
+      }
+      if (rowId === targetRow.id) return;
+      const before = this.isBeforeHalf(cardEl, event);
+      void this.applyCardReorder(rowId, columnName, targetRow, before, groupBy, this.swimlaneOrNull(laneKey), laneKey);
+    });
+  }
+  /** The active swimlane property when a lane key is in play, else null. */
+  swimlaneOrNull(laneKey) {
+    return laneKey === null ? null : this.swimlaneProp || null;
+  }
+  /** True when the pointer is in the top half of `el` (so a drop inserts before it). */
+  isBeforeHalf(el, event) {
+    const rect = el.getBoundingClientRect();
+    return event.clientY < rect.top + rect.height / 2;
+  }
+  /**
+   * Apply a manual reorder: write the card's new rank (and, when it moved to a new column
+   * and/or swimlane, the group/lane values plus any Move Rules), renumbering the
+   * destination cell only when the neighbouring gap can't be split. One undo entry.
+   */
+  async applyCardReorder(rowId, columnName, targetRow, before, groupBy, laneProp = null, laneKey = null) {
+    var _a, _b, _c, _d, _e;
+    const rankProp = this.rankProp;
+    const group = groupBy || "status";
+    if (rankProp === group || laneProp !== null && rankProp === laneProp) {
+      new import_obsidian6.Notice(`Manual order property ("${rankProp}") must differ from the group-by and swimlane properties \u2014 pick a separate numeric property in settings.`);
+      return;
+    }
+    const resolved = await this.plugin.getResolvedView();
+    const movedRow = resolved.rows.find((r) => r.id === rowId);
+    if (!movedRow) return;
+    if (COMPUTED_FILE_PROPS.has(rankProp) || Object.prototype.hasOwnProperty.call((_a = resolved.def.formulas) != null ? _a : {}, rankProp)) {
+      new import_obsidian6.Notice(`"${rankProp}" is a computed/formula field \u2014 pick a plain property for the manual order.`);
+      return;
+    }
+    const crossColumn = toStr(movedRow.scope.get(group)) !== columnName;
+    const crossLane = laneProp !== null && laneKeyOf(movedRow, laneProp) !== laneKey;
+    if (crossColumn && this.isComputedField((_b = resolved.def.formulas) != null ? _b : {}, group)) {
+      new import_obsidian6.Notice(`"${group}" is a computed/formula field \u2014 cards grouped by it can't be moved here.`);
+      return;
+    }
+    if (crossLane && laneProp !== null && this.isComputedField((_c = resolved.def.formulas) != null ? _c : {}, laneProp)) {
+      new import_obsidian6.Notice(`"${laneProp}" is a computed/formula field \u2014 cards can't be moved across swimlanes here.`);
+      return;
+    }
+    if (crossColumn && this.plugin.settings.kanbanBlockOverWip) {
+      const limit = limitFor(this.plugin.settings.kanbanWipLimits, columnName);
+      const targetCount = ((_d = this.lastColumnRows.get(columnName)) != null ? _d : []).length;
+      if (dropWouldExceed(targetCount, limit)) {
+        new import_obsidian6.Notice(`"${columnName}" is at its WIP limit (${limit}). Move blocked.`);
+        this.host.requestRender();
+        return;
+      }
+    }
+    const cellRows = laneProp !== null ? resolved.rows.filter(
+      (r) => toStr(r.scope.get(group)) === columnName && laneKeyOf(r, laneProp) === laneKey
+    ) : (_e = this.lastColumnRows.get(columnName)) != null ? _e : [];
+    const sorted = [...cellRows].sort((a, b) => compareRowsByRank(a, b, rankProp));
+    const items = sorted.map((r) => ({ id: r.id, rank: parseRank(r.scope.get(rankProp)) }));
+    const rest = items.filter((i) => i.id !== rowId);
+    let insertIndex;
+    if (targetRow === null) {
+      insertIndex = rest.length;
+    } else {
+      const targetPos = rest.findIndex((i) => i.id === targetRow.id);
+      if (targetPos === -1) {
+        this.host.requestRender();
+        return;
+      }
+      insertIndex = before ? targetPos : targetPos + 1;
+    }
+    const rankWrites = planReorder(items, rowId, insertIndex);
+    if (rankWrites.length === 0 && !crossColumn && !crossLane) return;
+    const rankById = new Map(rankWrites.map((w) => [w.id, w.rank]));
+    const label = crossColumn || crossLane ? `Move to "${columnName}"` : "Reorder card";
+    const batch = this.plugin.undo.beginBatch(label);
+    const movedWrites = [];
+    if (crossColumn) {
+      movedWrites.push({ key: group, value: columnName });
+      if (this.plugin.settings.isPro) {
+        const matched = rulesForTransition(this.plugin.settings.automations, group, columnName);
+        movedWrites.push(...computeRuleWrites(matched, movedRow.note.frontmatter, /* @__PURE__ */ new Date()));
+      }
+    }
+    if (crossLane && laneProp !== null) movedWrites.push(laneWrite(laneProp, laneKey));
+    if (rankById.has(rowId)) movedWrites.push({ key: rankProp, value: rankById.get(rowId) });
+    if (movedWrites.length > 0) await writeRowProperties(this.plugin, rowId, movedWrites, { batch });
+    for (const write of rankWrites) {
+      if (write.id === rowId) continue;
+      await writeRowProperties(this.plugin, write.id, [{ key: rankProp, value: write.rank }], { batch });
+    }
+    this.plugin.undo.commitBatch(batch);
+    this.host.requestRender();
+  }
+  /** True when `prop` is a computed `file.*` accessor or a base formula — a field a card
+   * move must never overwrite with a literal. */
+  isComputedField(formulas, prop) {
+    return COMPUTED_FILE_PROPS.has(prop) || Object.prototype.hasOwnProperty.call(formulas, prop);
+  }
+  // ---- auto-scroll, touch, swimlanes, multi-select --------------------------
+  /** The nearest scrollable ancestor of `el` (itself included), resolved at drag time. */
+  scrollContainerFor(el) {
+    var _a, _b;
+    const view = el.ownerDocument.defaultView;
+    let cur = el;
+    while (cur) {
+      const style = view == null ? void 0 : view.getComputedStyle(cur);
+      const oy = (_a = style == null ? void 0 : style.overflowY) != null ? _a : "";
+      const ox = (_b = style == null ? void 0 : style.overflowX) != null ? _b : "";
+      if ((oy === "auto" || oy === "scroll") && cur.scrollHeight > cur.clientHeight || (ox === "auto" || ox === "scroll") && cur.scrollWidth > cur.clientWidth) {
+        return cur;
+      }
+      cur = cur.parentElement;
+    }
+    return el;
+  }
+  /** Wire edge auto-scroll for mouse (HTML5) drags: feed the scroller the pointer
+   * position on dragover, stop it when the drag leaves or drops. */
+  wireBoardAutoScroll(board) {
+    this.boardScroller = null;
+    const ensure = () => {
+      if (!this.boardScroller) this.boardScroller = new DragScroller(this.scrollContainerFor(board));
+      return this.boardScroller;
+    };
+    board.addEventListener("dragover", (event) => {
+      var _a, _b;
+      const types = (_b = (_a = event.dataTransfer) == null ? void 0 : _a.types) != null ? _b : [];
+      if (!types.includes(DND_ROW) && !types.includes(DND_COLUMN)) return;
+      ensure().update(event.clientX, event.clientY);
+    });
+    board.addEventListener("drop", () => {
+      var _a;
+      return (_a = this.boardScroller) == null ? void 0 : _a.stop();
+    });
+    board.addEventListener("dragleave", (event) => {
+      var _a;
+      if (dragTrulyLeft(board, event)) (_a = this.boardScroller) == null ? void 0 : _a.stop();
+    });
+  }
+  /** Build the touch-drag layer for this render. Its drop resolves back through the same
+   * move/reorder methods the mouse path uses — no duplicated write logic. */
+  makeTouchController(board, groupBy, swimProp) {
+    return new TouchDragController({
+      scrollContainer: () => this.scrollContainerFor(board),
+      onBegin: () => this.host.beginInteraction(),
+      onEnd: () => this.host.endInteraction(),
+      onDrop: (rowId, target) => void this.handleTouchDrop(rowId, target, groupBy, swimProp)
+    });
+  }
+  async handleTouchDrop(rowId, target, groupBy, swimProp) {
+    var _a;
+    if (this.selected.has(rowId) && this.selected.size > 1) {
+      await this.moveSelectionToColumn(groupBy, target.columnName, target.laneKey);
+      return;
+    }
+    const laneProp = target.laneKey === null ? null : swimProp || null;
+    let targetRow = null;
+    if (target.beforeRowId) {
+      const resolved = await this.plugin.getResolvedView();
+      targetRow = (_a = resolved.rows.find((r) => r.id === target.beforeRowId)) != null ? _a : null;
+    }
+    await this.applyCardReorder(rowId, target.columnName, targetRow, true, groupBy, laneProp, target.laneKey);
+  }
+  /**
+   * Render the swimlane board: a shared column-header row above one horizontal band per
+   * swimlane value, each band a row of (lane × column) drop cells. Cards render through
+   * the same {@link renderCard} as the flat board.
+   */
+  renderSwimlaneBoard(board, rows, columns, columnRows, opts) {
+    var _a, _b;
+    const { groupBy, swimProp, colored, cardCtx } = opts;
+    const model = buildSwimlanes(rows, {
+      groupBy,
+      laneProp: swimProp,
+      search: this.input.searchQuery,
+      hideColumn: this.hideDoneColumn ? this.plugin.settings.kanbanDoneValue : "",
+      sortBy: this.sortBy,
+      rankProp: this.rankProp,
+      extraColumns: opts.extraColumns,
+      columnOrder: (_a = this.plugin.settings.kanbanColumnOrder[groupBy]) != null ? _a : []
+    });
+    this.lastLaneKeys = model.lanes.map((l) => l.key);
+    const columnNames = model.columnNames;
+    const rowById = new Map(rows.map((r) => [r.id, r]));
+    const grid = board.createDiv({ cls: "bpp-swimlane-grid" });
+    grid.setCssProps({ "--bpp-swim-cols": String(columnNames.length) });
+    if (model.truncatedLanes) {
+      grid.createDiv({
+        cls: "bpp-muted bpp-swimlane-truncation",
+        text: `Showing the first ${model.lanes.length} swimlanes. Search or filter the board to reach the rest.`
+      });
+    }
+    const headRow = grid.createDiv({ cls: "bpp-swimlane-headrow" });
+    headRow.createDiv({ cls: "bpp-swimlane-corner" });
+    const headCells = headRow.createDiv({ cls: "bpp-swimlane-cells" });
+    for (const name of columnNames) {
+      const trueCount = ((_b = columnRows.get(name)) != null ? _b : []).length;
+      const wipLimit = limitFor(this.plugin.settings.kanbanWipLimits, name);
+      const overWip = isOverWip(trueCount, wipLimit);
+      const head = headCells.createDiv({ cls: "bpp-swimlane-colhead" });
+      if (colored) head.setCssProps({ "--bpp-col-hue": this.columnHueFor(name) });
+      if (overWip) head.addClass("is-over-wip");
+      const swimName = head.createSpan({ cls: "bpp-swimlane-colname", text: name });
+      swimName.addEventListener("dblclick", (evt) => {
+        evt.stopPropagation();
+        this.beginColumnRename(swimName, name, groupBy);
+      });
+      const count = head.createSpan({ cls: "bpp-count", text: formatWipCount(trueCount, wipLimit) });
+      if (wipLimit !== null) count.addClass("has-wip");
+      head.addEventListener("contextmenu", (evt) => this.openColumnMenu(evt, name, groupBy, false, columnNames));
+    }
+    if (model.lanes.length === 0) {
+      renderEmptyState(grid, { title: "No cards match", body: "No cards match the current filters." });
+      return;
+    }
+    for (const lane of model.lanes) {
+      const laneLabel = lane.key === SWIMLANE_EMPTY ? "(empty)" : lane.key;
+      const laneRow = grid.createDiv({ cls: "bpp-swimlane-row" });
+      const laneHead = laneRow.createDiv({ cls: "bpp-swimlane-lanehead" });
+      laneHead.createSpan({ cls: "bpp-swimlane-lanename", text: laneLabel });
+      laneHead.createSpan({ cls: "bpp-count", text: String(lane.total) });
+      const cells = laneRow.createDiv({ cls: "bpp-swimlane-cells" });
+      for (const column of lane.columns) {
+        const cell = cells.createDiv({ cls: "bpp-swimlane-cell bpp-kanban-column" });
+        cell.setAttr("data-bpp-col", column.name);
+        cell.setAttr("data-bpp-lane", lane.key);
+        cell.setAttr("role", "group");
+        cell.setAttr(
+          "aria-label",
+          `${laneLabel} \xB7 ${column.name}, ${column.rows.length} card${column.rows.length === 1 ? "" : "s"}`
+        );
+        if (colored) cell.setCssProps({ "--bpp-col-hue": this.columnHueFor(column.name) });
+        this.wireCellDrop(cell, column.name, lane.key, groupBy, rowById);
+        const addBtn = cell.createEl("button", {
+          cls: "bpp-column-add bpp-cell-add",
+          text: "+",
+          attr: { "aria-label": `Add note to ${column.name}, lane ${laneLabel}` }
+        });
+        addBtn.addEventListener("click", () => void this.quickAddInCell(column.name, groupBy, swimProp, lane.key));
+        const cellCtx = { ...cardCtx, laneKey: lane.key };
+        for (const row of column.rows) this.renderCard(cell, row, column.name, cellCtx);
+      }
+    }
+  }
+  /** A swimlane cell is a drop target: a card dropped on empty cell space moves to this
+   * (column, lane), no rank change. A drop onto a card is handled by that card's reorder. */
+  wireCellDrop(cellEl, columnName, laneKey, groupBy, rowById) {
+    cellEl.addEventListener("dragover", (event) => {
+      var _a, _b;
+      if (!((_b = (_a = event.dataTransfer) == null ? void 0 : _a.types) != null ? _b : []).includes(DND_ROW)) return;
+      event.preventDefault();
+      cellEl.addClass("is-drop-target");
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    });
+    cellEl.addEventListener("dragleave", (event) => {
+      if (dragTrulyLeft(cellEl, event)) cellEl.removeClass("is-drop-target");
+    });
+    cellEl.addEventListener("drop", (event) => {
+      var _a, _b, _c;
+      event.preventDefault();
+      cellEl.removeClass("is-drop-target");
+      (_a = this.boardScroller) == null ? void 0 : _a.stop();
+      const rowId = ((_b = event.dataTransfer) == null ? void 0 : _b.getData(DND_ROW)) || ((_c = event.dataTransfer) == null ? void 0 : _c.getData("text/plain"));
+      if (!rowId) return;
+      if (this.selected.has(rowId) && this.selected.size > 1) {
+        void this.moveSelectionToColumn(groupBy, columnName, laneKey);
+        return;
+      }
+      const row = rowById.get(rowId);
+      if (!row) return;
+      void this.moveRowToColumn(row, groupBy, columnName, this.swimlaneProp || null, laneKey);
+    });
+  }
+  async quickAddInCell(columnName, groupBy, swimProp, laneKey) {
+    var _a;
+    const title = buildQuickAddTitle(columnName);
+    try {
+      const file = await createSeededNote(
+        this.plugin,
+        this.plugin.settings.kanbanQuickAddFolder,
+        groupBy || "status",
+        columnName,
+        title
+      );
+      if (laneKey !== SWIMLANE_EMPTY && swimProp) {
+        const resolved = await this.plugin.getResolvedView();
+        if (!this.isComputedField((_a = resolved.def.formulas) != null ? _a : {}, swimProp)) {
+          await writeRowProperty(this.plugin, file.path, swimProp, laneKey, false, { label: "Set swimlane" });
+        }
+      }
+      new import_obsidian6.Notice(`Created ${file.basename}`);
+    } catch (error) {
+      new import_obsidian6.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
+    }
+    this.host.requestRender();
+  }
+  /** Toggle a card's membership in the multi-select set (modifier-click). */
+  toggleSelect(rowId) {
+    if (this.selected.has(rowId)) this.selected.delete(rowId);
+    else this.selected.add(rowId);
+    this.host.requestRender();
+  }
+  clearSelection() {
+    if (this.selected.size === 0) return;
+    this.selected.clear();
+    this.host.requestRender();
+  }
+  /** The bulk action bar shown while cards are multi-selected. */
+  renderSelectionBar(container, groupBy, columnNames) {
+    if (this.selected.size === 0) return;
+    const bar = container.createDiv({ cls: "bpp-selection-bar" });
+    bar.createSpan({
+      cls: "bpp-selection-count",
+      text: `${this.selected.size} card${this.selected.size === 1 ? "" : "s"} selected`
+    });
+    const moveBtn = bar.createEl("button", { cls: "bpp-lite-btn", text: "Move to column \u25BE" });
+    moveBtn.addEventListener("click", (evt) => {
+      const menu = new import_obsidian6.Menu();
+      for (const name of columnNames) {
+        menu.addItem((i) => i.setTitle(name).setIcon("arrow-right").onClick(() => void this.moveSelectionToColumn(groupBy, name, null)));
+      }
+      menu.showAtMouseEvent(evt);
+    });
+    const clearBtn = bar.createEl("button", { cls: "bpp-lite-btn", text: "Clear" });
+    clearBtn.addEventListener("click", () => this.clearSelection());
+  }
+  /**
+   * Move every selected card to `columnName` (and, on a swimlane drop, `laneKey`) in one
+   * undo batch. Positions aren't set — only the column/lane (with Move Rules) change.
+   * WIP is enforced against the whole batch.
+   */
+  async moveSelectionToColumn(groupBy, columnName, laneKey) {
+    var _a, _b;
+    const ids = [...this.selected];
+    if (ids.length === 0) return;
+    const group = groupBy || "status";
+    const laneProp = laneKey === null ? null : this.swimlaneProp || null;
+    const resolved = await this.plugin.getResolvedView();
+    const formulas = (_a = resolved.def.formulas) != null ? _a : {};
+    const targetRows = ids.map((id) => resolved.rows.find((r) => r.id === id)).filter((r) => r !== void 0);
+    if (targetRows.length === 0) {
+      this.selected.clear();
+      this.host.requestRender();
+      return;
+    }
+    const movingColumn = targetRows.filter((r) => toStr(r.scope.get(group)) !== columnName);
+    if (movingColumn.length > 0 && this.isComputedField(formulas, group)) {
+      new import_obsidian6.Notice(`"${group}" is a computed/formula field \u2014 cards grouped by it can't be moved here.`);
+      return;
+    }
+    if (laneProp !== null && this.isComputedField(formulas, laneProp)) {
+      new import_obsidian6.Notice(`"${laneProp}" is a computed/formula field \u2014 cards can't be moved across swimlanes here.`);
+      return;
+    }
+    if (this.plugin.settings.kanbanBlockOverWip && movingColumn.length > 0) {
+      const limit = limitFor(this.plugin.settings.kanbanWipLimits, columnName);
+      if (limit !== null) {
+        const targetCount = ((_b = this.lastColumnRows.get(columnName)) != null ? _b : []).length;
+        if (targetCount + movingColumn.length > limit) {
+          new import_obsidian6.Notice(`"${columnName}" would exceed its WIP limit (${limit}). Move blocked.`);
+          return;
+        }
+      }
+    }
+    const batch = this.plugin.undo.beginBatch(`Move ${targetRows.length} cards to "${columnName}"`);
+    let moved = 0;
+    for (const r of targetRows) {
+      const crossColumn = toStr(r.scope.get(group)) !== columnName;
+      const crossLane = laneProp !== null && laneKeyOf(r, laneProp) !== laneKey;
+      if (!crossColumn && !crossLane) continue;
+      const writes = [];
+      if (crossColumn) {
+        writes.push({ key: group, value: columnName });
+        if (this.plugin.settings.isPro) {
+          const matched = rulesForTransition(this.plugin.settings.automations, group, columnName);
+          writes.push(...computeRuleWrites(matched, r.note.frontmatter, /* @__PURE__ */ new Date()));
+        }
+      }
+      if (crossLane && laneProp !== null) writes.push(laneWrite(laneProp, laneKey));
+      if (writes.length > 0 && await writeRowProperties(this.plugin, r.id, writes, { batch })) moved++;
+    }
+    this.plugin.undo.commitBatch(batch);
+    this.selected.clear();
+    new import_obsidian6.Notice(`Moved ${moved} card${moved === 1 ? "" : "s"} to "${columnName}".`);
+    this.host.requestRender();
+  }
+  async quickAddNote(columnName, groupBy) {
+    const title = buildQuickAddTitle(columnName);
+    try {
+      const file = await createSeededNote(
+        this.plugin,
+        this.plugin.settings.kanbanQuickAddFolder,
+        groupBy || "status",
+        columnName,
+        title
+      );
+      new import_obsidian6.Notice(`Created ${file.basename}`);
+    } catch (error) {
+      new import_obsidian6.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
+    }
+    this.host.requestRender();
+  }
+  /** Tear down interaction machinery (auto-scroll rAF, touch ghost, hover popover) — the
+   * host calls this on close. */
+  dispose() {
+    var _a, _b;
+    (_a = this.boardScroller) == null ? void 0 : _a.stop();
+    this.boardScroller = null;
+    (_b = this.touch) == null ? void 0 : _b.destroy();
+    this.touch = null;
+    this.dismissCardHover();
+  }
+};
+
+// src/views/kanbanView.ts
+var VIEW_TYPE_KANBAN = "bpp-kanban-view";
+var KanbanView = class extends PowerPackView {
+  constructor() {
+    super(...arguments);
+    /** The shared board renderer. Built lazily so its host closes over a fully-constructed
+     * view; owns all board DOM + interaction state. */
+    this._board = null;
+    /** The last snapshot handed to the board — retained so `host.captureInput()` can return
+     * the same immutable view the DOM was rendered from. */
+    this.lastBoardInput = {
+      revision: 0,
+      rows: [],
+      formulas: {},
+      searchQuery: "",
+      showControls: true,
+      groupBy: "status",
+      swimlaneProp: "",
+      hoverSource: VIEW_TYPE_KANBAN
+    };
+  }
+  get board() {
+    if (!this._board) this._board = new KanbanBoard(this.plugin, this.makeBoardHost());
+    return this._board;
+  }
+  /** Build the host seam the shared board calls back through (re-render, interaction
+   * suppression, row-action env, quick-search, capabilities). The standalone can write
+   * the group-by, multi-select, swimlane, and drive the full column chrome. */
+  makeBoardHost() {
+    return {
+      containerEl: this.contentEl,
+      rowEnv: this.rowEnv,
+      captureInput: () => this.lastBoardInput,
+      requestRender: () => void this.render(),
+      beginInteraction: () => this.beginInteraction(),
+      endInteraction: () => this.endInteraction(),
+      setSearch: (query) => {
+        this.searchQuery = query;
+        void this.render();
+      },
+      registerRefresh: () => () => {
+      },
+      capabilities: {
+        canWriteGroupBy: true,
+        canMultiSelect: true,
+        canSwimlanes: true,
+        canColumnChrome: true
+      }
+    };
+  }
+  /** The swimlane (second group-by) property, or "" when off. Free — horizontal bands
+   * split the board by a second property (the flat board is "None"). */
+  get swimlaneProp() {
+    const p = (this.plugin.settings.kanbanSwimlaneBy || "").trim();
+    return p && p !== (this.plugin.settings.kanbanGroupBy || "status") ? p : "";
+  }
+  get groupByProp() {
+    return this.plugin.settings.kanbanGroupBy || "status";
+  }
+  /** Sort + hide-done are persisted per group-by property, so the board reopens exactly
+   * as you left it (they were session-only fields before 1.11). */
+  get sortBy() {
+    const v = this.plugin.settings.kanbanSortBy[this.groupByProp];
+    return SORT_OPTIONS.some((o) => o.value === v) ? v : "manual";
+  }
+  get hideDoneColumn() {
+    return this.plugin.settings.kanbanHideDone[this.groupByProp] === true;
+  }
+  async setSortBy(value) {
+    if (value === "manual") delete this.plugin.settings.kanbanSortBy[this.groupByProp];
+    else this.plugin.settings.kanbanSortBy[this.groupByProp] = value;
+    await this.plugin.saveSettings({ invalidateResolved: false });
     await this.render();
   }
+  async setHideDone(value) {
+    if (value) this.plugin.settings.kanbanHideDone[this.groupByProp] = true;
+    else delete this.plugin.settings.kanbanHideDone[this.groupByProp];
+    await this.plugin.saveSettings({ invalidateResolved: false });
+    await this.render();
+  }
+  getViewType() {
+    return VIEW_TYPE_KANBAN;
+  }
+  getDisplayText() {
+    return "Power Pack: Kanban";
+  }
+  getIcon() {
+    return "layout-dashboard";
+  }
+  async onClose() {
+    var _a;
+    (_a = this._board) == null ? void 0 : _a.dispose();
+    this._board = null;
+    await super.onClose();
+  }
+  async render() {
+    var _a;
+    const token = ++this.renderToken;
+    const resolved = await this.plugin.getResolvedView();
+    if (this.isStale(token)) return;
+    const groupBy = this.plugin.settings.kanbanGroupBy || "status";
+    const container = this.contentEl;
+    this.captureSearchState();
+    container.empty();
+    container.addClass("bpp-view");
+    const header = container.createDiv({ cls: "bpp-toolbar" });
+    header.createEl("h3", { text: "Kanban" });
+    if (!this.plugin.settings.isPro) header.createEl("span", { cls: "bpp-badge bpp-badge-lite", text: "Lite" });
+    header.createEl("span", { cls: "bpp-muted", text: `grouped by "${groupBy}"` });
+    this.renderUndoButton(header);
+    this.addExportButton(header, [
+      {
+        label: "Copy board as Markdown",
+        build: () => buildMarkdownBoard(
+          [...this.board.displayColumns].map(([name, rows]) => ({ name, rows })),
+          this.plugin.settings.kanbanCardFields
+        )
+      },
+      { label: "Copy as Markdown table", build: () => buildMarkdownTable(this.board.visibleRows, this.exportFields(groupBy)) },
+      { label: "Export as CSV", premium: true, build: () => buildCsv(this.board.visibleRows, this.exportFields(groupBy)) }
+    ]);
+    renderContextControls(container, this.plugin, resolved, () => void this.render());
+    this.renderLiteControls(container);
+    renderRollupBar(container, this.plugin, resolved.rows);
+    this.renderHintBar(container, "kanban", "Drag a card between two others to reorder it \u2022 Drag to another column to change status \u2022 \u22EF for more actions \u2022 Undo reverses the last change");
+    const input = {
+      revision: token,
+      rows: resolved.rows,
+      formulas: (_a = resolved.def.formulas) != null ? _a : {},
+      searchQuery: this.searchQuery,
+      showControls: true,
+      groupBy,
+      swimlaneProp: this.swimlaneProp,
+      hoverSource: VIEW_TYPE_KANBAN
+    };
+    this.lastBoardInput = input;
+    this.board.render(input);
+  }
   /** Group-by options come from the cached whole-vault frontmatter key set (not a
-   * per-render scan of the resolved rows). This is O(1) per render instead of
-   * O(rows × keys) on every keystroke, and — because it isn't limited to
-   * currently-shown rows — the picker still offers every real property on an empty
-   * or heavily-filtered board, so a user is never stranded without a way to switch. */
+   * per-render scan of the resolved rows). O(1) per render, and — because it isn't
+   * limited to currently-shown rows — the picker still offers every real property on an
+   * empty or heavily-filtered board, so a user is never stranded without a way to switch. */
   collectGroupByOptions(current) {
     const keys = this.plugin.getFrontmatterKeys();
     if (!current || keys.includes(current)) return keys;
@@ -6411,7 +7069,7 @@ var KanbanView = class extends PowerPackView {
       setSelect.addEventListener("change", () => {
         const chosen = columnSets.find((c) => c.id === setSelect.value);
         setSelect.value = "";
-        if (chosen) void this.applyColumnSet(chosen);
+        if (chosen) void this.board.applyColumnSet(chosen);
       });
     }
     const toggleWrap = controls.createDiv({ cls: "bpp-lite-control bpp-lite-control-toggle" });
@@ -6422,594 +7080,12 @@ var KanbanView = class extends PowerPackView {
     const bulkWrap = controls.createDiv({ cls: "bpp-lite-control" });
     const bulkBtn = bulkWrap.createEl("button", { cls: "bpp-lite-btn", text: "Bulk edit" });
     bulkBtn.setAttr("aria-label", "Bulk edit the visible cards");
-    bulkBtn.addEventListener("click", () => this.openBulkEdit());
-  }
-  /** The whole column is a drop target for two kinds of drag: a card (move the
-   * note to this column) and a column header (reorder columns). They are told
-   * apart by the dataTransfer type. */
-  wireColumnDrop(columnEl, columnName, groupBy, rowById, orderedNames) {
-    columnEl.addEventListener("dragover", (event) => {
-      var _a, _b;
-      const types = (_b = (_a = event.dataTransfer) == null ? void 0 : _a.types) != null ? _b : [];
-      const isColumn = types.includes(DND_COLUMN);
-      const isRow = types.includes(DND_ROW);
-      if (!isColumn && !isRow) return;
-      event.preventDefault();
-      columnEl.addClass(isColumn ? "is-col-drop-target" : "is-drop-target");
-      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-    });
-    columnEl.addEventListener("dragleave", (event) => {
-      if (!this.dragTrulyLeft(columnEl, event)) return;
-      columnEl.removeClass("is-drop-target");
-      columnEl.removeClass("is-col-drop-target");
-    });
-    columnEl.addEventListener("drop", (event) => {
-      var _a, _b, _c, _d;
-      event.preventDefault();
-      columnEl.removeClass("is-drop-target");
-      columnEl.removeClass("is-col-drop-target");
-      (_a = this.boardScroller) == null ? void 0 : _a.stop();
-      const draggedColumn = (_b = event.dataTransfer) == null ? void 0 : _b.getData(DND_COLUMN);
-      if (draggedColumn) {
-        void this.reorderColumn(groupBy, orderedNames, draggedColumn, columnName);
-        return;
-      }
-      const rowId = ((_c = event.dataTransfer) == null ? void 0 : _c.getData(DND_ROW)) || ((_d = event.dataTransfer) == null ? void 0 : _d.getData("text/plain"));
-      if (!rowId) return;
-      if (this.selected.has(rowId) && this.selected.size > 1) {
-        void this.moveSelectionToColumn(groupBy, columnName, null);
-        return;
-      }
-      const row = rowById.get(rowId);
-      if (!row) return;
-      void this.moveRowToColumn(row, groupBy, columnName);
-    });
-  }
-  makeColumnDraggable(columnEl, colHead, columnName) {
-    colHead.draggable = true;
-    colHead.addEventListener("dragstart", (event) => {
-      var _a;
-      columnEl.addClass("is-col-dragging");
-      (_a = event.dataTransfer) == null ? void 0 : _a.setData(DND_COLUMN, columnName);
-      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
-    });
-    colHead.addEventListener("dragend", () => {
-      var _a;
-      columnEl.removeClass("is-col-dragging");
-      (_a = this.boardScroller) == null ? void 0 : _a.stop();
-    });
-  }
-  async reorderColumn(groupBy, orderedNames, moved, target) {
-    const next = reorderColumns(orderedNames, moved, target);
-    this.plugin.settings.kanbanColumnOrder[groupBy] = next;
-    await this.plugin.saveSettings({ invalidateResolved: false });
-    await this.render();
-  }
-  /**
-   * Move a card to a column: write the group property, then apply any premium
-   * Move Rules that fire on entering this value — all in one transaction. The
-   * rules read the note's pre-move frontmatter, so an automation write never
-   * re-triggers another rule.
-   */
-  async moveRowToColumn(row, groupBy, columnName, laneProp = null, laneKey = null) {
-    var _a, _b, _c;
-    const key = groupBy || "status";
-    const crossColumn = toStr(row.scope.get(key)) !== columnName;
-    const crossLane = laneProp !== null && this.laneKeyOf(row, laneProp) !== laneKey;
-    if (!crossColumn && !crossLane) return;
-    const resolved = await this.plugin.getResolvedView();
-    if (crossColumn && this.isComputedField((_a = resolved.def.formulas) != null ? _a : {}, key)) {
-      new import_obsidian6.Notice(`"${key}" is a computed/formula field \u2014 cards grouped by it can't be moved here.`);
-      return;
-    }
-    if (crossLane && laneProp !== null && this.isComputedField((_b = resolved.def.formulas) != null ? _b : {}, laneProp)) {
-      new import_obsidian6.Notice(`"${laneProp}" is a computed/formula field \u2014 cards can't be moved across swimlanes here.`);
-      return;
-    }
-    if (crossColumn && this.plugin.settings.kanbanBlockOverWip) {
-      const limit = limitFor(this.plugin.settings.kanbanWipLimits, columnName);
-      const targetCount = ((_c = this.lastColumnRows.get(columnName)) != null ? _c : []).length;
-      if (dropWouldExceed(targetCount, limit)) {
-        new import_obsidian6.Notice(`"${columnName}" is at its WIP limit (${limit}). Move blocked.`);
-        await this.render();
-        return;
-      }
-    }
-    const writes = [];
-    if (crossColumn) {
-      writes.push({ key, value: columnName });
-      if (this.plugin.settings.isPro) {
-        const matched = rulesForTransition(this.plugin.settings.automations, key, columnName);
-        writes.push(...computeRuleWrites(matched, row.note.frontmatter, /* @__PURE__ */ new Date()));
-      }
-    }
-    if (crossLane && laneProp !== null) writes.push(this.laneWrite(laneProp, laneKey));
-    if (writes.length === 0) return;
-    const automationWrites = crossColumn ? writes.length - 1 - (crossLane ? 1 : 0) : 0;
-    const ok = await writeRowProperties(this.plugin, row.id, writes, { label: `Move to "${columnName}"` });
-    if (ok && automationWrites > 0) {
-      new import_obsidian6.Notice(`Moved to "${columnName}" \xB7 ${automationWrites} automation write${automationWrites === 1 ? "" : "s"}.`);
-    }
-    await this.render();
+    bulkBtn.addEventListener("click", () => this.board.openBulkEdit());
   }
   /** Fields for a row-oriented export (Markdown table / CSV): the note title, the
    * group-by value, then each configured card field, de-duplicated. */
   exportFields(groupBy) {
     return [.../* @__PURE__ */ new Set(["name", groupBy, ...this.plugin.settings.kanbanCardFields])];
-  }
-  /**
-   * Make one card a drop target for a manual reorder: the pointer's half of the
-   * card decides whether an incoming card lands before or after it, shown with an
-   * insertion line. Stops propagation so the column-level "move to column" drop
-   * doesn't also fire.
-   */
-  wireCardReorder(cardEl, targetRow, columnName, groupBy, laneKey = null) {
-    cardEl.addEventListener("dragover", (event) => {
-      var _a, _b;
-      if (!((_b = (_a = event.dataTransfer) == null ? void 0 : _a.types) != null ? _b : []).includes(DND_ROW)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-      const before = this.isBeforeHalf(cardEl, event);
-      cardEl.toggleClass("is-reorder-before", before);
-      cardEl.toggleClass("is-reorder-after", !before);
-    });
-    cardEl.addEventListener("dragleave", (event) => {
-      if (!this.dragTrulyLeft(cardEl, event)) return;
-      cardEl.removeClass("is-reorder-before");
-      cardEl.removeClass("is-reorder-after");
-    });
-    cardEl.addEventListener("drop", (event) => {
-      var _a, _b, _c;
-      const rowId = ((_a = event.dataTransfer) == null ? void 0 : _a.getData(DND_ROW)) || ((_b = event.dataTransfer) == null ? void 0 : _b.getData("text/plain"));
-      cardEl.removeClass("is-reorder-before");
-      cardEl.removeClass("is-reorder-after");
-      if (!rowId) return;
-      event.preventDefault();
-      event.stopPropagation();
-      (_c = this.boardScroller) == null ? void 0 : _c.stop();
-      if (this.selected.has(rowId) && this.selected.size > 1) {
-        void this.moveSelectionToColumn(groupBy, columnName, laneKey);
-        return;
-      }
-      if (rowId === targetRow.id) return;
-      const before = this.isBeforeHalf(cardEl, event);
-      void this.applyCardReorder(rowId, columnName, targetRow, before, groupBy, this.swimlaneOrNull(laneKey), laneKey);
-    });
-  }
-  /** The active swimlane property when a lane key is in play, else null — so the
-   * flat board (laneKey null) passes null through to the lane-agnostic path. */
-  swimlaneOrNull(laneKey) {
-    return laneKey === null ? null : this.swimlaneProp || null;
-  }
-  /** True when the pointer is in the top half of `el` (so a drop inserts before it). */
-  isBeforeHalf(el, event) {
-    const rect = el.getBoundingClientRect();
-    return event.clientY < rect.top + rect.height / 2;
-  }
-  /** Order two rows the way the "rank" sort displays them — by numeric rank
-   * (unranked last), ties broken by name — so a reorder plans against the same
-   * order the user sees. Mirrors compareRankValue + compareText in kanban.ts. */
-  compareByRank(a, b, rankProp) {
-    const ar = parseRank(a.scope.get(rankProp));
-    const br = parseRank(b.scope.get(rankProp));
-    if (ar !== null && br !== null && ar !== br) return ar - br;
-    if (ar === null && br !== null) return 1;
-    if (ar !== null && br === null) return -1;
-    return a.name.localeCompare(b.name, void 0, { sensitivity: "base" });
-  }
-  /** A row's swimlane key (missing/blank → the "(empty)" band), matching the pure
-   * swimlane engine so the view and the model agree on lane membership. */
-  laneKeyOf(row, laneProp) {
-    return toStr(row.scope.get(laneProp)).trim() || SWIMLANE_EMPTY;
-  }
-  /** The frontmatter write that moves a card into a swimlane. Dropping into the
-   * "(empty)" band must CLEAR the lane property, not write the literal sentinel
-   * "(empty)" — otherwise the note carries a bogus real value that every base
-   * filter/export sees. (quickAddInCell already skips the write for this case.) */
-  laneWrite(laneProp, laneKey) {
-    return laneKey === SWIMLANE_EMPTY || laneKey === null ? { key: laneProp, remove: true } : { key: laneProp, value: laneKey };
-  }
-  /**
-   * Apply a manual reorder: write the card's new rank (and, when it moved to a new
-   * column and/or swimlane, the group/lane values plus any Move Rules), renumbering
-   * the destination cell only when the neighbouring gap can't be split. The whole
-   * reorder is one undo entry.
-   *
-   * `targetRow === null` appends at the cell's end (a drop on empty cell space).
-   * `laneProp`/`laneKey` are null on the flat board and the swimlane's row/lane in
-   * a banded board — the ONLY difference on the flat path is that both are null, so
-   * the free board's behaviour is unchanged.
-   */
-  async applyCardReorder(rowId, columnName, targetRow, before, groupBy, laneProp = null, laneKey = null) {
-    var _a, _b, _c, _d, _e;
-    const rankProp = this.rankProp;
-    const group = groupBy || "status";
-    if (rankProp === group || laneProp !== null && rankProp === laneProp) {
-      new import_obsidian6.Notice(`Manual order property ("${rankProp}") must differ from the group-by and swimlane properties \u2014 pick a separate numeric property in settings.`);
-      return;
-    }
-    const resolved = await this.plugin.getResolvedView();
-    const movedRow = resolved.rows.find((r) => r.id === rowId);
-    if (!movedRow) return;
-    if (COMPUTED_FILE_PROPS.has(rankProp) || Object.prototype.hasOwnProperty.call((_a = resolved.def.formulas) != null ? _a : {}, rankProp)) {
-      new import_obsidian6.Notice(`"${rankProp}" is a computed/formula field \u2014 pick a plain property for the manual order.`);
-      return;
-    }
-    const crossColumn = toStr(movedRow.scope.get(group)) !== columnName;
-    const crossLane = laneProp !== null && this.laneKeyOf(movedRow, laneProp) !== laneKey;
-    if (crossColumn && this.isComputedField((_b = resolved.def.formulas) != null ? _b : {}, group)) {
-      new import_obsidian6.Notice(`"${group}" is a computed/formula field \u2014 cards grouped by it can't be moved here.`);
-      return;
-    }
-    if (crossLane && laneProp !== null && this.isComputedField((_c = resolved.def.formulas) != null ? _c : {}, laneProp)) {
-      new import_obsidian6.Notice(`"${laneProp}" is a computed/formula field \u2014 cards can't be moved across swimlanes here.`);
-      return;
-    }
-    if (crossColumn && this.plugin.settings.kanbanBlockOverWip) {
-      const limit = limitFor(this.plugin.settings.kanbanWipLimits, columnName);
-      const targetCount = ((_d = this.lastColumnRows.get(columnName)) != null ? _d : []).length;
-      if (dropWouldExceed(targetCount, limit)) {
-        new import_obsidian6.Notice(`"${columnName}" is at its WIP limit (${limit}). Move blocked.`);
-        await this.render();
-        return;
-      }
-    }
-    const cellRows = laneProp !== null ? resolved.rows.filter(
-      (r) => toStr(r.scope.get(group)) === columnName && this.laneKeyOf(r, laneProp) === laneKey
-    ) : (_e = this.lastColumnRows.get(columnName)) != null ? _e : [];
-    const sorted = [...cellRows].sort((a, b) => this.compareByRank(a, b, rankProp));
-    const items = sorted.map((r) => ({ id: r.id, rank: parseRank(r.scope.get(rankProp)) }));
-    const rest = items.filter((i) => i.id !== rowId);
-    let insertIndex;
-    if (targetRow === null) {
-      insertIndex = rest.length;
-    } else {
-      const targetPos = rest.findIndex((i) => i.id === targetRow.id);
-      if (targetPos === -1) {
-        await this.render();
-        return;
-      }
-      insertIndex = before ? targetPos : targetPos + 1;
-    }
-    const rankWrites = planReorder(items, rowId, insertIndex);
-    if (rankWrites.length === 0 && !crossColumn && !crossLane) return;
-    const rankById = new Map(rankWrites.map((w) => [w.id, w.rank]));
-    const label = crossColumn || crossLane ? `Move to "${columnName}"` : "Reorder card";
-    const batch = this.plugin.undo.beginBatch(label);
-    const movedWrites = [];
-    if (crossColumn) {
-      movedWrites.push({ key: group, value: columnName });
-      if (this.plugin.settings.isPro) {
-        const matched = rulesForTransition(this.plugin.settings.automations, group, columnName);
-        movedWrites.push(...computeRuleWrites(matched, movedRow.note.frontmatter, /* @__PURE__ */ new Date()));
-      }
-    }
-    if (crossLane && laneProp !== null) movedWrites.push(this.laneWrite(laneProp, laneKey));
-    if (rankById.has(rowId)) movedWrites.push({ key: rankProp, value: rankById.get(rowId) });
-    if (movedWrites.length > 0) await writeRowProperties(this.plugin, rowId, movedWrites, { batch });
-    for (const write of rankWrites) {
-      if (write.id === rowId) continue;
-      await writeRowProperties(this.plugin, write.id, [{ key: rankProp, value: write.rank }], { batch });
-    }
-    this.plugin.undo.commitBatch(batch);
-    await this.render();
-  }
-  /** True when `prop` is a computed `file.*` accessor or a base formula — a field a
-   * card move must never overwrite with a literal (it would shadow the computed value). */
-  isComputedField(formulas, prop) {
-    return COMPUTED_FILE_PROPS.has(prop) || Object.prototype.hasOwnProperty.call(formulas, prop);
-  }
-  // ---- auto-scroll, touch, swimlanes, multi-select --------------------------
-  /** The nearest scrollable ancestor of `el` (itself included), resolved at drag
-   * time so the auto-scroll drives whatever actually scrolls — the board when it
-   * has its own overflow, otherwise the view-content pane. Falls back to `el`. */
-  scrollContainerFor(el) {
-    var _a, _b;
-    const view = el.ownerDocument.defaultView;
-    let cur = el;
-    while (cur) {
-      const style = view == null ? void 0 : view.getComputedStyle(cur);
-      const oy = (_a = style == null ? void 0 : style.overflowY) != null ? _a : "";
-      const ox = (_b = style == null ? void 0 : style.overflowX) != null ? _b : "";
-      if ((oy === "auto" || oy === "scroll") && cur.scrollHeight > cur.clientHeight || (ox === "auto" || ox === "scroll") && cur.scrollWidth > cur.clientWidth) {
-        return cur;
-      }
-      cur = cur.parentElement;
-    }
-    return el;
-  }
-  /** Wire edge auto-scroll for mouse (HTML5) drags: feed the scroller the pointer
-   * position on dragover, stop it when the drag leaves or drops. The scroll target
-   * is resolved lazily on the first dragover, when layout (and overflow) is real. */
-  wireBoardAutoScroll(board) {
-    this.boardScroller = null;
-    const ensure = () => {
-      if (!this.boardScroller) this.boardScroller = new DragScroller(this.scrollContainerFor(board));
-      return this.boardScroller;
-    };
-    board.addEventListener("dragover", (event) => {
-      var _a, _b;
-      const types = (_b = (_a = event.dataTransfer) == null ? void 0 : _a.types) != null ? _b : [];
-      if (!types.includes(DND_ROW) && !types.includes(DND_COLUMN)) return;
-      ensure().update(event.clientX, event.clientY);
-    });
-    board.addEventListener("drop", () => {
-      var _a;
-      return (_a = this.boardScroller) == null ? void 0 : _a.stop();
-    });
-    board.addEventListener("dragleave", (event) => {
-      var _a;
-      if (this.dragTrulyLeft(board, event)) (_a = this.boardScroller) == null ? void 0 : _a.stop();
-    });
-  }
-  /** Build the touch-drag layer for this render. Its drop resolves back through the
-   * same move/reorder methods the mouse path uses — no duplicated write logic. */
-  makeTouchController(board, groupBy, swimProp) {
-    return new TouchDragController({
-      scrollContainer: () => this.scrollContainerFor(board),
-      onBegin: () => this.beginInteraction(),
-      onEnd: () => this.endInteraction(),
-      onDrop: (rowId, target) => void this.handleTouchDrop(rowId, target, groupBy, swimProp)
-    });
-  }
-  async handleTouchDrop(rowId, target, groupBy, swimProp) {
-    var _a;
-    if (this.selected.has(rowId) && this.selected.size > 1) {
-      await this.moveSelectionToColumn(groupBy, target.columnName, target.laneKey);
-      return;
-    }
-    const laneProp = target.laneKey === null ? null : swimProp || null;
-    let targetRow = null;
-    if (target.beforeRowId) {
-      const resolved = await this.plugin.getResolvedView();
-      targetRow = (_a = resolved.rows.find((r) => r.id === target.beforeRowId)) != null ? _a : null;
-    }
-    await this.applyCardReorder(rowId, target.columnName, targetRow, true, groupBy, laneProp, target.laneKey);
-  }
-  /**
-   * Render the swimlane board: a shared column-header row (counts spanning
-   * every lane) above one horizontal band per swimlane value, each band a row of
-   * (lane × column) drop cells. Cards render through the same {@link renderCard} as
-   * the flat board. Dropping across a band writes the lane property too.
-   */
-  renderSwimlaneBoard(board, rows, columns, columnRows, opts) {
-    var _a, _b;
-    const { groupBy, swimProp, colored, cardCtx } = opts;
-    const model = buildSwimlanes(rows, {
-      groupBy,
-      laneProp: swimProp,
-      search: this.searchQuery,
-      hideColumn: this.hideDoneColumn ? this.plugin.settings.kanbanDoneValue : "",
-      sortBy: this.sortBy,
-      rankProp: this.rankProp,
-      extraColumns: opts.extraColumns,
-      columnOrder: (_a = this.plugin.settings.kanbanColumnOrder[groupBy]) != null ? _a : []
-    });
-    this.lastLaneKeys = model.lanes.map((l) => l.key);
-    const columnNames = model.columnNames;
-    const rowById = new Map(rows.map((r) => [r.id, r]));
-    const grid = board.createDiv({ cls: "bpp-swimlane-grid" });
-    grid.setCssProps({ "--bpp-swim-cols": String(columnNames.length) });
-    if (model.truncatedLanes) {
-      grid.createDiv({
-        cls: "bpp-muted bpp-swimlane-truncation",
-        text: `Showing the first ${model.lanes.length} swimlanes. Search or filter the board to reach the rest.`
-      });
-    }
-    const headRow = grid.createDiv({ cls: "bpp-swimlane-headrow" });
-    headRow.createDiv({ cls: "bpp-swimlane-corner" });
-    const headCells = headRow.createDiv({ cls: "bpp-swimlane-cells" });
-    for (const name of columnNames) {
-      const trueCount = ((_b = columnRows.get(name)) != null ? _b : []).length;
-      const wipLimit = limitFor(this.plugin.settings.kanbanWipLimits, name);
-      const overWip = isOverWip(trueCount, wipLimit);
-      const head = headCells.createDiv({ cls: "bpp-swimlane-colhead" });
-      if (colored) head.setCssProps({ "--bpp-col-hue": this.columnHueFor(name) });
-      if (overWip) head.addClass("is-over-wip");
-      const swimName = head.createSpan({ cls: "bpp-swimlane-colname", text: name });
-      swimName.addEventListener("dblclick", (evt) => {
-        evt.stopPropagation();
-        this.beginColumnRename(swimName, name, groupBy);
-      });
-      const count = head.createSpan({ cls: "bpp-count", text: formatWipCount(trueCount, wipLimit) });
-      if (wipLimit !== null) count.addClass("has-wip");
-      head.addEventListener("contextmenu", (evt) => this.openColumnMenu(evt, name, groupBy, false, columnNames));
-    }
-    if (model.lanes.length === 0) {
-      this.renderEmptyState(grid, { title: "No cards match", body: "No cards match the current filters." });
-      return;
-    }
-    for (const lane of model.lanes) {
-      const laneLabel = lane.key === SWIMLANE_EMPTY ? "(empty)" : lane.key;
-      const laneRow = grid.createDiv({ cls: "bpp-swimlane-row" });
-      const laneHead = laneRow.createDiv({ cls: "bpp-swimlane-lanehead" });
-      laneHead.createSpan({ cls: "bpp-swimlane-lanename", text: laneLabel });
-      laneHead.createSpan({ cls: "bpp-count", text: String(lane.total) });
-      const cells = laneRow.createDiv({ cls: "bpp-swimlane-cells" });
-      for (const column of lane.columns) {
-        const cell = cells.createDiv({ cls: "bpp-swimlane-cell bpp-kanban-column" });
-        cell.setAttr("data-bpp-col", column.name);
-        cell.setAttr("data-bpp-lane", lane.key);
-        cell.setAttr("role", "group");
-        cell.setAttr(
-          "aria-label",
-          `${laneLabel} \xB7 ${column.name}, ${column.rows.length} card${column.rows.length === 1 ? "" : "s"}`
-        );
-        if (colored) cell.setCssProps({ "--bpp-col-hue": this.columnHueFor(column.name) });
-        this.wireCellDrop(cell, column.name, lane.key, groupBy, rowById);
-        const addBtn = cell.createEl("button", {
-          cls: "bpp-column-add bpp-cell-add",
-          text: "+",
-          attr: { "aria-label": `Add note to ${column.name}, lane ${laneLabel}` }
-        });
-        addBtn.addEventListener("click", () => void this.quickAddInCell(column.name, groupBy, swimProp, lane.key));
-        const cellCtx = { ...cardCtx, laneKey: lane.key };
-        for (const row of column.rows) this.renderCard(cell, row, column.name, cellCtx);
-      }
-    }
-  }
-  /** A swimlane cell is a drop target: a card dropped on empty cell space moves to
-   * this (column, lane), no rank change — the lane-aware analog of the flat column
-   * body drop. A drop onto a card is handled by that card's reorder wiring. */
-  wireCellDrop(cellEl, columnName, laneKey, groupBy, rowById) {
-    cellEl.addEventListener("dragover", (event) => {
-      var _a, _b;
-      if (!((_b = (_a = event.dataTransfer) == null ? void 0 : _a.types) != null ? _b : []).includes(DND_ROW)) return;
-      event.preventDefault();
-      cellEl.addClass("is-drop-target");
-      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-    });
-    cellEl.addEventListener("dragleave", (event) => {
-      if (this.dragTrulyLeft(cellEl, event)) cellEl.removeClass("is-drop-target");
-    });
-    cellEl.addEventListener("drop", (event) => {
-      var _a, _b, _c;
-      event.preventDefault();
-      cellEl.removeClass("is-drop-target");
-      (_a = this.boardScroller) == null ? void 0 : _a.stop();
-      const rowId = ((_b = event.dataTransfer) == null ? void 0 : _b.getData(DND_ROW)) || ((_c = event.dataTransfer) == null ? void 0 : _c.getData("text/plain"));
-      if (!rowId) return;
-      if (this.selected.has(rowId) && this.selected.size > 1) {
-        void this.moveSelectionToColumn(groupBy, columnName, laneKey);
-        return;
-      }
-      const row = rowById.get(rowId);
-      if (!row) return;
-      void this.moveRowToColumn(row, groupBy, columnName, this.swimlaneProp || null, laneKey);
-    });
-  }
-  async quickAddInCell(columnName, groupBy, swimProp, laneKey) {
-    var _a;
-    const title = buildQuickAddTitle(columnName);
-    try {
-      const file = await createSeededNote(
-        this.plugin,
-        this.plugin.settings.kanbanQuickAddFolder,
-        groupBy || "status",
-        columnName,
-        title
-      );
-      if (laneKey !== SWIMLANE_EMPTY && swimProp) {
-        const resolved = await this.plugin.getResolvedView();
-        if (!this.isComputedField((_a = resolved.def.formulas) != null ? _a : {}, swimProp)) {
-          await writeRowProperty(this.plugin, file.path, swimProp, laneKey, false, { label: "Set swimlane" });
-        }
-      }
-      new import_obsidian6.Notice(`Created ${file.basename}`);
-    } catch (error) {
-      new import_obsidian6.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
-    }
-    await this.render();
-  }
-  /** Toggle a card's membership in the multi-select set (modifier-click). Re-renders
-   * so the selection highlight and the selection bar stay in sync. */
-  toggleSelect(rowId) {
-    if (this.selected.has(rowId)) this.selected.delete(rowId);
-    else this.selected.add(rowId);
-    void this.render();
-  }
-  clearSelection() {
-    if (this.selected.size === 0) return;
-    this.selected.clear();
-    void this.render();
-  }
-  /** The bulk action bar shown while cards are multi-selected: move the whole set to
-   * a column (keeping each card's lane) or clear the selection. */
-  renderSelectionBar(container, groupBy, columnNames) {
-    if (this.selected.size === 0) return;
-    const bar = container.createDiv({ cls: "bpp-selection-bar" });
-    bar.createSpan({
-      cls: "bpp-selection-count",
-      text: `${this.selected.size} card${this.selected.size === 1 ? "" : "s"} selected`
-    });
-    const moveBtn = bar.createEl("button", { cls: "bpp-lite-btn", text: "Move to column \u25BE" });
-    moveBtn.addEventListener("click", (evt) => {
-      const menu = new import_obsidian6.Menu();
-      for (const name of columnNames) {
-        menu.addItem((i) => i.setTitle(name).setIcon("arrow-right").onClick(() => void this.moveSelectionToColumn(groupBy, name, null)));
-      }
-      menu.showAtMouseEvent(evt);
-    });
-    const clearBtn = bar.createEl("button", { cls: "bpp-lite-btn", text: "Clear" });
-    clearBtn.addEventListener("click", () => this.clearSelection());
-  }
-  /**
-   * Move every selected card to `columnName` (and, on a swimlane drop, `laneKey`) in
-   * one undo batch. Positions aren't set — a precise rank for many cards at once
-   * isn't meaningful — only the column/lane (with Move Rules) change. WIP is enforced
-   * against the whole batch so a bulk move can't quietly blow a cap.
-   */
-  async moveSelectionToColumn(groupBy, columnName, laneKey) {
-    var _a, _b;
-    const ids = [...this.selected];
-    if (ids.length === 0) return;
-    const group = groupBy || "status";
-    const laneProp = laneKey === null ? null : this.swimlaneProp || null;
-    const resolved = await this.plugin.getResolvedView();
-    const formulas = (_a = resolved.def.formulas) != null ? _a : {};
-    const targetRows = ids.map((id) => resolved.rows.find((r) => r.id === id)).filter((r) => r !== void 0);
-    if (targetRows.length === 0) {
-      this.selected.clear();
-      await this.render();
-      return;
-    }
-    const movingColumn = targetRows.filter((r) => toStr(r.scope.get(group)) !== columnName);
-    if (movingColumn.length > 0 && this.isComputedField(formulas, group)) {
-      new import_obsidian6.Notice(`"${group}" is a computed/formula field \u2014 cards grouped by it can't be moved here.`);
-      return;
-    }
-    if (laneProp !== null && this.isComputedField(formulas, laneProp)) {
-      new import_obsidian6.Notice(`"${laneProp}" is a computed/formula field \u2014 cards can't be moved across swimlanes here.`);
-      return;
-    }
-    if (this.plugin.settings.kanbanBlockOverWip && movingColumn.length > 0) {
-      const limit = limitFor(this.plugin.settings.kanbanWipLimits, columnName);
-      if (limit !== null) {
-        const targetCount = ((_b = this.lastColumnRows.get(columnName)) != null ? _b : []).length;
-        if (targetCount + movingColumn.length > limit) {
-          new import_obsidian6.Notice(`"${columnName}" would exceed its WIP limit (${limit}). Move blocked.`);
-          return;
-        }
-      }
-    }
-    const batch = this.plugin.undo.beginBatch(`Move ${targetRows.length} cards to "${columnName}"`);
-    let moved = 0;
-    for (const r of targetRows) {
-      const crossColumn = toStr(r.scope.get(group)) !== columnName;
-      const crossLane = laneProp !== null && this.laneKeyOf(r, laneProp) !== laneKey;
-      if (!crossColumn && !crossLane) continue;
-      const writes = [];
-      if (crossColumn) {
-        writes.push({ key: group, value: columnName });
-        if (this.plugin.settings.isPro) {
-          const matched = rulesForTransition(this.plugin.settings.automations, group, columnName);
-          writes.push(...computeRuleWrites(matched, r.note.frontmatter, /* @__PURE__ */ new Date()));
-        }
-      }
-      if (crossLane && laneProp !== null) writes.push(this.laneWrite(laneProp, laneKey));
-      if (writes.length > 0 && await writeRowProperties(this.plugin, r.id, writes, { batch })) moved++;
-    }
-    this.plugin.undo.commitBatch(batch);
-    this.selected.clear();
-    new import_obsidian6.Notice(`Moved ${moved} card${moved === 1 ? "" : "s"} to "${columnName}".`);
-    await this.render();
-  }
-  async quickAddNote(columnName, groupBy) {
-    const title = buildQuickAddTitle(columnName);
-    try {
-      const file = await createSeededNote(
-        this.plugin,
-        this.plugin.settings.kanbanQuickAddFolder,
-        groupBy || "status",
-        columnName,
-        title
-      );
-      new import_obsidian6.Notice(`Created ${file.basename}`);
-    } catch (error) {
-      new import_obsidian6.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
-    }
-    await this.render();
   }
 };
 
