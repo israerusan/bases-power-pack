@@ -3176,6 +3176,24 @@ function buildKanbanColumns(rows, options) {
     };
   });
 }
+function buildBoardModel(rows, options) {
+  const columns = buildKanbanColumns(rows, options);
+  const groupBy = options.groupBy || "status";
+  const trueMembership = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const name = toStr(row.scope.get(groupBy));
+    if (!name) continue;
+    if (!trueMembership.has(name)) trueMembership.set(name, []);
+    trueMembership.get(name).push(row);
+  }
+  return {
+    columns,
+    visibleRows: columns.flatMap((column) => column.rows),
+    displayColumns: new Map(columns.map((column) => [column.name, column.rows])),
+    trueMembership,
+    orderedNames: columns.map((column) => column.name)
+  };
+}
 function reorderColumns(order, moved, target) {
   if (moved === target) return [...order];
   const without = order.filter((name) => name !== moved);
@@ -5531,7 +5549,7 @@ var KanbanView = class extends PowerPackView {
     renderRollupBar(container, this.plugin, resolved.rows);
     this.renderHintBar(container, "kanban", "Drag a card between two others to reorder it \u2022 Drag to another column to change status \u2022 \u22EF for more actions \u2022 Undo reverses the last change");
     const extraColumns = (_a = this.plugin.settings.kanbanExtraColumns[groupBy]) != null ? _a : [];
-    const columns = buildKanbanColumns(resolved.rows, {
+    const model = buildBoardModel(resolved.rows, {
       groupBy,
       search: this.searchQuery,
       hideColumn: this.hideDoneColumn ? this.plugin.settings.kanbanDoneValue : "",
@@ -5540,17 +5558,12 @@ var KanbanView = class extends PowerPackView {
       extraColumns,
       columnOrder: (_b = this.plugin.settings.kanbanColumnOrder[groupBy]) != null ? _b : []
     });
-    this.lastVisibleRows = columns.flatMap((column) => column.rows);
-    this.lastDisplayColumns = new Map(columns.map((column) => [column.name, column.rows]));
-    const columnRows = /* @__PURE__ */ new Map();
-    for (const row of resolved.rows) {
-      const name = toStr(row.scope.get(groupBy));
-      if (!name) continue;
-      if (!columnRows.has(name)) columnRows.set(name, []);
-      columnRows.get(name).push(row);
-    }
-    this.lastColumnRows = columnRows;
-    const orderedNames = columns.map((column) => column.name);
+    const columns = model.columns;
+    this.lastVisibleRows = model.visibleRows;
+    this.lastDisplayColumns = model.displayColumns;
+    this.lastColumnRows = model.trueMembership;
+    const columnRows = model.trueMembership;
+    const orderedNames = model.orderedNames;
     const colored = this.plugin.settings.kanbanColorColumns;
     const swimProp = this.swimlaneProp;
     const board = container.createDiv({ cls: "bpp-kanban-board" });

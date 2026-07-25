@@ -2,7 +2,7 @@ import { Menu, Notice, normalizePath, type HoverPopover } from "obsidian";
 import { COMPUTED_FILE_PROPS, type RawNote, type Row } from "../model/row";
 import { PowerPackView } from "./abstractView";
 import {
-	buildKanbanColumns,
+	buildBoardModel,
 	columnHue,
 	dueStatus,
 	formatCardField,
@@ -213,7 +213,10 @@ export class KanbanView extends PowerPackView {
 		this.renderHintBar(container, "kanban", "Drag a card between two others to reorder it • Drag to another column to change status • ⋯ for more actions • Undo reverses the last change");
 
 		const extraColumns = this.plugin.settings.kanbanExtraColumns[groupBy] ?? [];
-		const columns = buildKanbanColumns(resolved.rows, {
+		// The full board model (display columns + TRUE membership + display order) is
+		// derived once in a pure, unit-tested function so the search-filtered "shown"
+		// cards and the true WIP/reorder membership can never be conflated.
+		const model = buildBoardModel(resolved.rows, {
 			groupBy,
 			search: this.searchQuery,
 			hideColumn: this.hideDoneColumn ? this.plugin.settings.kanbanDoneValue : "",
@@ -222,21 +225,12 @@ export class KanbanView extends PowerPackView {
 			extraColumns,
 			columnOrder: this.plugin.settings.kanbanColumnOrder[groupBy] ?? [],
 		});
-		this.lastVisibleRows = columns.flatMap((column) => column.rows);
-		this.lastDisplayColumns = new Map(columns.map((column) => [column.name, column.rows]));
-		// TRUE column membership (see lastColumnRows): without it, hiding cards
-		// with a search let a drop sneak past a WIP cap because the badge and the
-		// enforcement both under-counted the target column.
-		const columnRows = new Map<string, Row[]>();
-		for (const row of resolved.rows) {
-			const name = toStr(row.scope.get(groupBy));
-			if (!name) continue;
-			if (!columnRows.has(name)) columnRows.set(name, []);
-			columnRows.get(name)!.push(row);
-		}
-		this.lastColumnRows = columnRows;
-		// The displayed order — the basis for a header-drag reorder.
-		const orderedNames = columns.map((column) => column.name);
+		const columns = model.columns;
+		this.lastVisibleRows = model.visibleRows;
+		this.lastDisplayColumns = model.displayColumns;
+		this.lastColumnRows = model.trueMembership;
+		const columnRows = model.trueMembership; // local alias used by the column loop below
+		const orderedNames = model.orderedNames;
 		const colored = this.plugin.settings.kanbanColorColumns;
 		const swimProp = this.swimlaneProp;
 		const board = container.createDiv({ cls: "bpp-kanban-board" });

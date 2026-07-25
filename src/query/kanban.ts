@@ -88,6 +88,45 @@ export function buildKanbanColumns(rows: Row[], options: BuildKanbanColumnsOptio
 	}));
 }
 
+/**
+ * The full board model both the standalone board and the Bases view render from — a
+ * pure consolidation of the derivations that were inlined in the view's render(). The
+ * crux is keeping the TWO memberships distinct, which is the source of the subtlest
+ * board bugs:
+ *   - `columns` / `displayColumns` / `visibleRows` — the SEARCH-FILTERED, sorted cards
+ *     actually shown (from {@link buildKanbanColumns}).
+ *   - `trueMembership` — EVERY row grouped by the group-by, ignoring the quick-search and
+ *     hide-done. This drives WIP badges/enforcement and reorder planning, so a search that
+ *     hides cards can't make a drop sneak past a WIP cap or renumber only the visible ones.
+ * Pure and DOM-free, so the distinction is unit-tested rather than eyeballed on a board.
+ */
+export interface BoardModel {
+	columns: KanbanColumn[];
+	visibleRows: Row[];
+	displayColumns: Map<string, Row[]>;
+	trueMembership: Map<string, Row[]>;
+	orderedNames: string[];
+}
+
+export function buildBoardModel(rows: Row[], options: BuildKanbanColumnsOptions): BoardModel {
+	const columns = buildKanbanColumns(rows, options);
+	const groupBy = options.groupBy || "status";
+	const trueMembership = new Map<string, Row[]>();
+	for (const row of rows) {
+		const name = toStr(row.scope.get(groupBy));
+		if (!name) continue;
+		if (!trueMembership.has(name)) trueMembership.set(name, []);
+		trueMembership.get(name)!.push(row);
+	}
+	return {
+		columns,
+		visibleRows: columns.flatMap((column) => column.rows),
+		displayColumns: new Map(columns.map((column) => [column.name, column.rows])),
+		trueMembership,
+		orderedNames: columns.map((column) => column.name),
+	};
+}
+
 /** Move `moved` to sit immediately before `target` in the column order. Returns a
  * new array; a no-op (same value, or unknown target) returns a copy unchanged. */
 export function reorderColumns(order: string[], moved: string, target: string): string[] {

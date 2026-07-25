@@ -1363,6 +1363,28 @@ const capped = swimlane.buildSwimlanes(manyLanes, { groupBy: "status", laneProp:
 assert.equal(capped.truncatedLanes, true, "over the lane cap sets truncatedLanes");
 assert.equal(capped.lanes.length, 3, "lane list is capped to maxLanes");
 
+// ---- board model: true vs display membership -------------------------------
+// The single subtlest board invariant: a quick-search hides cards from the DISPLAY
+// but must NOT shrink the TRUE membership that drives WIP counts + reorder planning.
+const bmRows = [
+	srow("A", { status: "Todo", rank: 0 }),
+	srow("B", { status: "Doing", rank: 1 }),
+	srow("C", { status: "Todo" }),
+	srow("D", { status: "Doing" }),
+];
+const bm = kanban.buildBoardModel(bmRows, { groupBy: "status" });
+assert.deepEqual(bm.orderedNames, ["Todo", "Doing"], "columns in first-seen order");
+assert.deepEqual(bm.columns.map((c) => c.name), kanban.buildKanbanColumns(bmRows, { groupBy: "status" }).map((c) => c.name), "columns == buildKanbanColumns");
+assert.deepEqual(bm.trueMembership.get("Todo").map((r) => r.name).sort(), ["A", "C"], "true membership groups all rows");
+assert.equal(bm.visibleRows.length, 4, "visibleRows = every shown card");
+assert.deepEqual(bm.displayColumns.get("Doing").map((r) => r.name).sort(), ["B", "D"], "displayColumns = shown per column");
+// With a search that matches only "A": the display collapses, true membership does not.
+const bmS = kanban.buildBoardModel(bmRows, { groupBy: "status", search: "A" });
+assert.deepEqual(bmS.orderedNames, ["Todo"], "search drops columns with no visible match");
+assert.deepEqual(bmS.displayColumns.get("Todo").map((r) => r.name), ["A"], "search filters the display");
+assert.deepEqual(bmS.trueMembership.get("Todo").map((r) => r.name).sort(), ["A", "C"], "true membership IGNORES search (WIP/reorder count all)");
+assert.equal(bmS.trueMembership.get("Doing").length, 2, "a fully-hidden column is still counted in true membership");
+
 // ---- auto-scroll velocity --------------------------------------------------
 // Calm middle → no scroll.
 assert.equal(autoscroll.edgeVelocity(500, 0, 1000, 56, 18), 0, "middle of the container does not scroll");
