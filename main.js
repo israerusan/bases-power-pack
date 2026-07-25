@@ -4186,7 +4186,7 @@ function uniqueNotePath(app, stem) {
   }
   return path;
 }
-async function createSeededNote(plugin, folder, key, value, titleHint) {
+async function createSeededNote(plugin, folder, key, value, titleHint, extra) {
   const app = plugin.app;
   const cleanFolder = folder.trim().replace(/^[/\\]+|[/\\]+$/g, "");
   const stem = `${cleanFolder ? `${cleanFolder}/` : ""}${titleHint}`;
@@ -4197,13 +4197,15 @@ async function createSeededNote(plugin, folder, key, value, titleHint) {
   let seeded = true;
   try {
     await app.fileManager.processFrontMatter(file, (frontmatter) => {
-      frontmatter[key] = value;
+      const fm = frontmatter;
+      if (extra) for (const [k, v] of Object.entries(extra)) fm[k] = v;
+      fm[key] = value;
     });
   } catch (error) {
     seeded = false;
     new import_obsidian2.Notice(`Bases Power Pack: created the note but couldn't set "${key}" (${String(error)}).`);
   }
-  if (seeded) plugin.seedCreatedNote(file, { [key]: value });
+  if (seeded) plugin.seedCreatedNote(file, { ...extra, [key]: value });
   else plugin.patchNote(file);
   await app.workspace.getLeaf("tab").openFile(file);
   return file;
@@ -4984,6 +4986,28 @@ var PowerPackView = class extends import_obsidian5.ItemView {
 // src/views/kanbanBoard.ts
 var import_obsidian6 = require("obsidian");
 
+// src/query/cardLayout.ts
+function progressPercent(value, max) {
+  if (!(max > 0)) return null;
+  if (value === void 0 || value === null || value === "") return null;
+  const n = toNumber(value);
+  if (!Number.isFinite(n)) return null;
+  const clamped = Math.max(0, Math.min(max, n));
+  return Math.round(clamped / max * 100);
+}
+function avatarFor(value) {
+  var _a, _b;
+  const first = Array.isArray(value) ? value[0] : value;
+  const raw = toStr(first).trim().replace(/^\[\[/, "").replace(/\]\]$/, "").replace(/^@/, "").trim();
+  if (!raw) return null;
+  const aliased = raw.includes("|") ? (_a = raw.split("|").pop()) != null ? _a : raw : raw;
+  const name = ((_b = aliased.split("/").pop()) != null ? _b : aliased).trim();
+  if (!name) return null;
+  const words = name.split(/\s+/).filter(Boolean);
+  const initials = (words.length >= 2 ? words[0][0] + words[1][0] : name.slice(0, 2)).toUpperCase();
+  return { initials, hue: columnHue(name) };
+}
+
 // src/query/kanbanActions.ts
 function buildQuickAddTitle(columnName, now = /* @__PURE__ */ new Date()) {
   const yyyy = now.getFullYear();
@@ -5686,7 +5710,7 @@ var KanbanBoard = class {
           text: "+",
           attr: { "aria-label": `Add note to ${column.name}` }
         });
-        addButton.addEventListener("click", () => void this.quickAddNote(column.name, groupBy));
+        addButton.addEventListener("click", (e) => this.addCardFlow(column.name, groupBy, e));
       }
       addOverflowButton(
         actions,
@@ -5740,6 +5764,16 @@ var KanbanBoard = class {
     const openMenu = (a) => this.openCardMenu(a, row, ctx.groupBy, ctx.orderedNames, columnName, ctx.laneKey);
     const head = card.createDiv({ cls: "bpp-card-head" });
     const titleEl = head.createDiv({ cls: "bpp-card-title", text: row.name });
+    const avatarProp = this.plugin.settings.kanbanCardAvatarProp.trim();
+    if (avatarProp) {
+      const av = avatarFor(row.scope.get(avatarProp));
+      if (av) {
+        const chip = head.createSpan({ cls: "bpp-card-avatar", text: av.initials });
+        chip.setCssProps({ "--bpp-avatar-hue": String(av.hue) });
+        chip.setAttr("title", `${avatarProp}: ${toStr(row.scope.get(avatarProp))}`);
+        chip.setAttr("aria-label", `${avatarProp} ${toStr(row.scope.get(avatarProp))}`);
+      }
+    }
     const renameBtn = head.createEl("button", {
       cls: "bpp-card-rename clickable-icon",
       attr: { "aria-label": `Rename ${row.name}`, title: "Rename note" }
@@ -5763,6 +5797,23 @@ var KanbanBoard = class {
       const val = evaluateSafe(ctx.cardFormula, row.scope);
       if (val !== null && toStr(val) !== "") {
         card.createDiv({ cls: "bpp-card-meta bpp-card-meta-premium", text: toStr(val) });
+      }
+    }
+    const progressProp = this.plugin.settings.kanbanCardProgressProp.trim();
+    if (progressProp) {
+      const pct = progressPercent(row.scope.get(progressProp), this.plugin.settings.kanbanCardProgressMax);
+      if (pct !== null) {
+        const track = card.createDiv({
+          cls: "bpp-card-progress",
+          attr: {
+            role: "progressbar",
+            "aria-valuenow": String(pct),
+            "aria-valuemin": "0",
+            "aria-valuemax": "100",
+            title: `${progressProp}: ${pct}%`
+          }
+        });
+        track.createDiv({ cls: "bpp-card-progress-bar" }).setCssProps({ "--bpp-progress": `${pct}%` });
       }
     }
     card.addEventListener("dragstart", (event) => {
@@ -6119,7 +6170,7 @@ var KanbanBoard = class {
     if (anchor instanceof MouseEvent) anchor.preventDefault();
     const menu = new import_obsidian6.Menu();
     if (this.canColumnChrome) {
-      menu.addItem((i) => i.setTitle("Add note").setIcon("plus").onClick(() => void this.quickAddNote(columnName, groupBy)));
+      menu.addItem((i) => i.setTitle("Add note").setIcon("plus").onClick(() => this.addCardFlow(columnName, groupBy, anchor)));
       menu.addItem((i) => i.setTitle("Rename column\u2026").setIcon("pencil").onClick(() => this.renameColumnValue(groupBy, columnName)));
       menu.addItem(
         (i) => i.setTitle("Set WIP limit\u2026").setIcon("gauge").onClick(() => this.setWipLimit(columnName))
@@ -6719,7 +6770,8 @@ var KanbanBoard = class {
           text: "+",
           attr: { "aria-label": `Add note to ${column.name}, lane ${laneLabel}` }
         });
-        addBtn.addEventListener("click", () => void this.quickAddInCell(column.name, groupBy, swimProp, lane.key));
+        if (!this.canWrite) addBtn.hide();
+        addBtn.addEventListener("click", (e) => this.addCardFlow(column.name, groupBy, e, { swimProp, laneKey: lane.key }));
         const cellCtx = { ...cardCtx, laneKey: lane.key };
         for (const row of column.rows) this.renderCard(cell, row, column.name, cellCtx);
       }
@@ -6753,27 +6805,6 @@ var KanbanBoard = class {
       if (!row) return;
       void this.moveRowToColumn(row, groupBy, columnName, this.swimlaneProp || null, laneKey);
     });
-  }
-  async quickAddInCell(columnName, groupBy, swimProp, laneKey) {
-    const title = buildQuickAddTitle(columnName);
-    try {
-      const file = await createSeededNote(
-        this.plugin,
-        this.plugin.settings.kanbanQuickAddFolder,
-        groupBy || "status",
-        columnName,
-        title
-      );
-      if (laneKey !== SWIMLANE_EMPTY && swimProp) {
-        if (!this.isComputedField(this.input.formulas, swimProp)) {
-          await writeRowProperty(this.plugin, file.path, swimProp, laneKey, false, { label: "Set swimlane" });
-        }
-      }
-      new import_obsidian6.Notice(`Created ${file.basename}`);
-    } catch (error) {
-      new import_obsidian6.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
-    }
-    this.host.requestRender();
   }
   /** Toggle a card's membership in the multi-select set (modifier-click). */
   toggleSelect(rowId) {
@@ -6864,21 +6895,58 @@ var KanbanBoard = class {
     new import_obsidian6.Notice(`Moved ${moved} card${moved === 1 ? "" : "s"} to "${columnName}".`);
     this.host.requestRender();
   }
-  async quickAddNote(columnName, groupBy) {
+  /**
+   * Add-a-card entry point. With card templates configured it opens a picker (Blank +
+   * one item per template) at the anchor; otherwise it creates a blank card directly.
+   * `lane` seeds the swimlane property on a banded board.
+   */
+  addCardFlow(columnName, groupBy, anchor, lane) {
+    const templates = this.plugin.settings.kanbanCardTemplates;
+    if (templates.length === 0 || !anchor) {
+      void this.createCard(columnName, groupBy, void 0, lane);
+      return;
+    }
+    const menu = new import_obsidian6.Menu();
+    menu.addItem((i) => i.setTitle("Blank card").setIcon("file-plus").onClick(() => void this.createCard(columnName, groupBy, void 0, lane)));
+    menu.addSeparator();
+    for (const t of templates) {
+      menu.addItem((i) => i.setTitle(t.name).setIcon("copy-plus").onClick(() => void this.createCard(columnName, groupBy, t, lane)));
+    }
+    showMenuAtAnchor(menu, anchor);
+  }
+  /** Create a seeded card in `columnName` (+ optional swimlane), applying a template's
+   * frontmatter defaults when one is chosen. The column's group value always wins a
+   * conflict (createSeededNote writes it last). */
+  async createCard(columnName, groupBy, template, lane) {
     const title = buildQuickAddTitle(columnName);
+    const extra = template ? this.templateFields(template) : void 0;
     try {
       const file = await createSeededNote(
         this.plugin,
         this.plugin.settings.kanbanQuickAddFolder,
         groupBy || "status",
         columnName,
-        title
+        title,
+        extra
       );
+      if (lane && lane.laneKey !== SWIMLANE_EMPTY && lane.swimProp && !this.isComputedField(this.input.formulas, lane.swimProp)) {
+        await writeRowProperty(this.plugin, file.path, lane.swimProp, lane.laneKey, false, { label: "Set swimlane" });
+      }
       new import_obsidian6.Notice(`Created ${file.basename}`);
     } catch (error) {
       new import_obsidian6.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
     }
     this.host.requestRender();
+  }
+  /** A template's fields as a frontmatter object, literal-coerced ("true"→bool, "5"→num)
+   * so a seeded default lands with the right YAML type. Blank keys are skipped. */
+  templateFields(template) {
+    const out = {};
+    for (const field of template.fields) {
+      const key = field.key.trim();
+      if (key) out[key] = coerceLiteral(field.value);
+    }
+    return out;
   }
   /** Tear down interaction machinery (auto-scroll rAF, touch ghost, hover popover) — the
    * host calls this on close. */
@@ -7139,6 +7207,10 @@ var DEFAULT_SETTINGS = {
   kanbanCollapsedColumns: {},
   kanbanCardClickAction: "tab",
   kanbanColumnSets: [],
+  kanbanCardTemplates: [],
+  kanbanCardProgressProp: "",
+  kanbanCardProgressMax: 100,
+  kanbanCardAvatarProp: "",
   feedDateProp: "file.mtime",
   feedGranularity: "day",
   calendarDateProp: "due",
@@ -7272,6 +7344,29 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
       })
     );
+    new import_obsidian7.Setting(containerEl).setName("Card progress property").setDesc(
+      "Optional numeric property rendered as a progress bar on each card, measured against the max below (e.g. progress). Leave blank for no bar."
+    ).addText(
+      (text) => this.keySuggest(text).setPlaceholder("(none)").setValue(this.plugin.settings.kanbanCardProgressProp).onChange((value) => {
+        this.plugin.settings.kanbanCardProgressProp = value.trim();
+        void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
+      })
+    );
+    new import_obsidian7.Setting(containerEl).setName("Progress max").setDesc("The value that reads as 100% \u2014 100 for a 0\u2013100 percent property, or 1 for a 0\u20131 fraction.").addText(
+      (text) => text.setPlaceholder("100").setValue(String(this.plugin.settings.kanbanCardProgressMax)).onChange((value) => {
+        const n = Number(value);
+        this.plugin.settings.kanbanCardProgressMax = Number.isFinite(n) && n > 0 ? n : 100;
+        void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
+      })
+    );
+    new import_obsidian7.Setting(containerEl).setName("Card avatar property").setDesc(
+      "Optional person/assignee property rendered as a colored initials avatar on each card (e.g. owner, assignee). Leave blank for no avatar."
+    ).addText(
+      (text) => this.keySuggest(text).setPlaceholder("(none)").setValue(this.plugin.settings.kanbanCardAvatarProp).onChange((value) => {
+        this.plugin.settings.kanbanCardAvatarProp = value.trim();
+        void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
+      })
+    );
     new import_obsidian7.Setting(containerEl).setName("Quick add folder").setDesc("Optional folder for the kanban + button. Leave blank to create notes at the vault root.").addText(
       (text) => this.folderSuggest(text).setValue(this.plugin.settings.kanbanQuickAddFolder).onChange((value) => {
         this.plugin.settings.kanbanQuickAddFolder = value.trim();
@@ -7315,6 +7410,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
       })
     );
     this.renderColumnSets(containerEl);
+    this.renderCardTemplates(containerEl);
     new import_obsidian7.Setting(containerEl).setName("Premium").setHeading();
     const premiumIn = (parent, name, desc, render) => {
       const setting = new import_obsidian7.Setting(parent).setName(name).setDesc(desc);
@@ -7768,6 +7864,66 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
             { name: "Doing", hue: "215", done: false },
             { name: "Done", hue: "130", done: true }
           ]
+        });
+        saveRedraw();
+      })
+    );
+  }
+  renderCardTemplates(containerEl) {
+    new import_obsidian7.Setting(containerEl).setName("Card templates").setDesc(
+      "Reusable card templates \u2014 a named set of frontmatter defaults. When any exist, the board's + button offers a picker (Blank + each template) that seeds a new card with these fields. The card's column value always wins a conflict."
+    ).setHeading();
+    const save = () => this.plugin.saveSettings({ invalidateResolved: false });
+    const saveRedraw = () => void save().then(() => this.display());
+    const templates = this.plugin.settings.kanbanCardTemplates;
+    templates.forEach((tpl) => {
+      const head = new import_obsidian7.Setting(containerEl).setClass("bpp-colset-head");
+      head.addText(
+        (t) => t.setPlaceholder("Template name").setValue(tpl.name).onChange((v) => {
+          tpl.name = v;
+          void save();
+        })
+      );
+      head.addExtraButton(
+        (b) => b.setIcon("plus").setTooltip("Add field").onClick(() => {
+          tpl.fields.push({ key: "", value: "" });
+          saveRedraw();
+        })
+      );
+      head.addExtraButton(
+        (b) => b.setIcon("trash").setTooltip("Delete template").onClick(() => {
+          this.plugin.settings.kanbanCardTemplates = templates.filter((x) => x.id !== tpl.id);
+          saveRedraw();
+        })
+      );
+      tpl.fields.forEach((field, fi) => {
+        const row = new import_obsidian7.Setting(containerEl).setClass("bpp-colset-col");
+        row.addText(
+          (t) => this.keySuggest(t).setPlaceholder("property").setValue(field.key).onChange((v) => {
+            field.key = v.trim();
+            void save();
+          })
+        );
+        row.addText(
+          (t) => t.setPlaceholder("default value").setValue(field.value).onChange((v) => {
+            field.value = v;
+            void save();
+          })
+        );
+        row.addExtraButton(
+          (b) => b.setIcon("trash").setTooltip("Remove field").onClick(() => {
+            tpl.fields.splice(fi, 1);
+            saveRedraw();
+          })
+        );
+      });
+    });
+    new import_obsidian7.Setting(containerEl).addButton(
+      (b) => b.setButtonText("Add card template").setCta().onClick(() => {
+        this.plugin.settings.kanbanCardTemplates.push({
+          id: genId("tpl"),
+          name: "New template",
+          fields: [{ key: "type", value: "" }]
         });
         saveRedraw();
       })

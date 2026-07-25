@@ -48,6 +48,20 @@ export interface ColumnSet {
 	columns: ColumnSetColumn[];
 }
 
+/** One frontmatter default seeded by a {@link CardTemplate}. */
+export interface CardTemplateField {
+	key: string;
+	value: string;
+}
+
+/** A reusable card template — a named set of frontmatter defaults seeded into a new card
+ * created from it (e.g. Bug → type: bug, priority: high). Offered on quick-add. */
+export interface CardTemplate {
+	id: string;
+	name: string;
+	fields: CardTemplateField[];
+}
+
 export interface BasesPowerPackSettings {
 	/** License */
 	licenseKey: string;
@@ -97,6 +111,16 @@ export interface BasesPowerPackSettings {
 	/** Predefined column layouts (ordered columns, each with a color + a done flag)
 	 * applied as a fixed workflow from the board's Column set control. */
 	kanbanColumnSets: ColumnSet[];
+	/** Reusable card templates: a new card can be seeded from one (frontmatter defaults),
+	 * offered as a picker on quick-add when any exist. */
+	kanbanCardTemplates: CardTemplate[];
+	/** Card layout — a numeric frontmatter property (0..{@link kanbanCardProgressMax})
+	 * rendered as a progress bar on each card. "" = no bar. */
+	kanbanCardProgressProp: string;
+	kanbanCardProgressMax: number;
+	/** A person/assignee frontmatter property rendered as a colored initials avatar on the
+	 * card head. "" = no avatar. */
+	kanbanCardAvatarProp: string;
 
 	/** Feed / timeline (premium) */
 	feedDateProp: string;
@@ -190,6 +214,10 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	kanbanCollapsedColumns: {},
 	kanbanCardClickAction: "tab",
 	kanbanColumnSets: [],
+	kanbanCardTemplates: [],
+	kanbanCardProgressProp: "",
+	kanbanCardProgressMax: 100,
+	kanbanCardAvatarProp: "",
 	feedDateProp: "file.mtime",
 	feedGranularity: "day",
 	calendarDateProp: "due",
@@ -386,6 +414,50 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			);
 
 		new Setting(containerEl)
+			.setName("Card progress property")
+			.setDesc(
+				"Optional numeric property rendered as a progress bar on each card, measured against the max below (e.g. progress). Leave blank for no bar."
+			)
+			.addText((text) =>
+				this.keySuggest(text)
+					.setPlaceholder("(none)")
+					.setValue(this.plugin.settings.kanbanCardProgressProp)
+					.onChange((value) => {
+						this.plugin.settings.kanbanCardProgressProp = value.trim();
+						void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Progress max")
+			.setDesc("The value that reads as 100% — 100 for a 0–100 percent property, or 1 for a 0–1 fraction.")
+			.addText((text) =>
+				text
+					.setPlaceholder("100")
+					.setValue(String(this.plugin.settings.kanbanCardProgressMax))
+					.onChange((value) => {
+						const n = Number(value);
+						this.plugin.settings.kanbanCardProgressMax = Number.isFinite(n) && n > 0 ? n : 100;
+						void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Card avatar property")
+			.setDesc(
+				"Optional person/assignee property rendered as a colored initials avatar on each card (e.g. owner, assignee). Leave blank for no avatar."
+			)
+			.addText((text) =>
+				this.keySuggest(text)
+					.setPlaceholder("(none)")
+					.setValue(this.plugin.settings.kanbanCardAvatarProp)
+					.onChange((value) => {
+						this.plugin.settings.kanbanCardAvatarProp = value.trim();
+						void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
+					})
+			);
+
+		new Setting(containerEl)
 			.setName("Quick add folder")
 			.setDesc("Optional folder for the kanban + button. Leave blank to create notes at the vault root.")
 			.addText((text) =>
@@ -462,6 +534,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 			);
 
 		this.renderColumnSets(containerEl);
+		this.renderCardTemplates(containerEl);
 
 		// ---- Premium ---------------------------------------------------------
 		new Setting(containerEl).setName("Premium").setHeading();
@@ -1019,6 +1092,80 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 							{ name: "Doing", hue: "215", done: false },
 							{ name: "Done", hue: "130", done: true },
 						],
+					});
+					saveRedraw();
+				})
+		);
+	}
+
+	private renderCardTemplates(containerEl: HTMLElement): void {
+		new Setting(containerEl)
+			.setName("Card templates")
+			.setDesc(
+				"Reusable card templates — a named set of frontmatter defaults. When any exist, the board's + button offers a picker (Blank + each template) that seeds a new card with these fields. The card's column value always wins a conflict."
+			)
+			.setHeading();
+
+		const save = (): Promise<void> => this.plugin.saveSettings({ invalidateResolved: false });
+		const saveRedraw = (): void => void save().then(() => this.display());
+		const templates = this.plugin.settings.kanbanCardTemplates;
+
+		templates.forEach((tpl) => {
+			const head = new Setting(containerEl).setClass("bpp-colset-head");
+			head.addText((t) =>
+				t.setPlaceholder("Template name").setValue(tpl.name).onChange((v) => {
+					tpl.name = v;
+					void save();
+				})
+			);
+			head.addExtraButton((b) =>
+				b.setIcon("plus").setTooltip("Add field").onClick(() => {
+					tpl.fields.push({ key: "", value: "" });
+					saveRedraw();
+				})
+			);
+			head.addExtraButton((b) =>
+				b.setIcon("trash").setTooltip("Delete template").onClick(() => {
+					this.plugin.settings.kanbanCardTemplates = templates.filter((x) => x.id !== tpl.id);
+					saveRedraw();
+				})
+			);
+
+			tpl.fields.forEach((field, fi) => {
+				const row = new Setting(containerEl).setClass("bpp-colset-col");
+				row.addText((t) =>
+					this.keySuggest(t)
+						.setPlaceholder("property")
+						.setValue(field.key)
+						.onChange((v) => {
+							field.key = v.trim();
+							void save();
+						})
+				);
+				row.addText((t) =>
+					t.setPlaceholder("default value").setValue(field.value).onChange((v) => {
+						field.value = v;
+						void save();
+					})
+				);
+				row.addExtraButton((b) =>
+					b.setIcon("trash").setTooltip("Remove field").onClick(() => {
+						tpl.fields.splice(fi, 1);
+						saveRedraw();
+					})
+				);
+			});
+		});
+
+		new Setting(containerEl).addButton((b) =>
+			b
+				.setButtonText("Add card template")
+				.setCta()
+				.onClick(() => {
+					this.plugin.settings.kanbanCardTemplates.push({
+						id: genId("tpl"),
+						name: "New template",
+						fields: [{ key: "type", value: "" }],
 					});
 					saveRedraw();
 				})

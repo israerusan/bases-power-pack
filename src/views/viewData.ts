@@ -161,7 +161,8 @@ export async function createSeededNote(
 	folder: string,
 	key: string,
 	value: string,
-	titleHint: string
+	titleHint: string,
+	extra?: Record<string, unknown>
 ): Promise<TFile> {
 	const app = plugin.app;
 	const cleanFolder = folder.trim().replace(/^[/\\]+|[/\\]+$/g, "");
@@ -178,7 +179,10 @@ export async function createSeededNote(
 	let seeded = true;
 	try {
 		await app.fileManager.processFrontMatter(file, (frontmatter) => {
-			(frontmatter as Record<string, unknown>)[key] = value;
+			const fm = frontmatter as Record<string, unknown>;
+			// Template defaults first, so the column's own group value always wins a conflict.
+			if (extra) for (const [k, v] of Object.entries(extra)) fm[k] = v;
+			fm[key] = value;
 		});
 	} catch (error) {
 		seeded = false;
@@ -190,7 +194,7 @@ export async function createSeededNote(
 	// write actually landed: seeding {key:value} for a failed write would flash a
 	// phantom card in its column that vanishes the moment the real (empty) metadata
 	// event re-snapshots the note.
-	if (seeded) plugin.seedCreatedNote(file, { [key]: value });
+	if (seeded) plugin.seedCreatedNote(file, { ...extra, [key]: value });
 	else plugin.patchNote(file);
 	await app.workspace.getLeaf("tab").openFile(file);
 	return file;

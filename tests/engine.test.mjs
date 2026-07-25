@@ -23,6 +23,7 @@ await build({
 			export * as hierarchy from "./src/query/hierarchy.ts";
 			export * as kanban from "./src/query/kanban.ts";
 			export * as swimlane from "./src/query/swimlane.ts";
+			export * as cardLayout from "./src/query/cardLayout.ts";
 			export * as autoscroll from "./src/views/autoscroll.ts";
 			export * as colorRules from "./src/query/colorRules.ts";
 			export * as pivot from "./src/query/pivot.ts";
@@ -47,7 +48,7 @@ await build({
 });
 
 const m = await import(`file://${outfile.replace(/\\/g, "/")}`);
-const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, hierarchy, kanban, swimlane, autoscroll, colorRules, pivot, dashboard, gallery, ranking, exporter, feed, kanbanActions, base, resolve, rowmod } = m;
+const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, hierarchy, kanban, swimlane, cardLayout, autoscroll, colorRules, pivot, dashboard, gallery, ranking, exporter, feed, kanbanActions, base, resolve, rowmod } = m;
 
 /** Build a Row-like object with the given frontmatter/name for the pure engines. */
 function makeTestRow(name, fm) {
@@ -1405,6 +1406,36 @@ assert.equal(swimlane.laneKeyOf(srow("n", {}), "owner"), swimlane.SWIMLANE_EMPTY
 assert.deepEqual(swimlane.laneWrite("owner", "Sam"), { key: "owner", value: "Sam" }, "real lane writes the value");
 assert.deepEqual(swimlane.laneWrite("owner", swimlane.SWIMLANE_EMPTY), { key: "owner", remove: true }, "(empty) band clears the prop");
 assert.deepEqual(swimlane.laneWrite("owner", null), { key: "owner", remove: true }, "null lane clears the prop");
+
+// ---- card layout widgets: progress + avatar --------------------------------
+// progressPercent: numeric value measured against max, clamped to [0,100].
+assert.equal(cardLayout.progressPercent(50, 100), 50, "half of 100 → 50%");
+assert.equal(cardLayout.progressPercent(0.5, 1), 50, "0.5 of max 1 → 50% (fraction store)");
+assert.equal(cardLayout.progressPercent(200, 100), 100, "over max clamps to 100");
+assert.equal(cardLayout.progressPercent(-5, 100), 0, "below 0 clamps to 0");
+assert.equal(cardLayout.progressPercent("30", 100), 30, "numeric string parses");
+assert.equal(cardLayout.progressPercent("", 100), null, "blank → null (no bar)");
+assert.equal(cardLayout.progressPercent("abc", 100), null, "non-numeric → null");
+assert.equal(cardLayout.progressPercent(50, 0), null, "non-positive max → null");
+assert.equal(cardLayout.progressPercent(null, 100), null, "null value → null");
+
+// avatarFor: initials + a stable hue; strips wikilink/alias/@, takes first of an array.
+assert.deepEqual(
+	{ initials: cardLayout.avatarFor("John Doe").initials },
+	{ initials: "JD" },
+	"two words → first-letter initials"
+);
+assert.equal(cardLayout.avatarFor("[[Jane Smith]]").initials, "JS", "wikilink brackets stripped");
+assert.equal(cardLayout.avatarFor("@bob").initials, "BO", "leading @ stripped, single word → first two letters");
+assert.equal(cardLayout.avatarFor("folder/Alice").initials, "AL", "path leaf used");
+assert.equal(cardLayout.avatarFor("[[people/Kai Chen|Kai]]").initials, "KA", "alias half of a wikilink used");
+assert.equal(cardLayout.avatarFor("   "), null, "blank → null (no avatar)");
+assert.equal(cardLayout.avatarFor(["Sam Ray", "Other"]).initials, "SR", "first of a multi-value property");
+assert.equal(
+	cardLayout.avatarFor("John Doe").hue,
+	cardLayout.avatarFor("John Doe").hue,
+	"hue is stable for the same name"
+);
 
 // ---- auto-scroll velocity --------------------------------------------------
 // Calm middle → no scroll.

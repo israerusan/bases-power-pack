@@ -14,6 +14,7 @@ import {
 	type KanbanSort,
 } from "../query/kanban";
 import { toIsoDateKey, todayIso } from "../query/dates";
+import { avatarFor, progressPercent } from "../query/cardLayout";
 import { computeRollup } from "../query/rollup";
 import { buildQuickAddTitle } from "../query/kanbanActions";
 import { coerceFieldInput, formatFieldForEdit } from "../query/inlineEdit";
@@ -29,7 +30,7 @@ import { TouchDragController, type TouchDropTarget } from "./touchDrag";
 import { DragScroller } from "./autoscroll";
 import * as rowActions from "./rowActions";
 import type { RowActionEnv } from "./rowActions";
-import type { ColumnSet } from "../settings";
+import type { CardTemplate, ColumnSet } from "../settings";
 
 /**
  * The seam between the shared board renderer ({@link KanbanBoard}) and its two hosts:
@@ -449,7 +450,7 @@ export class KanbanBoard implements HoverParent {
 					text: "+",
 					attr: { "aria-label": `Add note to ${column.name}` },
 				});
-				addButton.addEventListener("click", () => void this.quickAddNote(column.name, groupBy));
+				addButton.addEventListener("click", (e) => this.addCardFlow(column.name, groupBy, e));
 			}
 			rowActions.addOverflowButton(actions, `column ${column.name}`, (a) =>
 				this.openColumnMenu(a, column.name, groupBy, removable, orderedNames)
@@ -518,6 +519,17 @@ export class KanbanBoard implements HoverParent {
 			this.openCardMenu(a, row, ctx.groupBy, ctx.orderedNames, columnName, ctx.laneKey);
 		const head = card.createDiv({ cls: "bpp-card-head" });
 		const titleEl = head.createDiv({ cls: "bpp-card-title", text: row.name });
+		// Avatar widget (card layout): a colored initials chip from a person/assignee field.
+		const avatarProp = this.plugin.settings.kanbanCardAvatarProp.trim();
+		if (avatarProp) {
+			const av = avatarFor(row.scope.get(avatarProp));
+			if (av) {
+				const chip = head.createSpan({ cls: "bpp-card-avatar", text: av.initials });
+				chip.setCssProps({ "--bpp-avatar-hue": String(av.hue) });
+				chip.setAttr("title", `${avatarProp}: ${toStr(row.scope.get(avatarProp))}`);
+				chip.setAttr("aria-label", `${avatarProp} ${toStr(row.scope.get(avatarProp))}`);
+			}
+		}
 		// Inline rename: a hover ✎ affordance (plus F2 when focused and the ⋯ menu), so
 		// renaming the note never requires a modal. Single-click still opens.
 		const renameBtn = head.createEl("button", {
@@ -545,6 +557,24 @@ export class KanbanBoard implements HoverParent {
 			const val = evaluateSafe(ctx.cardFormula, row.scope);
 			if (val !== null && toStr(val) !== "") {
 				card.createDiv({ cls: "bpp-card-meta bpp-card-meta-premium", text: toStr(val) });
+			}
+		}
+		// Progress-bar widget (card layout): a numeric field measured against a configured max.
+		const progressProp = this.plugin.settings.kanbanCardProgressProp.trim();
+		if (progressProp) {
+			const pct = progressPercent(row.scope.get(progressProp), this.plugin.settings.kanbanCardProgressMax);
+			if (pct !== null) {
+				const track = card.createDiv({
+					cls: "bpp-card-progress",
+					attr: {
+						role: "progressbar",
+						"aria-valuenow": String(pct),
+						"aria-valuemin": "0",
+						"aria-valuemax": "100",
+						title: `${progressProp}: ${pct}%`,
+					},
+				});
+				track.createDiv({ cls: "bpp-card-progress-bar" }).setCssProps({ "--bpp-progress": `${pct}%` });
 			}
 		}
 		card.addEventListener("dragstart", (event) => {
@@ -1000,7 +1030,7 @@ export class KanbanBoard implements HoverParent {
 		// The column-chrome actions (add/rename/WIP/collapse/reorder) need a writable group
 		// key; a read-only Bases board (file.*/formula.* group-by) still gets colors below.
 		if (this.canColumnChrome) {
-			menu.addItem((i) => i.setTitle("Add note").setIcon("plus").onClick(() => void this.quickAddNote(columnName, groupBy)));
+			menu.addItem((i) => i.setTitle("Add note").setIcon("plus").onClick(() => this.addCardFlow(columnName, groupBy, anchor)));
 			menu.addItem((i) => i.setTitle("Rename column…").setIcon("pencil").onClick(() => this.renameColumnValue(groupBy, columnName)));
 			menu.addItem((i) =>
 				i.setTitle("Set WIP limit…").setIcon("gauge").onClick(() => this.setWipLimit(columnName))
@@ -1727,7 +1757,8 @@ export class KanbanBoard implements HoverParent {
 					text: "+",
 					attr: { "aria-label": `Add note to ${column.name}, lane ${laneLabel}` },
 				});
-				addBtn.addEventListener("click", () => void this.quickAddInCell(column.name, groupBy, swimProp, lane.key));
+				if (!this.canWrite) addBtn.hide(); // read-only board can't add cards
+				addBtn.addEventListener("click", (e) => this.addCardFlow(column.name, groupBy, e, { swimProp, laneKey: lane.key }));
 				const cellCtx: CardRenderCtx = { ...cardCtx, laneKey: lane.key };
 				for (const row of column.rows) this.renderCard(cell, row, column.name, cellCtx);
 			}
@@ -1766,30 +1797,6 @@ export class KanbanBoard implements HoverParent {
 			if (!row) return;
 			void this.moveRowToColumn(row, groupBy, columnName, this.swimlaneProp || null, laneKey);
 		});
-	}
-
-	private async quickAddInCell(columnName: string, groupBy: string, swimProp: string, laneKey: string): Promise<void> {
-		const title = buildQuickAddTitle(columnName);
-		try {
-			const file = await createSeededNote(
-				this.plugin,
-				this.plugin.settings.kanbanQuickAddFolder,
-				groupBy || "status",
-				columnName,
-				title
-			);
-			// Seed the lane too, unless this is the catch-all "(empty)" band or the lane
-			// prop is a formula/computed field (which a literal would shadow).
-			if (laneKey !== SWIMLANE_EMPTY && swimProp) {
-				if (!this.isComputedField(this.input.formulas, swimProp)) {
-					await writeRowProperty(this.plugin, file.path, swimProp, laneKey, false, { label: "Set swimlane" });
-				}
-			}
-			new Notice(`Created ${file.basename}`);
-		} catch (error) {
-			new Notice(`Bases Power Pack: could not create note (${String(error)}).`);
-		}
-		this.host.requestRender();
 	}
 
 	/** Toggle a card's membership in the multi-select set (modifier-click). */
@@ -1887,22 +1894,72 @@ export class KanbanBoard implements HoverParent {
 		this.host.requestRender();
 	}
 
-	private async quickAddNote(columnName: string, groupBy: string): Promise<void> {
+	/**
+	 * Add-a-card entry point. With card templates configured it opens a picker (Blank +
+	 * one item per template) at the anchor; otherwise it creates a blank card directly.
+	 * `lane` seeds the swimlane property on a banded board.
+	 */
+	private addCardFlow(
+		columnName: string,
+		groupBy: string,
+		anchor: MouseEvent | HTMLElement | undefined,
+		lane?: { swimProp: string; laneKey: string }
+	): void {
+		const templates = this.plugin.settings.kanbanCardTemplates;
+		if (templates.length === 0 || !anchor) {
+			void this.createCard(columnName, groupBy, undefined, lane);
+			return;
+		}
+		const menu = new Menu();
+		menu.addItem((i) => i.setTitle("Blank card").setIcon("file-plus").onClick(() => void this.createCard(columnName, groupBy, undefined, lane)));
+		menu.addSeparator();
+		for (const t of templates) {
+			menu.addItem((i) => i.setTitle(t.name).setIcon("copy-plus").onClick(() => void this.createCard(columnName, groupBy, t, lane)));
+		}
+		rowActions.showMenuAtAnchor(menu, anchor);
+	}
+
+	/** Create a seeded card in `columnName` (+ optional swimlane), applying a template's
+	 * frontmatter defaults when one is chosen. The column's group value always wins a
+	 * conflict (createSeededNote writes it last). */
+	private async createCard(
+		columnName: string,
+		groupBy: string,
+		template: CardTemplate | undefined,
+		lane: { swimProp: string; laneKey: string } | undefined
+	): Promise<void> {
 		const title = buildQuickAddTitle(columnName);
+		const extra = template ? this.templateFields(template) : undefined;
 		try {
-			// Unified onto the shared createSeededNote (seeds via processFrontMatter).
 			const file = await createSeededNote(
 				this.plugin,
 				this.plugin.settings.kanbanQuickAddFolder,
 				groupBy || "status",
 				columnName,
-				title
+				title,
+				extra
 			);
+			// Seed the lane too, unless the catch-all "(empty)" band or a computed lane prop
+			// (which a literal would shadow).
+			if (lane && lane.laneKey !== SWIMLANE_EMPTY && lane.swimProp && !this.isComputedField(this.input.formulas, lane.swimProp)) {
+				await writeRowProperty(this.plugin, file.path, lane.swimProp, lane.laneKey, false, { label: "Set swimlane" });
+			}
 			new Notice(`Created ${file.basename}`);
 		} catch (error) {
 			new Notice(`Bases Power Pack: could not create note (${String(error)}).`);
 		}
 		this.host.requestRender();
+	}
+
+	/** A template's fields as a frontmatter object, literal-coerced ("true"→bool, "5"→num)
+	 * so a seeded default lands with the right YAML type. Blank keys are skipped. */
+	private templateFields(template: CardTemplate): Record<string, unknown> {
+		const out: Record<string, unknown> = {};
+		for (const field of template.fields) {
+			const key = field.key.trim();
+			if (key) out[key] = coerceLiteral(field.value);
+		}
+		return out;
 	}
 
 	/** Tear down interaction machinery (auto-scroll rAF, touch ghost, hover popover) — the
