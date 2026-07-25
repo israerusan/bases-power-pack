@@ -1,7 +1,12 @@
+import { Notice } from "obsidian";
 import type BasesPowerPackPlugin from "../main";
 import type { Row } from "../model/row";
+import { reorderColumns } from "../query/kanban";
+import { sanitizeWipLimit } from "../query/wip";
 import type { PropertyWrite } from "./viewData";
 import type { RowActionEnv } from "./rowActions";
+import { PromptModal } from "./modals";
+import type { ColumnSet } from "../settings";
 
 /**
  * The seam between the shared board renderer ({@link KanbanBoard}) and its two hosts:
@@ -98,6 +103,120 @@ export class KanbanBoard {
 		const board = el.createDiv({ cls: "bpp-kanban-board" });
 		if (this.plugin.settings.kanbanColorColumns) board.addClass("is-colored");
 		if (input.swimlaneProp) board.addClass("is-swimlaned");
+	}
+
+	// ---- column chrome (settings mutations) ----------------------------------
+	// These change only presentation maps (order/color/collapse/WIP/extra columns),
+	// never a note, so they save with `invalidateResolved:false` and re-render via the
+	// host. Moved from KanbanView (P1C); the standalone delegates here.
+
+	async addExtraColumn(groupBy: string, name: string): Promise<void> {
+		const map = this.plugin.settings.kanbanExtraColumns;
+		const existing = map[groupBy] ?? [];
+		if (!existing.some((n) => n.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+			map[groupBy] = [...existing, name];
+			// Presentational: an empty column changes no note, so keep the resolve cache
+			// (matches setSortBy / setHideDone) instead of re-resolving the whole vault.
+			await this.plugin.saveSettings({ invalidateResolved: false });
+		}
+		this.host.requestRender();
+	}
+
+	async removeExtraColumn(groupBy: string, name: string): Promise<void> {
+		const map = this.plugin.settings.kanbanExtraColumns;
+		const next = (map[groupBy] ?? []).filter((n) => n !== name);
+		if (next.length > 0) map[groupBy] = next;
+		else delete map[groupBy];
+		await this.plugin.saveSettings({ invalidateResolved: false });
+		this.host.requestRender();
+	}
+
+	/**
+	 * Apply a predefined column set: set the group-by, the column order, per-column
+	 * colors, the visible (droppable) columns, and the done value — all in one write.
+	 * Only settings maps change (no note is touched), so it's presentational.
+	 */
+	async applyColumnSet(set: ColumnSet): Promise<void> {
+		const s = this.plugin.settings;
+		const group = set.groupBy.trim() || "status";
+		const names = set.columns.map((c) => c.name.trim()).filter(Boolean);
+		s.kanbanGroupBy = group;
+		s.kanbanColumnOrder[group] = names;
+		s.kanbanExtraColumns[group] = names; // every column shows even when empty
+		for (const col of set.columns) {
+			const name = col.name.trim();
+			if (!name) continue;
+			// A set column with a hue writes an override; "Auto color" (blank) CLEARS any
+			// stale manual override so the column returns to its declared auto appearance.
+			if (col.hue.trim()) s.kanbanColorOverrides[name] = col.hue.trim();
+			else delete s.kanbanColorOverrides[name];
+		}
+		const done = set.columns.find((c) => c.done && c.name.trim());
+		if (done) s.kanbanDoneValue = done.name.trim();
+		await this.plugin.saveSettings({ invalidateResolved: false });
+		this.host.requestRender();
+		new Notice(`Applied column set "${set.name}".`);
+	}
+
+	/** Collapse or expand a column (persisted per column value, like WIP limits). */
+	async toggleColumnCollapse(columnName: string): Promise<void> {
+		const map = this.plugin.settings.kanbanCollapsedColumns;
+		if (map[columnName]) delete map[columnName];
+		else map[columnName] = true;
+		// Presentational — the resolved rows don't change, so keep the cache.
+		await this.plugin.saveSettings({ invalidateResolved: false });
+		this.host.requestRender();
+	}
+
+	async moveColumnBy(groupBy: string, orderedNames: string[], columnName: string, delta: number): Promise<void> {
+		const idx = orderedNames.indexOf(columnName);
+		const to = idx + delta;
+		if (idx === -1 || to < 0 || to >= orderedNames.length) return;
+		const next = [...orderedNames];
+		[next[idx], next[to]] = [next[to], next[idx]];
+		this.plugin.settings.kanbanColumnOrder[groupBy] = next;
+		await this.plugin.saveSettings({ invalidateResolved: false });
+		this.host.requestRender();
+	}
+
+	/** Prompt for a column's WIP limit; a blank or non-positive entry clears it. */
+	setWipLimit(columnName: string): void {
+		const current = this.plugin.settings.kanbanWipLimits[columnName];
+		new PromptModal(this.plugin.app, {
+			title: `WIP limit for "${columnName}"`,
+			value: current ? String(current) : "",
+			placeholder: "e.g. 5 (blank = no limit)",
+			cta: "Save",
+			onSubmit: (v) => void this.applyWipLimit(columnName, sanitizeWipLimit(v)),
+		}).open();
+	}
+
+	async applyWipLimit(columnName: string, limit: number | null): Promise<void> {
+		const map = this.plugin.settings.kanbanWipLimits;
+		if (limit === null) delete map[columnName];
+		else map[columnName] = limit;
+		await this.plugin.saveSettings({ invalidateResolved: false });
+		this.host.requestRender();
+	}
+
+	async setColumnColor(columnName: string, hue: number | null): Promise<void> {
+		const map = this.plugin.settings.kanbanColorOverrides;
+		if (hue === null) delete map[columnName];
+		else map[columnName] = String(hue);
+		await this.plugin.saveSettings({ invalidateResolved: false });
+		this.host.requestRender();
+	}
+
+	async reorderColumn(
+		groupBy: string,
+		orderedNames: string[],
+		moved: string,
+		target: string
+	): Promise<void> {
+		const next = reorderColumns(orderedNames, moved, target);
+		this.plugin.settings.kanbanColumnOrder[groupBy] = next;
+		await this.plugin.saveSettings({ invalidateResolved: false });
+		this.host.requestRender();
 	}
 
 	/** Tear down interaction machinery (auto-scroll rAF, touch ghost, listeners) — the

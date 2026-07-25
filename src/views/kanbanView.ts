@@ -8,7 +8,6 @@ import {
 	formatCardField,
 	isRowDone,
 	priorityClass,
-	reorderColumns,
 	type KanbanColumn,
 	type KanbanSort,
 } from "../query/kanban";
@@ -19,7 +18,7 @@ import {
 } from "../query/kanbanActions";
 import { coerceFieldInput, formatFieldForEdit } from "../query/inlineEdit";
 import { coerceLiteral, computeRuleWrites, rulesForTransition } from "../query/automation";
-import { dropWouldExceed, formatWipCount, isOverWip, limitFor, sanitizeWipLimit } from "../query/wip";
+import { dropWouldExceed, formatWipCount, isOverWip, limitFor } from "../query/wip";
 import { parseRank, planReorder, type RankItem } from "../query/ranking";
 import { buildCsv, buildMarkdownBoard, buildMarkdownTable } from "../query/export";
 import { evaluateSafe, toBool, toStr } from "../engine/expression";
@@ -27,10 +26,10 @@ import { createSeededNote, writeRowProperties, writeRowProperty, type PropertyWr
 import { renderContextControls, renderRollupBar } from "./viewChrome";
 import { BulkEditModal, ConfirmModal, FloatingEditModal, PromptModal, type BulkOp } from "./modals";
 import { DND_COLUMN, DND_ROW } from "./dnd";
-import { type ColumnSet } from "../settings";
 import { buildSwimlanes, SWIMLANE_EMPTY } from "../query/swimlane";
 import { TouchDragController, type TouchDropTarget } from "./touchDrag";
 import { DragScroller } from "./autoscroll";
+import { KanbanBoard, type BoardHost, type BoardInput } from "./kanbanBoard";
 
 export const VIEW_TYPE_KANBAN = "bpp-kanban-view";
 
@@ -105,6 +104,49 @@ export class KanbanView extends PowerPackView {
 	/** Edge auto-scroll driver for mouse (HTML5) drags over the board. */
 	private boardScroller: DragScroller | null = null;
 
+	/** The shared board renderer. P1C moves the board render + interaction here cluster
+	 * by cluster; for now it owns the column-chrome settings mutations, which the menus
+	 * delegate to. Lazily built so the host closes over a fully-constructed view. */
+	private _board: KanbanBoard | null = null;
+	private get board(): KanbanBoard {
+		if (!this._board) this._board = new KanbanBoard(this.plugin, this.makeBoardHost());
+		return this._board;
+	}
+
+	/** The last snapshot the board rendered/planned against. Populated by the render path
+	 * as clusters move over; until then it's an inert default the chrome methods never read
+	 * (they mutate settings + re-render via the host). */
+	private lastBoardInput: BoardInput = {
+		revision: 0,
+		rows: [],
+		formulas: {},
+		searchQuery: "",
+		showControls: true,
+		groupBy: "status",
+		swimlaneProp: "",
+	};
+
+	/** Build the host seam the shared board calls back through (re-render, interaction
+	 * suppression, row-action env, capabilities). The standalone can write the group-by,
+	 * multi-select, swimlane, and drive the full column chrome. */
+	private makeBoardHost(): BoardHost {
+		return {
+			containerEl: this.contentEl,
+			rowEnv: this.rowEnv,
+			captureInput: () => this.lastBoardInput,
+			requestRender: () => void this.render(),
+			beginInteraction: () => this.beginInteraction(),
+			endInteraction: () => this.endInteraction(),
+			registerRefresh: () => () => {},
+			capabilities: {
+				canWriteGroupBy: true,
+				canMultiSelect: true,
+				canSwimlanes: true,
+				canColumnChrome: true,
+			},
+		};
+	}
+
 	/** The swimlane (second group-by) property, or "" when off. Free — horizontal
 	 * bands split the board by a second property (the flat board is "None"). */
 	private get swimlaneProp(): string {
@@ -173,6 +215,8 @@ export class KanbanView extends PowerPackView {
 		this.boardScroller = null;
 		this.touch?.destroy();
 		this.touch = null;
+		this._board?.dispose();
+		this._board = null;
 		await super.onClose();
 	}
 
@@ -353,7 +397,7 @@ export class KanbanView extends PowerPackView {
 			collapseBtn.createSpan({ text: collapsed ? "▸" : "▾", attr: { "aria-hidden": "true" } });
 			collapseBtn.addEventListener("click", (evt) => {
 				evt.stopPropagation();
-				void this.toggleColumnCollapse(column.name);
+				void this.board.toggleColumnCollapse(column.name);
 			});
 
 			const colLabel = colHead.createDiv({ cls: "bpp-kanban-column-label" });
@@ -398,7 +442,7 @@ export class KanbanView extends PowerPackView {
 					text: "×",
 					attr: { "aria-label": `Remove column ${column.name}` },
 				});
-				removeButton.addEventListener("click", () => void this.removeExtraColumn(groupBy, column.name));
+				removeButton.addEventListener("click", () => void this.board.removeExtraColumn(groupBy, column.name));
 			}
 
 			// A collapsed column hides its body (roll-ups + cards); the header strip and
@@ -615,7 +659,7 @@ export class KanbanView extends PowerPackView {
 		const commit = (): void => {
 			const name = input.value.trim();
 			if (!name) return;
-			void this.addExtraColumn(groupBy, name);
+			void this.board.addExtraColumn(groupBy, name);
 		};
 		button.addEventListener("click", commit);
 		input.addEventListener("keydown", (event) => {
@@ -624,64 +668,6 @@ export class KanbanView extends PowerPackView {
 				commit();
 			}
 		});
-	}
-
-	private async addExtraColumn(groupBy: string, name: string): Promise<void> {
-		const map = this.plugin.settings.kanbanExtraColumns;
-		const existing = map[groupBy] ?? [];
-		if (!existing.some((n) => n.toLocaleLowerCase() === name.toLocaleLowerCase())) {
-			map[groupBy] = [...existing, name];
-			// Presentational: an empty column changes no note, so keep the resolve cache
-			// (matches setSortBy / setHideDone) instead of re-resolving the whole vault.
-			await this.plugin.saveSettings({ invalidateResolved: false });
-		}
-		await this.render();
-	}
-
-	private async removeExtraColumn(groupBy: string, name: string): Promise<void> {
-		const map = this.plugin.settings.kanbanExtraColumns;
-		const next = (map[groupBy] ?? []).filter((n) => n !== name);
-		if (next.length > 0) map[groupBy] = next;
-		else delete map[groupBy];
-		await this.plugin.saveSettings({ invalidateResolved: false });
-		await this.render();
-	}
-
-	/**
-	 * Apply a predefined column set: set the group-by, the column order, per-column
-	 * colors, the visible (droppable) columns, and the done value — all in one write.
-	 * Only settings maps change (no note is touched), so it's presentational.
-	 */
-	private async applyColumnSet(set: ColumnSet): Promise<void> {
-		const s = this.plugin.settings;
-		const group = set.groupBy.trim() || "status";
-		const names = set.columns.map((c) => c.name.trim()).filter(Boolean);
-		s.kanbanGroupBy = group;
-		s.kanbanColumnOrder[group] = names;
-		s.kanbanExtraColumns[group] = names; // every column shows even when empty
-		for (const col of set.columns) {
-			const name = col.name.trim();
-			if (!name) continue;
-			// A set column with a hue writes an override; "Auto color" (blank) CLEARS any
-			// stale manual override so the column returns to its declared auto appearance.
-			if (col.hue.trim()) s.kanbanColorOverrides[name] = col.hue.trim();
-			else delete s.kanbanColorOverrides[name];
-		}
-		const done = set.columns.find((c) => c.done && c.name.trim());
-		if (done) s.kanbanDoneValue = done.name.trim();
-		await this.plugin.saveSettings({ invalidateResolved: false });
-		await this.render();
-		new Notice(`Applied column set "${set.name}".`);
-	}
-
-	/** Collapse or expand a column (persisted per column value, like WIP limits). */
-	private async toggleColumnCollapse(columnName: string): Promise<void> {
-		const map = this.plugin.settings.kanbanCollapsedColumns;
-		if (map[columnName]) delete map[columnName];
-		else map[columnName] = true;
-		// Presentational — the resolved rows don't change, so keep the cache.
-		await this.plugin.saveSettings({ invalidateResolved: false });
-		await this.render();
 	}
 
 	/**
@@ -1019,7 +1005,7 @@ export class KanbanView extends PowerPackView {
 		menu.addItem((i) => i.setTitle("Add note").setIcon("plus").onClick(() => void this.quickAddNote(columnName, groupBy)));
 		menu.addItem((i) => i.setTitle("Rename column…").setIcon("pencil").onClick(() => this.renameColumnValue(groupBy, columnName)));
 		menu.addItem((i) =>
-			i.setTitle("Set WIP limit…").setIcon("gauge").onClick(() => this.setWipLimit(columnName))
+			i.setTitle("Set WIP limit…").setIcon("gauge").onClick(() => this.board.setWipLimit(columnName))
 		);
 		// Collapse is flat-board only (swimlane share a header); offer it there.
 		if (!this.swimlaneProp) {
@@ -1028,7 +1014,7 @@ export class KanbanView extends PowerPackView {
 				i
 					.setTitle(isCollapsed ? "Expand column" : "Collapse column")
 					.setIcon(isCollapsed ? "chevrons-up-down" : "chevrons-down-up")
-					.onClick(() => void this.toggleColumnCollapse(columnName))
+					.onClick(() => void this.board.toggleColumnCollapse(columnName))
 			);
 		}
 
@@ -1036,12 +1022,12 @@ export class KanbanView extends PowerPackView {
 		const idx = orderedNames.indexOf(columnName);
 		if (idx > 0) {
 			menu.addItem((i) =>
-				i.setTitle("Move column left").setIcon("arrow-left").onClick(() => void this.moveColumnBy(groupBy, orderedNames, columnName, -1))
+				i.setTitle("Move column left").setIcon("arrow-left").onClick(() => void this.board.moveColumnBy(groupBy, orderedNames, columnName, -1))
 			);
 		}
 		if (idx !== -1 && idx < orderedNames.length - 1) {
 			menu.addItem((i) =>
-				i.setTitle("Move column right").setIcon("arrow-right").onClick(() => void this.moveColumnBy(groupBy, orderedNames, columnName, 1))
+				i.setTitle("Move column right").setIcon("arrow-right").onClick(() => void this.board.moveColumnBy(groupBy, orderedNames, columnName, 1))
 			);
 		}
 
@@ -1057,60 +1043,21 @@ export class KanbanView extends PowerPackView {
 			["Pink", 320],
 		];
 		for (const [label, hue] of swatches) {
-			menu.addItem((i) => i.setTitle(label).setIcon("circle").onClick(() => void this.setColumnColor(columnName, hue)));
+			menu.addItem((i) => i.setTitle(label).setIcon("circle").onClick(() => void this.board.setColumnColor(columnName, hue)));
 		}
-		menu.addItem((i) => i.setTitle("Reset color").onClick(() => void this.setColumnColor(columnName, null)));
+		menu.addItem((i) => i.setTitle("Reset color").onClick(() => void this.board.setColumnColor(columnName, null)));
 
 		if (removable) {
 			menu.addSeparator();
 			menu.addItem((i) =>
-				i.setTitle("Remove empty column").setIcon("trash").onClick(() => void this.removeExtraColumn(groupBy, columnName))
+				i.setTitle("Remove empty column").setIcon("trash").onClick(() => void this.board.removeExtraColumn(groupBy, columnName))
 			);
 		}
 		this.showMenuAtAnchor(menu, anchor);
 	}
 
 	/** Swap a column with its neighbor `delta` slots away and persist the full order. */
-	private async moveColumnBy(groupBy: string, orderedNames: string[], columnName: string, delta: number): Promise<void> {
-		const idx = orderedNames.indexOf(columnName);
-		const to = idx + delta;
-		if (idx === -1 || to < 0 || to >= orderedNames.length) return;
-		const next = [...orderedNames];
-		[next[idx], next[to]] = [next[to], next[idx]];
-		this.plugin.settings.kanbanColumnOrder[groupBy] = next;
-		await this.plugin.saveSettings({ invalidateResolved: false });
-		await this.render();
-	}
-
 	// ---- menu actions ---------------------------------------------------------
-
-	/** Prompt for a column's WIP limit; a blank or non-positive entry clears it. */
-	private setWipLimit(columnName: string): void {
-		const current = this.plugin.settings.kanbanWipLimits[columnName];
-		new PromptModal(this.app, {
-			title: `WIP limit for "${columnName}"`,
-			value: current ? String(current) : "",
-			placeholder: "e.g. 5 (blank = no limit)",
-			cta: "Save",
-			onSubmit: (v) => void this.applyWipLimit(columnName, sanitizeWipLimit(v)),
-		}).open();
-	}
-
-	private async applyWipLimit(columnName: string, limit: number | null): Promise<void> {
-		const map = this.plugin.settings.kanbanWipLimits;
-		if (limit === null) delete map[columnName];
-		else map[columnName] = limit;
-		await this.plugin.saveSettings({ invalidateResolved: false });
-		await this.render();
-	}
-
-	private async setColumnColor(columnName: string, hue: number | null): Promise<void> {
-		const map = this.plugin.settings.kanbanColorOverrides;
-		if (hue === null) delete map[columnName];
-		else map[columnName] = String(hue);
-		await this.plugin.saveSettings({ invalidateResolved: false });
-		await this.render();
-	}
 
 	private renameColumnValue(groupBy: string, columnName: string): void {
 		new PromptModal(this.app, {
@@ -1313,7 +1260,7 @@ export class KanbanView extends PowerPackView {
 			setSelect.addEventListener("change", () => {
 				const chosen = columnSets.find((c) => c.id === setSelect.value);
 				setSelect.value = ""; // reset to the "Apply…" prompt
-				if (chosen) void this.applyColumnSet(chosen);
+				if (chosen) void this.board.applyColumnSet(chosen);
 			});
 		}
 
@@ -1363,7 +1310,7 @@ export class KanbanView extends PowerPackView {
 
 			const draggedColumn = event.dataTransfer?.getData(DND_COLUMN);
 			if (draggedColumn) {
-				void this.reorderColumn(groupBy, orderedNames, draggedColumn, columnName);
+				void this.board.reorderColumn(groupBy, orderedNames, draggedColumn, columnName);
 				return;
 			}
 
@@ -1392,18 +1339,6 @@ export class KanbanView extends PowerPackView {
 			// drop (released in a hot zone), else the rAF loop keeps scrolling.
 			this.boardScroller?.stop();
 		});
-	}
-
-	private async reorderColumn(
-		groupBy: string,
-		orderedNames: string[],
-		moved: string,
-		target: string
-	): Promise<void> {
-		const next = reorderColumns(orderedNames, moved, target);
-		this.plugin.settings.kanbanColumnOrder[groupBy] = next;
-		await this.plugin.saveSettings({ invalidateResolved: false });
-		await this.render();
 	}
 
 	/**
