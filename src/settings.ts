@@ -96,9 +96,13 @@ export interface BasesPowerPackSettings {
 	/** Frontmatter property holding a card's manual rank, written by drag-to-reorder
 	 * in the default "Manual" sort. */
 	kanbanRankProp: string;
-	/** A second group-by property that splits the board into horizontal swimlanes
-	 * (bands). "" = flat board. Picked from the board's Swimlanes control. */
+	/** A second group-by property that splits the board by a second dimension. "" = flat
+	 * board. Picked from the board's Swimlanes control. */
 	kanbanSwimlaneBy: string;
+	/** How that second property is laid out: horizontal "lanes" (bands spanning the
+	 * columns) or nested "columns" (sub-columns within each column — multi-level
+	 * grouping, e.g. Status columns each split by Priority). */
+	kanbanSwimlaneLayout: "lanes" | "columns";
 	/** Frontmatter property holding a card's cover image (path / wikilink / markdown
 	 * image / URL). "" = no covers. Shares the Gallery's image-ref parsing. */
 	kanbanCardImageProp: string;
@@ -210,6 +214,7 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	kanbanBlockOverWip: false,
 	kanbanRankProp: "rank",
 	kanbanSwimlaneBy: "",
+	kanbanSwimlaneLayout: "lanes",
 	kanbanCardImageProp: "",
 	kanbanCollapsedColumns: {},
 	kanbanCardClickAction: "tab",
@@ -507,7 +512,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Swimlane property")
 			.setDesc(
-				"A second property that splits the board into horizontal bands (swimlanes) — e.g. owner or project — with columns still grouped by the group-by property. Leave blank for a flat board; also switchable from the board's Swimlanes control."
+				"A second property that splits the board by a second dimension — e.g. owner or project — with columns still grouped by the group-by property. Leave blank for a flat board; also switchable from the board's Swimlanes control."
 			)
 			.addText((text) =>
 				this.keySuggest(text)
@@ -515,6 +520,22 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.kanbanSwimlaneBy)
 					.onChange((value) => {
 						this.plugin.settings.kanbanSwimlaneBy = value.trim();
+						void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Second-group layout")
+			.setDesc(
+				"How the swimlane property is laid out: horizontal Lanes (bands across the columns), or Nested columns — sub-columns within each column, for multi-level grouping (e.g. Status columns each split by Priority). Also switchable from the board's Layout control."
+			)
+			.addDropdown((dd) =>
+				dd
+					.addOption("lanes", "Lanes (horizontal bands)")
+					.addOption("columns", "Nested columns (sub-columns)")
+					.setValue(this.plugin.settings.kanbanSwimlaneLayout)
+					.onChange((v) => {
+						this.plugin.settings.kanbanSwimlaneLayout = v === "columns" ? "columns" : "lanes";
 						void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
 					})
 			);

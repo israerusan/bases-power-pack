@@ -356,16 +356,17 @@ export class KanbanBoard implements HoverParent {
 			laneKey: null,
 		};
 
-		// Swimlanes: a second group-by splits the board into horizontal bands. Delegated
-		// to a dedicated builder so the flat board below is untouched.
+		// A second group-by splits the board by a second dimension — laid out either as
+		// horizontal bands (swimlanes) or nested sub-columns within each column (multi-level
+		// grouping). Both delegate to a dedicated builder so the flat board below is untouched.
 		if (swimProp) {
-			this.renderSwimlaneBoard(board, input.rows as Row[], columns, columnRows, {
-				groupBy,
-				swimProp,
-				extraColumns,
-				colored,
-				cardCtx,
-			});
+			const bandOpts = { groupBy, swimProp, extraColumns, colored, cardCtx };
+			if (this.plugin.settings.kanbanSwimlaneLayout === "columns") {
+				board.addClass("is-nested");
+				this.renderNestedBoard(board, input.rows as Row[], columns, columnRows, bandOpts);
+			} else {
+				this.renderSwimlaneBoard(board, input.rows as Row[], columns, columnRows, bandOpts);
+			}
 			this.renderSelectionBar(container, groupBy, orderedNames);
 			return;
 		}
@@ -1763,6 +1764,108 @@ export class KanbanBoard implements HoverParent {
 				for (const row of column.rows) this.renderCard(cell, row, column.name, cellCtx);
 			}
 		}
+	}
+
+	/**
+	 * Multi-level grouping: the SAME two-property model as the swimlane board, laid out
+	 * transposed — top-level columns (the group-by), each split into nested sub-columns by
+	 * the second property. Cards render + drag through the exact same path as the flat and
+	 * swimlane boards (the second property is the lane dimension), so a drop writes both
+	 * values and a reorder stays local to a (column ∩ sub-group) cell.
+	 */
+	private renderNestedBoard(
+		board: HTMLElement,
+		rows: Row[],
+		columns: KanbanColumn[],
+		columnRows: Map<string, Row[]>,
+		opts: { groupBy: string; swimProp: string; extraColumns: string[]; colored: boolean; cardCtx: CardRenderCtx }
+	): void {
+		void columns; // the aligned column set comes from the swimlane model below
+		const { groupBy, swimProp, colored, cardCtx } = opts;
+		const model = buildSwimlanes(rows, {
+			groupBy,
+			laneProp: swimProp,
+			search: this.input.searchQuery,
+			hideColumn: this.hideDoneColumn ? this.plugin.settings.kanbanDoneValue : "",
+			sortBy: this.sortBy,
+			rankProp: this.rankProp,
+			extraColumns: opts.extraColumns,
+			columnOrder: this.plugin.settings.kanbanColumnOrder[groupBy] ?? [],
+		});
+		this.lastLaneKeys = model.lanes.map((l) => l.key);
+		const columnNames = model.columnNames;
+		const rowById = new Map(rows.map((r) => [r.id, r]));
+
+		if (model.truncatedLanes) {
+			board.createDiv({
+				cls: "bpp-muted bpp-swimlane-truncation",
+				text: `Showing the first ${model.lanes.length} sub-groups. Search or filter the board to reach the rest.`,
+			});
+		}
+		if (columnNames.length === 0 || model.lanes.length === 0) {
+			rowActions.renderEmptyState(board, { title: "No cards match", body: "No cards match the current filters." });
+			return;
+		}
+
+		columnNames.forEach((name, colIdx) => {
+			const trueCount = (columnRows.get(name) ?? []).length;
+			const wipLimit = limitFor(this.plugin.settings.kanbanWipLimits, name);
+			const overWip = isOverWip(trueCount, wipLimit);
+			const colEl = board.createDiv({ cls: "bpp-kanban-column bpp-nested-column" });
+			// Deliberately NO data-bpp-col here: only the sub-cells are drop targets. A
+			// data-bpp-col on the wrapper (which carries no data-bpp-lane) would let a TOUCH
+			// drop on the column header resolve to a lane-null move that silently drops the
+			// card's sub-group. The desktop path has no drop handler here, so this matches it.
+			colEl.setAttr("role", "group");
+			colEl.setAttr("aria-label", `Column ${name}, ${trueCount} card${trueCount === 1 ? "" : "s"}`);
+			if (colored) colEl.setCssProps({ "--bpp-col-hue": this.columnHueFor(name) });
+			if (overWip) colEl.addClass("is-over-wip");
+
+			const head = colEl.createDiv({ cls: "bpp-kanban-column-head" });
+			// No header drag-reorder in nested mode: sub-cells nest inside the column, so a
+			// column-level drop target would swallow card drops. Column reorder is via the
+			// header menu (Move column left/right) instead.
+			head.addEventListener("contextmenu", (evt) => this.openColumnMenu(evt, name, groupBy, false, columnNames));
+			const label = head.createDiv({ cls: "bpp-kanban-column-label" });
+			const nameSpan = label.createSpan({ cls: "bpp-kanban-column-name", text: name });
+			if (this.canColumnChrome) {
+				nameSpan.addEventListener("dblclick", (evt) => {
+					evt.stopPropagation();
+					this.beginColumnRename(nameSpan, name, groupBy);
+				});
+			}
+			const count = label.createSpan({ cls: "bpp-count", text: formatWipCount(trueCount, wipLimit) });
+			if (wipLimit !== null) count.addClass("has-wip");
+			const actions = head.createDiv({ cls: "bpp-column-actions" });
+			rowActions.addOverflowButton(actions, `column ${name}`, (a) => this.openColumnMenu(a, name, groupBy, false, columnNames));
+
+			// The nested sub-columns, one per second-property value (aligned across columns).
+			const strip = colEl.createDiv({ cls: "bpp-nested-subcols" });
+			model.lanes.forEach((lane) => {
+				const cellCol = lane.columns[colIdx];
+				const cellRows = cellCol ? cellCol.rows : [];
+				const laneLabel = lane.key === SWIMLANE_EMPTY ? "(empty)" : lane.key;
+				const sub = strip.createDiv({ cls: "bpp-nested-subcol bpp-kanban-column" });
+				sub.setAttr("data-bpp-col", name);
+				sub.setAttr("data-bpp-lane", lane.key);
+				sub.setAttr("role", "group");
+				sub.setAttr("aria-label", `${name} · ${laneLabel}, ${cellRows.length} card${cellRows.length === 1 ? "" : "s"}`);
+				const subHead = sub.createDiv({ cls: "bpp-nested-subhead" });
+				subHead.createSpan({ cls: "bpp-nested-subname", text: laneLabel });
+				subHead.createSpan({ cls: "bpp-count", text: String(cellRows.length) });
+				this.wireCellDrop(sub, name, lane.key, groupBy, rowById);
+				if (this.canWrite) {
+					const addBtn = subHead.createEl("button", {
+						cls: "bpp-column-add bpp-cell-add",
+						text: "+",
+						attr: { "aria-label": `Add note to ${name}, ${laneLabel}` },
+					});
+					addBtn.addEventListener("click", (e) => this.addCardFlow(name, groupBy, e, { swimProp, laneKey: lane.key }));
+				}
+				const cellCtx: CardRenderCtx = { ...cardCtx, laneKey: lane.key };
+				for (const row of cellRows) this.renderCard(sub, row, name, cellCtx);
+			});
+		});
 	}
 
 	/** A swimlane cell is a drop target: a card dropped on empty cell space moves to this

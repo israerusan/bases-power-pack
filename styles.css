@@ -2321,6 +2321,53 @@ th.bpp-drillable:hover {
   opacity: 1;
 }
 
+/* Multi-level grouping: top-level columns, each split into nested sub-columns */
+.bpp-kanban-board.is-nested {
+  align-items: flex-start;
+}
+
+.bpp-nested-column {
+  flex: 0 0 auto;
+  width: auto;
+  max-width: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.bpp-nested-subcols {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.bpp-nested-subcol {
+  flex: 0 0 auto;
+  width: 184px;
+  min-width: 160px;
+  min-height: 48px;
+  padding: 6px;
+  border-radius: 6px;
+  background: var(--background-secondary-alt);
+}
+
+.bpp-nested-subhead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  font-size: 0.78em;
+  color: var(--text-muted);
+}
+
+.bpp-nested-subname {
+  font-weight: 600;
+}
+
+.bpp-nested-subhead .bpp-cell-add {
+  margin: 0 0 0 auto;
+}
+
 /* Touch drag: a floating clone follows the finger; the source card dims. */
 .bpp-drag-ghost {
   position: fixed;

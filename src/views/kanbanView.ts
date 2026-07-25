@@ -230,6 +230,21 @@ export class KanbanView extends PowerPackView {
 			void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
 		});
 
+		// Layout: only meaningful once a swimlane property is chosen — lay the second group
+		// out as horizontal lanes or nested sub-columns (multi-level grouping).
+		if (currentSwim) {
+			const layoutWrap = controls.createDiv({ cls: "bpp-lite-control" });
+			layoutWrap.createSpan({ cls: "bpp-muted", text: "Layout" });
+			const layoutSelect = layoutWrap.createEl("select", { cls: "bpp-lite-select dropdown" });
+			layoutSelect.createEl("option", { text: "Lanes", value: "lanes" });
+			layoutSelect.createEl("option", { text: "Nested columns", value: "columns" });
+			layoutSelect.value = this.plugin.settings.kanbanSwimlaneLayout === "columns" ? "columns" : "lanes";
+			layoutSelect.addEventListener("change", () => {
+				this.plugin.settings.kanbanSwimlaneLayout = layoutSelect.value === "columns" ? "columns" : "lanes";
+				void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
+			});
+		}
+
 		// Column set: apply a saved layout (group-by + order + colors + done value).
 		const columnSets = this.plugin.settings.kanbanColumnSets;
 		if (columnSets.length > 0) {
