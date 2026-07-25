@@ -4,6 +4,7 @@ import { PowerPackView } from "./abstractView";
 import {
 	buildBoardModel,
 	columnHue,
+	compareRowsByRank,
 	dueStatus,
 	formatCardField,
 	isRowDone,
@@ -26,7 +27,7 @@ import { createSeededNote, writeRowProperties, writeRowProperty, type PropertyWr
 import { renderContextControls, renderRollupBar } from "./viewChrome";
 import { BulkEditModal, ConfirmModal, FloatingEditModal, PromptModal, type BulkOp } from "./modals";
 import { DND_COLUMN, DND_ROW } from "./dnd";
-import { buildSwimlanes, SWIMLANE_EMPTY } from "../query/swimlane";
+import { buildSwimlanes, laneKeyOf, laneWrite, SWIMLANE_EMPTY } from "../query/swimlane";
 import { TouchDragController, type TouchDropTarget } from "./touchDrag";
 import { DragScroller } from "./autoscroll";
 import { KanbanBoard, type BoardHost, type BoardInput } from "./kanbanBoard";
@@ -982,9 +983,9 @@ export class KanbanView extends PowerPackView {
 		const rankProp = this.rankProp;
 		const resolved = await this.plugin.getResolvedView();
 		const cell = resolved.rows.filter(
-			(r) => toStr(r.scope.get(group)) === columnName && (laneProp === null || this.laneKeyOf(r, laneProp) === laneKey)
+			(r) => toStr(r.scope.get(group)) === columnName && (laneProp === null || laneKeyOf(r, laneProp) === laneKey)
 		);
-		const sorted = [...cell].sort((a, b) => this.compareByRank(a, b, rankProp));
+		const sorted = [...cell].sort((a, b) => compareRowsByRank(a, b, rankProp));
 		const idx = sorted.findIndex((r) => r.id === row.id);
 		if (idx === -1) return;
 		const targetIdx = idx + dir;
@@ -1356,7 +1357,7 @@ export class KanbanView extends PowerPackView {
 	): Promise<void> {
 		const key = groupBy || "status";
 		const crossColumn = toStr(row.scope.get(key)) !== columnName;
-		const crossLane = laneProp !== null && this.laneKeyOf(row, laneProp) !== laneKey;
+		const crossLane = laneProp !== null && laneKeyOf(row, laneProp) !== laneKey;
 		// Dropped back onto its own column AND lane: no transition, so no write and —
 		// crucially — no Move Rules fire (else a "set completed = today" rule would
 		// re-stamp on an ordinary in-place drop). Compare the note's actual values.
@@ -1398,7 +1399,7 @@ export class KanbanView extends PowerPackView {
 				writes.push(...computeRuleWrites(matched, row.note.frontmatter, new Date()));
 			}
 		}
-		if (crossLane && laneProp !== null) writes.push(this.laneWrite(laneProp, laneKey));
+		if (crossLane && laneProp !== null) writes.push(laneWrite(laneProp, laneKey));
 		if (writes.length === 0) return;
 		const automationWrites = crossColumn ? writes.length - 1 - (crossLane ? 1 : 0) : 0;
 		const ok = await writeRowProperties(this.plugin, row.id, writes, { label: `Move to "${columnName}"` });
@@ -1474,34 +1475,6 @@ export class KanbanView extends PowerPackView {
 		return event.clientY < rect.top + rect.height / 2;
 	}
 
-	/** Order two rows the way the "rank" sort displays them — by numeric rank
-	 * (unranked last), ties broken by name — so a reorder plans against the same
-	 * order the user sees. Mirrors compareRankValue + compareText in kanban.ts. */
-	private compareByRank(a: Row, b: Row, rankProp: string): number {
-		const ar = parseRank(a.scope.get(rankProp));
-		const br = parseRank(b.scope.get(rankProp));
-		if (ar !== null && br !== null && ar !== br) return ar - br;
-		if (ar === null && br !== null) return 1;
-		if (ar !== null && br === null) return -1;
-		return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
-	}
-
-	/** A row's swimlane key (missing/blank → the "(empty)" band), matching the pure
-	 * swimlane engine so the view and the model agree on lane membership. */
-	private laneKeyOf(row: Row, laneProp: string): string {
-		return toStr(row.scope.get(laneProp)).trim() || SWIMLANE_EMPTY;
-	}
-
-	/** The frontmatter write that moves a card into a swimlane. Dropping into the
-	 * "(empty)" band must CLEAR the lane property, not write the literal sentinel
-	 * "(empty)" — otherwise the note carries a bogus real value that every base
-	 * filter/export sees. (quickAddInCell already skips the write for this case.) */
-	private laneWrite(laneProp: string, laneKey: string | null): PropertyWrite {
-		return laneKey === SWIMLANE_EMPTY || laneKey === null
-			? { key: laneProp, remove: true }
-			: { key: laneProp, value: laneKey };
-	}
-
 	/**
 	 * Apply a manual reorder: write the card's new rank (and, when it moved to a new
 	 * column and/or swimlane, the group/lane values plus any Move Rules), renumbering
@@ -1541,7 +1514,7 @@ export class KanbanView extends PowerPackView {
 		}
 
 		const crossColumn = toStr(movedRow.scope.get(group)) !== columnName;
-		const crossLane = laneProp !== null && this.laneKeyOf(movedRow, laneProp) !== laneKey;
+		const crossLane = laneProp !== null && laneKeyOf(movedRow, laneProp) !== laneKey;
 		// Moving the group or lane onto a computed/formula field would shadow it — the
 		// same corruption guard moveRowToColumn / applyBulk enforce.
 		if (crossColumn && this.isComputedField(resolved.def.formulas ?? {}, group)) {
@@ -1572,10 +1545,10 @@ export class KanbanView extends PowerPackView {
 		const cellRows =
 			laneProp !== null
 				? resolved.rows.filter(
-						(r) => toStr(r.scope.get(group)) === columnName && this.laneKeyOf(r, laneProp) === laneKey
+						(r) => toStr(r.scope.get(group)) === columnName && laneKeyOf(r, laneProp) === laneKey
 					)
 				: (this.lastColumnRows.get(columnName) ?? []);
-		const sorted = [...cellRows].sort((a, b) => this.compareByRank(a, b, rankProp));
+		const sorted = [...cellRows].sort((a, b) => compareRowsByRank(a, b, rankProp));
 		const items: RankItem[] = sorted.map((r) => ({ id: r.id, rank: parseRank(r.scope.get(rankProp)) }));
 		const rest = items.filter((i) => i.id !== rowId);
 		let insertIndex: number;
@@ -1606,7 +1579,7 @@ export class KanbanView extends PowerPackView {
 				movedWrites.push(...computeRuleWrites(matched, movedRow.note.frontmatter, new Date()));
 			}
 		}
-		if (crossLane && laneProp !== null) movedWrites.push(this.laneWrite(laneProp, laneKey));
+		if (crossLane && laneProp !== null) movedWrites.push(laneWrite(laneProp, laneKey));
 		if (rankById.has(rowId)) movedWrites.push({ key: rankProp, value: rankById.get(rowId) });
 		if (movedWrites.length > 0) await writeRowProperties(this.plugin, rowId, movedWrites, { batch });
 
@@ -1933,7 +1906,7 @@ export class KanbanView extends PowerPackView {
 		let moved = 0;
 		for (const r of targetRows) {
 			const crossColumn = toStr(r.scope.get(group)) !== columnName;
-			const crossLane = laneProp !== null && this.laneKeyOf(r, laneProp) !== laneKey;
+			const crossLane = laneProp !== null && laneKeyOf(r, laneProp) !== laneKey;
 			if (!crossColumn && !crossLane) continue;
 			const writes: PropertyWrite[] = [];
 			if (crossColumn) {
@@ -1943,7 +1916,7 @@ export class KanbanView extends PowerPackView {
 					writes.push(...computeRuleWrites(matched, r.note.frontmatter, new Date()));
 				}
 			}
-			if (crossLane && laneProp !== null) writes.push(this.laneWrite(laneProp, laneKey));
+			if (crossLane && laneProp !== null) writes.push(laneWrite(laneProp, laneKey));
 			if (writes.length > 0 && (await writeRowProperties(this.plugin, r.id, writes, { batch }))) moved++;
 		}
 		this.plugin.undo.commitBatch(batch);

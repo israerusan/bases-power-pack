@@ -1385,6 +1385,27 @@ assert.deepEqual(bmS.displayColumns.get("Todo").map((r) => r.name), ["A"], "sear
 assert.deepEqual(bmS.trueMembership.get("Todo").map((r) => r.name).sort(), ["A", "C"], "true membership IGNORES search (WIP/reorder count all)");
 assert.equal(bmS.trueMembership.get("Doing").length, 2, "a fully-hidden column is still counted in true membership");
 
+// ---- shared drag helpers: rank compare + lane key/write --------------------
+// compareRowsByRank orders by numeric rank (unranked last), ties broken by name —
+// the standalone board and (later) the Bases host plan reorder against this.
+const rk = (name, rank) => srow(name, rank === undefined ? { status: "Todo" } : { status: "Todo", rank });
+assert.ok(kanban.compareRowsByRank(rk("A", 0), rk("B", 1), "rank") < 0, "lower rank sorts first");
+assert.ok(kanban.compareRowsByRank(rk("A", 2), rk("B", 1), "rank") > 0, "higher rank sorts later");
+assert.ok(kanban.compareRowsByRank(rk("A"), rk("B", 5), "rank") > 0, "unranked sorts after ranked");
+assert.ok(kanban.compareRowsByRank(rk("B"), rk("A"), "rank") > 0, "two unranked fall back to name (B after A)");
+assert.equal(kanban.compareRowsByRank(rk("x", 3), rk("x", 3), "rank"), 0, "equal rank + name → 0");
+
+// laneKeyOf: blank/missing lane value → the "(empty)" sentinel band.
+assert.equal(swimlane.laneKeyOf(srow("n", { owner: "Sam" }), "owner"), "Sam", "present lane value is the key");
+assert.equal(swimlane.laneKeyOf(srow("n", { owner: "  " }), "owner"), swimlane.SWIMLANE_EMPTY, "blank lane value → (empty)");
+assert.equal(swimlane.laneKeyOf(srow("n", {}), "owner"), swimlane.SWIMLANE_EMPTY, "missing lane value → (empty)");
+
+// laneWrite: a real lane writes the value; the "(empty)" band (or null) CLEARS the
+// prop, so a note never carries the literal "(empty)" that base filters would see.
+assert.deepEqual(swimlane.laneWrite("owner", "Sam"), { key: "owner", value: "Sam" }, "real lane writes the value");
+assert.deepEqual(swimlane.laneWrite("owner", swimlane.SWIMLANE_EMPTY), { key: "owner", remove: true }, "(empty) band clears the prop");
+assert.deepEqual(swimlane.laneWrite("owner", null), { key: "owner", remove: true }, "null lane clears the prop");
+
 // ---- auto-scroll velocity --------------------------------------------------
 // Calm middle → no scroll.
 assert.equal(autoscroll.edgeVelocity(500, 0, 1000, 56, 18), 0, "middle of the container does not scroll");

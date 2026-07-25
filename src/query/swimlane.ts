@@ -1,5 +1,6 @@
 import { toStr } from "../engine/expression";
 import type { Row } from "../model/row";
+import type { PropertyWrite } from "../views/viewData";
 import {
 	buildKanbanColumns,
 	rowMatchesKanbanSearch,
@@ -24,6 +25,16 @@ import {
 
 /** The lane shown for a row whose lane value is missing or empty. */
 export const SWIMLANE_EMPTY = "(empty)";
+
+/** The frontmatter write that moves a card into a swimlane. Dropping into the
+ * "(empty)" band CLEARS the lane property rather than writing the literal sentinel
+ * "(empty)", so the note never carries a bogus real value that base filters/exports
+ * would see. (quickAddInCell skips the write entirely for that case.) */
+export function laneWrite(laneProp: string, laneKey: string | null): PropertyWrite {
+	return laneKey === SWIMLANE_EMPTY || laneKey === null
+		? { key: laneProp, remove: true }
+		: { key: laneProp, value: laneKey };
+}
 
 /** Guardrail so a swimlane on a high-cardinality property can't build a runaway
  * number of bands. Distinct lanes past this are dropped and flagged. */
@@ -56,7 +67,9 @@ export interface SwimlaneModel {
 	truncatedLanes: boolean;
 }
 
-function laneKeyOf(row: Row, laneProp: string): string {
+/** A row's swimlane key (missing/blank → the "(empty)" band). Shared by the view's
+ * drag/quick-add so the rendered lane and the model's lane membership always agree. */
+export function laneKeyOf(row: Row, laneProp: string): string {
 	return toStr(row.scope.get(laneProp)).trim() || SWIMLANE_EMPTY;
 }
 

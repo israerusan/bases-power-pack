@@ -228,6 +228,16 @@ function compareRankValue(a: unknown, b: unknown): number {
 	return av - bv;
 }
 
+/**
+ * Order two rows the way the manual "rank" sort displays them — by numeric rank
+ * (unranked last), ties broken by name. Shared by the board's drag-to-reorder planning
+ * so the rendered order and the reorder plan agree. Composes the same
+ * {@link compareRankValue}/{@link compareText} the column sort uses.
+ */
+export function compareRowsByRank(a: Row, b: Row, rankProp: string): number {
+	return compareRankValue(a.scope.get(rankProp), b.scope.get(rankProp)) || compareText(a.name, b.name);
+}
+
 function compareNumberValue(a: unknown, b: unknown): number {
 	const av = numberOrNull(a);
 	const bv = numberOrNull(b);
