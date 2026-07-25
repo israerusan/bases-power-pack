@@ -5475,12 +5475,17 @@ var KanbanBoard = class {
     return this.lastDisplayColumns;
   }
   // ---- settings-derived getters (board reads settings directly) --------------
+  /** The active swimlane property (or ""), sourced from the rendered snapshot so an
+   * interaction handler agrees with what was painted — the host's input, not a live
+   * settings read (the standalone's input already carries the degenerate-lane guard; the
+   * Bases host sends ""). */
   get swimlaneProp() {
-    const p = (this.plugin.settings.kanbanSwimlaneBy || "").trim();
-    return p && p !== (this.plugin.settings.kanbanGroupBy || "status") ? p : "";
+    return this.input.swimlaneProp;
   }
+  /** The active group-by, from the rendered snapshot (standalone: settings.kanbanGroupBy;
+   * Bases: the base's resolved key). Keys the per-group sort / hide-done settings. */
   get groupByProp() {
-    return this.plugin.settings.kanbanGroupBy || "status";
+    return this.input.groupBy || "status";
   }
   get rankProp() {
     return this.plugin.settings.kanbanRankProp || "rank";
@@ -5496,6 +5501,20 @@ var KanbanBoard = class {
   }
   get hideDoneColumn() {
     return this.plugin.settings.kanbanHideDone[this.groupByProp] === true;
+  }
+  // ---- host capabilities (all true for the standalone; a Bases host may restrict) ----
+  /** The group-by is a writable `note.*` property. False → read-only board: no card drag,
+   * no cross-column move, no column add/remove/rename (a `file.*`/`formula.*` group-by). */
+  get canWrite() {
+    return this.host.capabilities.canWriteGroupBy;
+  }
+  /** Modifier-click multi-select + the bulk selection bar are available. */
+  get canMultiSelect() {
+    return this.host.capabilities.canMultiSelect;
+  }
+  /** The column-chrome surface (add/remove/rename/WIP/collapse/column-sets) is offered. */
+  get canColumnChrome() {
+    return this.host.capabilities.canColumnChrome;
   }
   /** Open the plugin's settings tab — the empty-state "Choose another property" CTA. */
   openSettings() {
@@ -5661,18 +5680,20 @@ var KanbanBoard = class {
         count.setAttr("title", `${column.rows.length} shown \xB7 ${trueCount} total`);
       }
       const actions = colHead.createDiv({ cls: "bpp-column-actions" });
-      const addButton = actions.createEl("button", {
-        cls: "bpp-column-add",
-        text: "+",
-        attr: { "aria-label": `Add note to ${column.name}` }
-      });
-      addButton.addEventListener("click", () => void this.quickAddNote(column.name, groupBy));
+      if (this.canWrite) {
+        const addButton = actions.createEl("button", {
+          cls: "bpp-column-add",
+          text: "+",
+          attr: { "aria-label": `Add note to ${column.name}` }
+        });
+        addButton.addEventListener("click", () => void this.quickAddNote(column.name, groupBy));
+      }
       addOverflowButton(
         actions,
         `column ${column.name}`,
         (a) => this.openColumnMenu(a, column.name, groupBy, removable, orderedNames)
       );
-      if (column.rows.length === 0 && extraColumns.includes(column.name)) {
+      if (this.canColumnChrome && column.rows.length === 0 && extraColumns.includes(column.name)) {
         const removeButton = actions.createEl("button", {
           cls: "bpp-column-remove clickable-icon",
           text: "\xD7",
@@ -5707,7 +5728,7 @@ var KanbanBoard = class {
     card.setAttr("data-bpp-row", row.id);
     if (this.selected.has(row.id)) card.addClass("is-selected");
     applyColorRule(this.plugin, card, row);
-    card.draggable = true;
+    if (this.canWrite) card.draggable = true;
     const coverSrc = coverImageSrc(this.host.rowEnv, row, this.plugin.settings.kanbanCardImageProp);
     if (coverSrc) {
       card.addClass("has-cover");
@@ -5759,9 +5780,9 @@ var KanbanBoard = class {
       this.cardDragActive = false;
       (_a2 = this.boardScroller) == null ? void 0 : _a2.stop();
     });
-    if (ctx.reorderEnabled) this.wireCardReorder(card, row, columnName, ctx.groupBy, ctx.laneKey);
+    if (ctx.reorderEnabled && this.canWrite) this.wireCardReorder(card, row, columnName, ctx.groupBy, ctx.laneKey);
     card.addEventListener("click", (evt) => {
-      if (evt.ctrlKey || evt.metaKey || evt.shiftKey) {
+      if (this.canMultiSelect && (evt.ctrlKey || evt.metaKey || evt.shiftKey)) {
         evt.preventDefault();
         this.toggleSelect(row.id);
       } else {
@@ -5788,7 +5809,7 @@ var KanbanBoard = class {
         sourcePath: row.id
       });
     });
-    (_a = this.touch) == null ? void 0 : _a.attach(card, row.id);
+    if (this.canWrite) (_a = this.touch) == null ? void 0 : _a.attach(card, row.id);
   }
   /**
    * Rename a card's note in place: swap the title for an input, commit on Enter/blur via
@@ -5847,6 +5868,7 @@ var KanbanBoard = class {
     input.addEventListener("blur", () => void commit());
   }
   renderAddColumnTile(board, groupBy) {
+    if (!this.canColumnChrome) return;
     const tile = board.createDiv({ cls: "bpp-kanban-column bpp-kanban-add-column" });
     const form = tile.createDiv({ cls: "bpp-add-column-form" });
     const input = form.createEl("input", {
@@ -5875,6 +5897,7 @@ var KanbanBoard = class {
    * double-click and the column menu.
    */
   beginColumnRename(labelSpan, columnName, groupBy) {
+    if (!this.canColumnChrome) return;
     const dragEl = labelSpan.closest('[draggable="true"]');
     if (dragEl) dragEl.draggable = false;
     labelSpan.empty();
@@ -6041,7 +6064,7 @@ var KanbanBoard = class {
       (i) => i.setTitle("Open in floating editor").setIcon("edit").onClick(() => this.openFloating(row))
     );
     menu.addSeparator();
-    if (this.reorderEnabled && columnName) {
+    if (this.reorderEnabled && columnName && this.canWrite) {
       menu.addItem(
         (i) => i.setTitle("Move up in column").setIcon("arrow-up").onClick(() => void this.moveCardWithinColumn(row, groupBy, columnName, laneKey, -1))
       );
@@ -6052,7 +6075,7 @@ var KanbanBoard = class {
     }
     const current = toStr(row.scope.get(groupBy));
     const others = columns.filter((c) => c !== current);
-    if (others.length > 0) {
+    if (others.length > 0 && this.canWrite) {
       for (const col of others) {
         menu.addItem(
           (i) => i.setTitle(`Move to "${col}"`).setIcon("arrow-right").onClick(() => void this.moveRowToColumn(row, groupBy, col))
@@ -6061,7 +6084,7 @@ var KanbanBoard = class {
       menu.addSeparator();
     }
     const swimProp = this.swimlaneProp;
-    if (swimProp && laneKey !== null) {
+    if (swimProp && laneKey !== null && this.canWrite) {
       const otherLanes = this.lastLaneKeys.filter((l) => l !== laneKey);
       if (otherLanes.length > 0) {
         const col = toStr(row.scope.get(groupBy));
@@ -6082,8 +6105,7 @@ var KanbanBoard = class {
     const laneProp = laneKey === null ? null : this.swimlaneProp || null;
     const group = groupBy || "status";
     const rankProp = this.rankProp;
-    const resolved = await this.plugin.getResolvedView();
-    const cell = resolved.rows.filter(
+    const cell = this.input.rows.filter(
       (r) => toStr(r.scope.get(group)) === columnName && (laneProp === null || laneKeyOf(r, laneProp) === laneKey)
     );
     const sorted = [...cell].sort((a, b) => compareRowsByRank(a, b, rankProp));
@@ -6096,29 +6118,31 @@ var KanbanBoard = class {
   openColumnMenu(anchor, columnName, groupBy, removable, orderedNames) {
     if (anchor instanceof MouseEvent) anchor.preventDefault();
     const menu = new import_obsidian6.Menu();
-    menu.addItem((i) => i.setTitle("Add note").setIcon("plus").onClick(() => void this.quickAddNote(columnName, groupBy)));
-    menu.addItem((i) => i.setTitle("Rename column\u2026").setIcon("pencil").onClick(() => this.renameColumnValue(groupBy, columnName)));
-    menu.addItem(
-      (i) => i.setTitle("Set WIP limit\u2026").setIcon("gauge").onClick(() => this.setWipLimit(columnName))
-    );
-    if (!this.swimlaneProp) {
-      const isCollapsed = this.plugin.settings.kanbanCollapsedColumns[columnName] === true;
+    if (this.canColumnChrome) {
+      menu.addItem((i) => i.setTitle("Add note").setIcon("plus").onClick(() => void this.quickAddNote(columnName, groupBy)));
+      menu.addItem((i) => i.setTitle("Rename column\u2026").setIcon("pencil").onClick(() => this.renameColumnValue(groupBy, columnName)));
       menu.addItem(
-        (i) => i.setTitle(isCollapsed ? "Expand column" : "Collapse column").setIcon(isCollapsed ? "chevrons-up-down" : "chevrons-down-up").onClick(() => void this.toggleColumnCollapse(columnName))
+        (i) => i.setTitle("Set WIP limit\u2026").setIcon("gauge").onClick(() => this.setWipLimit(columnName))
       );
+      if (!this.swimlaneProp) {
+        const isCollapsed = this.plugin.settings.kanbanCollapsedColumns[columnName] === true;
+        menu.addItem(
+          (i) => i.setTitle(isCollapsed ? "Expand column" : "Collapse column").setIcon(isCollapsed ? "chevrons-up-down" : "chevrons-down-up").onClick(() => void this.toggleColumnCollapse(columnName))
+        );
+      }
+      const idx = orderedNames.indexOf(columnName);
+      if (idx > 0) {
+        menu.addItem(
+          (i) => i.setTitle("Move column left").setIcon("arrow-left").onClick(() => void this.moveColumnBy(groupBy, orderedNames, columnName, -1))
+        );
+      }
+      if (idx !== -1 && idx < orderedNames.length - 1) {
+        menu.addItem(
+          (i) => i.setTitle("Move column right").setIcon("arrow-right").onClick(() => void this.moveColumnBy(groupBy, orderedNames, columnName, 1))
+        );
+      }
+      menu.addSeparator();
     }
-    const idx = orderedNames.indexOf(columnName);
-    if (idx > 0) {
-      menu.addItem(
-        (i) => i.setTitle("Move column left").setIcon("arrow-left").onClick(() => void this.moveColumnBy(groupBy, orderedNames, columnName, -1))
-      );
-    }
-    if (idx !== -1 && idx < orderedNames.length - 1) {
-      menu.addItem(
-        (i) => i.setTitle("Move column right").setIcon("arrow-right").onClick(() => void this.moveColumnBy(groupBy, orderedNames, columnName, 1))
-      );
-    }
-    menu.addSeparator();
     const swatches = [
       ["Red", 0],
       ["Orange", 30],
@@ -6133,7 +6157,7 @@ var KanbanBoard = class {
       menu.addItem((i) => i.setTitle(label).setIcon("circle").onClick(() => void this.setColumnColor(columnName, hue)));
     }
     menu.addItem((i) => i.setTitle("Reset color").onClick(() => void this.setColumnColor(columnName, null)));
-    if (removable) {
+    if (removable && this.canColumnChrome) {
       menu.addSeparator();
       menu.addItem(
         (i) => i.setTitle("Remove empty column").setIcon("trash").onClick(() => void this.removeExtraColumn(groupBy, columnName))
@@ -6215,9 +6239,7 @@ var KanbanBoard = class {
     new BulkEditModal(this.plugin.app, rows.length, (prop, op, value) => void this.applyBulk(rows, prop, op, value)).open();
   }
   async applyBulk(rows, prop, op, value) {
-    var _a;
-    const resolved = await this.plugin.getResolvedView();
-    if (COMPUTED_FILE_PROPS.has(prop) || Object.prototype.hasOwnProperty.call((_a = resolved.def.formulas) != null ? _a : {}, prop)) {
+    if (COMPUTED_FILE_PROPS.has(prop) || Object.prototype.hasOwnProperty.call(this.input.formulas, prop)) {
       new import_obsidian6.Notice(`"${prop}" is a computed/formula field \u2014 edit it at its source, not in bulk.`);
       return;
     }
@@ -6331,6 +6353,7 @@ var KanbanBoard = class {
   /** The whole column is a drop target for two kinds of drag: a card (move the note to
    * this column) and a column header (reorder columns). Told apart by the transfer type. */
   wireColumnDrop(columnEl, columnName, groupBy, rowById, orderedNames) {
+    if (!this.canWrite) return;
     columnEl.addEventListener("dragover", (event) => {
       var _a, _b;
       const types = (_b = (_a = event.dataTransfer) == null ? void 0 : _a.types) != null ? _b : [];
@@ -6369,6 +6392,7 @@ var KanbanBoard = class {
     });
   }
   makeColumnDraggable(columnEl, colHead, columnName) {
+    if (!this.canColumnChrome) return;
     colHead.draggable = true;
     colHead.addEventListener("dragstart", (event) => {
       var _a;
@@ -6387,23 +6411,22 @@ var KanbanBoard = class {
    * that fire on entering this value — all in one transaction.
    */
   async moveRowToColumn(row, groupBy, columnName, laneProp = null, laneKey = null) {
-    var _a, _b, _c;
+    var _a;
     const key = groupBy || "status";
     const crossColumn = toStr(row.scope.get(key)) !== columnName;
     const crossLane = laneProp !== null && laneKeyOf(row, laneProp) !== laneKey;
     if (!crossColumn && !crossLane) return;
-    const resolved = await this.plugin.getResolvedView();
-    if (crossColumn && this.isComputedField((_a = resolved.def.formulas) != null ? _a : {}, key)) {
+    if (crossColumn && this.isComputedField(this.input.formulas, key)) {
       new import_obsidian6.Notice(`"${key}" is a computed/formula field \u2014 cards grouped by it can't be moved here.`);
       return;
     }
-    if (crossLane && laneProp !== null && this.isComputedField((_b = resolved.def.formulas) != null ? _b : {}, laneProp)) {
+    if (crossLane && laneProp !== null && this.isComputedField(this.input.formulas, laneProp)) {
       new import_obsidian6.Notice(`"${laneProp}" is a computed/formula field \u2014 cards can't be moved across swimlanes here.`);
       return;
     }
     if (crossColumn && this.plugin.settings.kanbanBlockOverWip) {
       const limit = limitFor(this.plugin.settings.kanbanWipLimits, columnName);
-      const targetCount = ((_c = this.lastColumnRows.get(columnName)) != null ? _c : []).length;
+      const targetCount = ((_a = this.lastColumnRows.get(columnName)) != null ? _a : []).length;
       if (dropWouldExceed(targetCount, limit)) {
         new import_obsidian6.Notice(`"${columnName}" is at its WIP limit (${limit}). Move blocked.`);
         this.host.requestRender();
@@ -6481,42 +6504,41 @@ var KanbanBoard = class {
    * destination cell only when the neighbouring gap can't be split. One undo entry.
    */
   async applyCardReorder(rowId, columnName, targetRow, before, groupBy, laneProp = null, laneKey = null) {
-    var _a, _b, _c, _d, _e;
+    var _a, _b;
     const rankProp = this.rankProp;
     const group = groupBy || "status";
     if (rankProp === group || laneProp !== null && rankProp === laneProp) {
       new import_obsidian6.Notice(`Manual order property ("${rankProp}") must differ from the group-by and swimlane properties \u2014 pick a separate numeric property in settings.`);
       return;
     }
-    const resolved = await this.plugin.getResolvedView();
-    const movedRow = resolved.rows.find((r) => r.id === rowId);
+    const movedRow = this.input.rows.find((r) => r.id === rowId);
     if (!movedRow) return;
-    if (COMPUTED_FILE_PROPS.has(rankProp) || Object.prototype.hasOwnProperty.call((_a = resolved.def.formulas) != null ? _a : {}, rankProp)) {
+    if (COMPUTED_FILE_PROPS.has(rankProp) || Object.prototype.hasOwnProperty.call(this.input.formulas, rankProp)) {
       new import_obsidian6.Notice(`"${rankProp}" is a computed/formula field \u2014 pick a plain property for the manual order.`);
       return;
     }
     const crossColumn = toStr(movedRow.scope.get(group)) !== columnName;
     const crossLane = laneProp !== null && laneKeyOf(movedRow, laneProp) !== laneKey;
-    if (crossColumn && this.isComputedField((_b = resolved.def.formulas) != null ? _b : {}, group)) {
+    if (crossColumn && this.isComputedField(this.input.formulas, group)) {
       new import_obsidian6.Notice(`"${group}" is a computed/formula field \u2014 cards grouped by it can't be moved here.`);
       return;
     }
-    if (crossLane && laneProp !== null && this.isComputedField((_c = resolved.def.formulas) != null ? _c : {}, laneProp)) {
+    if (crossLane && laneProp !== null && this.isComputedField(this.input.formulas, laneProp)) {
       new import_obsidian6.Notice(`"${laneProp}" is a computed/formula field \u2014 cards can't be moved across swimlanes here.`);
       return;
     }
     if (crossColumn && this.plugin.settings.kanbanBlockOverWip) {
       const limit = limitFor(this.plugin.settings.kanbanWipLimits, columnName);
-      const targetCount = ((_d = this.lastColumnRows.get(columnName)) != null ? _d : []).length;
+      const targetCount = ((_a = this.lastColumnRows.get(columnName)) != null ? _a : []).length;
       if (dropWouldExceed(targetCount, limit)) {
         new import_obsidian6.Notice(`"${columnName}" is at its WIP limit (${limit}). Move blocked.`);
         this.host.requestRender();
         return;
       }
     }
-    const cellRows = laneProp !== null ? resolved.rows.filter(
+    const cellRows = laneProp !== null ? this.input.rows.filter(
       (r) => toStr(r.scope.get(group)) === columnName && laneKeyOf(r, laneProp) === laneKey
-    ) : (_e = this.lastColumnRows.get(columnName)) != null ? _e : [];
+    ) : (_b = this.lastColumnRows.get(columnName)) != null ? _b : [];
     const sorted = [...cellRows].sort((a, b) => compareRowsByRank(a, b, rankProp));
     const items = sorted.map((r) => ({ id: r.id, rank: parseRank(r.scope.get(rankProp)) }));
     const rest = items.filter((i) => i.id !== rowId);
@@ -6618,8 +6640,7 @@ var KanbanBoard = class {
     const laneProp = target.laneKey === null ? null : swimProp || null;
     let targetRow = null;
     if (target.beforeRowId) {
-      const resolved = await this.plugin.getResolvedView();
-      targetRow = (_a = resolved.rows.find((r) => r.id === target.beforeRowId)) != null ? _a : null;
+      targetRow = (_a = this.input.rows.find((r) => r.id === target.beforeRowId)) != null ? _a : null;
     }
     await this.applyCardReorder(rowId, target.columnName, targetRow, true, groupBy, laneProp, target.laneKey);
   }
@@ -6734,7 +6755,6 @@ var KanbanBoard = class {
     });
   }
   async quickAddInCell(columnName, groupBy, swimProp, laneKey) {
-    var _a;
     const title = buildQuickAddTitle(columnName);
     try {
       const file = await createSeededNote(
@@ -6745,8 +6765,7 @@ var KanbanBoard = class {
         title
       );
       if (laneKey !== SWIMLANE_EMPTY && swimProp) {
-        const resolved = await this.plugin.getResolvedView();
-        if (!this.isComputedField((_a = resolved.def.formulas) != null ? _a : {}, swimProp)) {
+        if (!this.isComputedField(this.input.formulas, swimProp)) {
           await writeRowProperty(this.plugin, file.path, swimProp, laneKey, false, { label: "Set swimlane" });
         }
       }
@@ -6769,7 +6788,7 @@ var KanbanBoard = class {
   }
   /** The bulk action bar shown while cards are multi-selected. */
   renderSelectionBar(container, groupBy, columnNames) {
-    if (this.selected.size === 0) return;
+    if (!this.canMultiSelect || this.selected.size === 0) return;
     const bar = container.createDiv({ cls: "bpp-selection-bar" });
     bar.createSpan({
       cls: "bpp-selection-count",
@@ -6792,14 +6811,13 @@ var KanbanBoard = class {
    * WIP is enforced against the whole batch.
    */
   async moveSelectionToColumn(groupBy, columnName, laneKey) {
-    var _a, _b;
+    var _a;
     const ids = [...this.selected];
     if (ids.length === 0) return;
     const group = groupBy || "status";
     const laneProp = laneKey === null ? null : this.swimlaneProp || null;
-    const resolved = await this.plugin.getResolvedView();
-    const formulas = (_a = resolved.def.formulas) != null ? _a : {};
-    const targetRows = ids.map((id) => resolved.rows.find((r) => r.id === id)).filter((r) => r !== void 0);
+    const formulas = this.input.formulas;
+    const targetRows = ids.map((id) => this.input.rows.find((r) => r.id === id)).filter((r) => r !== void 0);
     if (targetRows.length === 0) {
       this.selected.clear();
       this.host.requestRender();
@@ -6817,7 +6835,7 @@ var KanbanBoard = class {
     if (this.plugin.settings.kanbanBlockOverWip && movingColumn.length > 0) {
       const limit = limitFor(this.plugin.settings.kanbanWipLimits, columnName);
       if (limit !== null) {
-        const targetCount = ((_b = this.lastColumnRows.get(columnName)) != null ? _b : []).length;
+        const targetCount = ((_a = this.lastColumnRows.get(columnName)) != null ? _a : []).length;
         if (targetCount + movingColumn.length > limit) {
           new import_obsidian6.Notice(`"${columnName}" would exceed its WIP limit (${limit}). Move blocked.`);
           return;
@@ -8046,521 +8064,153 @@ var LicenseManager = _LicenseManager;
 // src/bases/kanbanBasesView.ts
 var import_obsidian8 = require("obsidian");
 var KANBAN_BASES_VIEW_ID = "kanban";
-var RANK_PROP = "rank";
-var RANK_PROP_ID = `note.${RANK_PROP}`;
-var COLOR_SWATCHES = [
-  ["Red", 0],
-  ["Orange", 30],
-  ["Yellow", 50],
-  ["Green", 130],
-  ["Teal", 175],
-  ["Blue", 215],
-  ["Purple", 270],
-  ["Pink", 320]
-];
+var READONLY_GROUP_KEY = "__bpp_bases_group";
 var KanbanBasesView = class extends import_obsidian8.BasesView {
   constructor(controller, containerEl, plugin) {
     super(controller);
     this.plugin = plugin;
     this.type = KANBAN_BASES_VIEW_ID;
-    /** Satisfies HoverParent for the Ctrl+hover preview. */
-    this.hoverPopover = null;
-    this.cardDragActive = false;
-    this.root = containerEl;
+    this.revision = 0;
+    /** While a board interaction is live (inline edit / drag), hold Bases re-renders so a
+     * background query update can't yank the focused input or the drag target. */
+    this.suppressRender = false;
+    this.renderPending = false;
+    /** Coalesce a write's `requestRender()` with the base's own `onDataUpdated()` (the
+     * frontmatter write triggers a re-query) into one paint on the next frame, so a moved
+     * card doesn't flash back to its old column before the query catches up. */
+    this.renderScheduled = false;
+    /** Set on unload so a still-queued animation frame can't paint into a torn-down view. */
+    this.destroyed = false;
+    this.containerEl = containerEl;
+    this.board = new KanbanBoard(plugin, this);
+    this.unsubscribeRefresh = plugin.registerRefresh(() => this.scheduleRender());
   }
   onunload() {
-    this.root.empty();
+    this.destroyed = true;
+    this.unsubscribeRefresh();
+    this.board.dispose();
+    this.containerEl.empty();
   }
+  /** The Bases engine calls this whenever the query result changes. */
   onDataUpdated() {
-    const el = this.root;
-    el.empty();
-    el.addClass("bpp-view");
-    const colored = this.plugin.settings.kanbanColorColumns;
-    const board = el.createDiv({ cls: "bpp-kanban-board bpp-bases-kanban" });
-    if (colored) board.addClass("is-colored");
-    const groups = this.safeGroups();
-    if (groups.length === 0) {
-      this.empty(board, "No results", "Add notes, or adjust this base's filters.");
-      return;
-    }
-    if (groups.length === 1 && !this.hasKey(groups[0]) && this.groupByPid() === null) {
-      this.empty(
-        board,
-        "Choose a Group by property",
-        'Set a "Group by" property in the Bases toolbar (e.g. status) to build kanban columns.'
-      );
-      return;
-    }
-    const groupKey = this.resolveGroupKey();
-    const columns = this.buildColumns(groups, groupKey);
-    const columnOf = /* @__PURE__ */ new Map();
-    const entryOf = /* @__PURE__ */ new Map();
-    for (const col of columns) {
-      for (const entry of col.entries) {
-        columnOf.set(entry.file.path, col);
-        entryOf.set(entry.file.path, entry);
-      }
-    }
-    const names = columns.map((c) => c.name);
-    const ctx = { groupKey, columnOf, entryOf, columns, names };
-    for (const col of columns) this.renderColumn(board, col, names, ctx, colored);
-    if (groupKey) this.renderAddColumnTile(board, groupKey);
+    this.scheduleRender();
   }
-  // ---- columns --------------------------------------------------------------
-  buildColumns(groups, groupKey) {
-    var _a, _b;
-    const map = /* @__PURE__ */ new Map();
-    for (const group of groups) {
-      const value = this.hasKey(group) && group.key ? group.key.toString() : "";
-      const name = value || "(no value)";
-      map.set(name, {
-        value,
-        name,
-        extra: false,
-        entries: [...group.entries].sort((a, b) => this.compareRank(a, b))
-      });
-    }
-    if (groupKey) {
-      for (const name of (_a = this.plugin.settings.kanbanExtraColumns[groupKey]) != null ? _a : []) {
-        const clean = name.trim();
-        if (clean && !map.has(clean)) map.set(clean, { value: clean, name: clean, extra: true, entries: [] });
-      }
-    }
-    const columns = [...map.values()];
-    const order = groupKey ? (_b = this.plugin.settings.kanbanColumnOrder[groupKey]) != null ? _b : [] : [];
-    if (order.length > 0) {
-      const rank = new Map(order.map((n, i) => [n, i]));
-      columns.sort((a, b) => {
-        var _a2, _b2;
-        return ((_a2 = rank.get(a.name)) != null ? _a2 : Infinity) - ((_b2 = rank.get(b.name)) != null ? _b2 : Infinity);
-      });
-    }
-    return columns;
+  // ---- BoardHost -----------------------------------------------------------
+  /** The env for the shared row-action helpers. A getter so `this.app` is read at
+   * call time (always available by then), never during construction. */
+  get rowEnv() {
+    return { app: this.app, plugin: this.plugin };
   }
-  renderColumn(board, col, names, ctx, colored) {
-    const colEl = board.createDiv({ cls: "bpp-kanban-column" });
-    colEl.setAttr("data-bpp-col", col.name);
-    if (colored) colEl.setCssProps({ "--bpp-col-hue": this.hueFor(col.name) });
-    if (ctx.groupKey) this.wireColumnDrop(colEl, col, ctx);
-    const head = colEl.createDiv({ cls: "bpp-kanban-column-head" });
-    if (ctx.groupKey) this.makeColumnDraggable(colEl, head, col.name, ctx.groupKey);
-    head.addEventListener("contextmenu", (e) => this.openColumnMenu(e, col, names, ctx));
-    const label = head.createDiv({ cls: "bpp-kanban-column-label" });
-    label.createSpan({ text: col.name });
-    label.createSpan({ cls: "bpp-count", text: String(col.entries.length) });
-    if (ctx.groupKey) {
-      const actions = head.createDiv({ cls: "bpp-column-actions" });
-      const add = actions.createEl("button", { cls: "bpp-column-add", text: "+", attr: { "aria-label": `Add note to ${col.name}` } });
-      add.addEventListener("click", () => void this.addNote(col, ctx.groupKey));
-      if (col.extra && col.entries.length === 0) {
-        const rm = actions.createEl("button", { cls: "bpp-column-remove clickable-icon", text: "\xD7", attr: { "aria-label": `Remove column ${col.name}` } });
-        rm.addEventListener("click", () => void this.removeExtraColumn(col.name, ctx.groupKey));
-      }
-    }
-    for (const entry of col.entries) this.renderCard(colEl, entry, col, ctx);
-  }
-  renderAddColumnTile(board, groupKey) {
-    const tile = board.createDiv({ cls: "bpp-kanban-column bpp-kanban-add-column" });
-    const form = tile.createDiv({ cls: "bpp-add-column-form" });
-    const input = form.createEl("input", { type: "text", cls: "bpp-lite-input", placeholder: "New column\u2026" });
-    const commit = () => {
-      const name = input.value.trim();
-      if (name) void this.addExtraColumn(name, groupKey);
+  get capabilities() {
+    const writable = this.resolveGroupKey() !== null;
+    return {
+      canWriteGroupBy: writable,
+      canMultiSelect: writable,
+      canColumnChrome: writable,
+      canSwimlanes: false
     };
-    form.createEl("button", { cls: "bpp-add-column-btn", text: "+ Add column" }).addEventListener("click", commit);
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        commit();
-      }
-    });
   }
-  // ---- cards ----------------------------------------------------------------
-  renderCard(colEl, entry, col, ctx) {
-    const card = colEl.createDiv({ cls: "bpp-card" });
-    card.setAttr("data-bpp-row", entry.file.path);
-    card.createDiv({ cls: "bpp-card-head" }).createDiv({ cls: "bpp-card-title", text: entry.file.basename });
-    const meta = card.createDiv({ cls: "bpp-card-meta" });
-    for (const field of this.plugin.settings.kanbanCardFields) {
-      const value = this.fieldValue(entry, field);
-      if (value) meta.createSpan({ cls: "bpp-chip bpp-chip-tag", text: value, attr: { title: `${field}: ${value}` } });
+  captureInput() {
+    return this.buildInput();
+  }
+  requestRender() {
+    this.scheduleRender();
+  }
+  beginInteraction() {
+    this.suppressRender = true;
+  }
+  endInteraction() {
+    this.suppressRender = false;
+    if (this.renderPending) {
+      this.renderPending = false;
+      this.scheduleRender();
     }
-    if (!meta.hasChildNodes()) meta.remove();
-    if (ctx.groupKey) {
-      card.draggable = true;
-      card.addEventListener("dragstart", (e) => {
-        var _a;
-        card.addClass("is-dragging");
-        this.cardDragActive = true;
-        this.dismissHover();
-        (_a = e.dataTransfer) == null ? void 0 : _a.setData("text/plain", entry.file.path);
-        if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
-      });
-      card.addEventListener("dragend", () => {
-        card.removeClass("is-dragging");
-        this.cardDragActive = false;
-      });
-      this.wireCardReorder(card, entry, col, ctx);
-    }
-    card.addEventListener("click", () => void this.app.workspace.getLeaf(false).openFile(entry.file));
-    card.addEventListener("contextmenu", (e) => this.openCardMenu(e, entry, col, ctx));
-    card.addEventListener("mousedown", () => this.dismissHover());
-    card.addEventListener("mouseover", (event) => {
-      if (this.cardDragActive) return;
-      this.app.workspace.trigger("hover-link", {
-        event,
-        source: KANBAN_BASES_VIEW_ID,
-        hoverParent: this,
-        targetEl: card,
-        linktext: entry.file.path,
-        sourcePath: entry.file.path
-      });
-    });
   }
-  // ---- drag & drop ----------------------------------------------------------
-  makeColumnDraggable(colEl, head, name, groupKey) {
-    head.draggable = true;
-    head.addEventListener("dragstart", (e) => {
-      var _a;
-      colEl.addClass("is-col-dragging");
-      (_a = e.dataTransfer) == null ? void 0 : _a.setData("application/x-bpp-bcol", name);
-      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
-    });
-    head.addEventListener("dragend", () => colEl.removeClass("is-col-dragging"));
-    void groupKey;
+  /** The Bases toolbar owns filtering, so the board never search-filters here — the
+   * board's quick-search / tag-chip filter is a no-op in this host. */
+  setSearch() {
   }
-  wireColumnDrop(colEl, col, ctx) {
-    colEl.addEventListener("dragover", (e) => {
-      var _a, _b;
-      const types = (_b = (_a = e.dataTransfer) == null ? void 0 : _a.types) != null ? _b : [];
-      const isCol = types.includes("application/x-bpp-bcol");
-      if (!isCol && !types.includes("text/plain")) return;
-      e.preventDefault();
-      colEl.addClass(isCol ? "is-col-drop-target" : "is-drop-target");
-      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-    });
-    colEl.addEventListener("dragleave", () => {
-      colEl.removeClass("is-drop-target");
-      colEl.removeClass("is-col-drop-target");
-    });
-    colEl.addEventListener("drop", (e) => {
-      var _a, _b;
-      e.preventDefault();
-      colEl.removeClass("is-drop-target");
-      colEl.removeClass("is-col-drop-target");
-      const movedCol = (_a = e.dataTransfer) == null ? void 0 : _a.getData("application/x-bpp-bcol");
-      if (movedCol && ctx.groupKey) {
-        void this.reorderColumn(movedCol, col.name, ctx.names, ctx.groupKey);
+  /** The board doesn't drive Bases refreshes (this view subscribes to plugin refreshes
+   * itself, in the constructor), so nothing to register. */
+  registerRefresh() {
+    return () => {
+    };
+  }
+  // ---- rendering -----------------------------------------------------------
+  /** Coalesce bursts (a write's requestRender + the base's onDataUpdated) into one paint
+   * on the next animation frame, and defer entirely while an interaction is live. */
+  scheduleRender() {
+    if (this.renderScheduled || this.destroyed) return;
+    this.renderScheduled = true;
+    window.requestAnimationFrame(() => {
+      this.renderScheduled = false;
+      if (this.destroyed) return;
+      if (this.suppressRender) {
+        this.renderPending = true;
         return;
       }
-      const path = (_b = e.dataTransfer) == null ? void 0 : _b.getData("text/plain");
-      if (path) void this.drop(path, col, null, true, ctx);
+      this.renderBoard();
     });
   }
-  wireCardReorder(card, target, col, ctx) {
-    card.addEventListener("dragover", (e) => {
-      var _a, _b;
-      if (!((_b = (_a = e.dataTransfer) == null ? void 0 : _a.types) != null ? _b : []).includes("text/plain")) return;
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-      const before = this.inTopHalf(card, e);
-      card.toggleClass("is-reorder-before", before);
-      card.toggleClass("is-reorder-after", !before);
-    });
-    card.addEventListener("dragleave", () => {
-      card.removeClass("is-reorder-before");
-      card.removeClass("is-reorder-after");
-    });
-    card.addEventListener("drop", (e) => {
-      var _a;
-      card.removeClass("is-reorder-before");
-      card.removeClass("is-reorder-after");
-      const path = (_a = e.dataTransfer) == null ? void 0 : _a.getData("text/plain");
-      if (!path) return;
-      e.preventDefault();
-      e.stopPropagation();
-      if (path === target.file.path) return;
-      void this.drop(path, col, target, this.inTopHalf(card, e), ctx);
-    });
+  renderBoard() {
+    this.containerEl.empty();
+    this.containerEl.addClass("bpp-view");
+    this.board.render(this.buildInput());
   }
-  /** Move the dragged note to `col` (writing the group property when the column
-   * changed) and set its `rank` so it lands before/after `target` (end when null). */
-  async drop(path, col, target, before, ctx) {
-    const moved = ctx.entryOf.get(path);
-    if (!moved || !ctx.groupKey) return;
-    const from = ctx.columnOf.get(path);
-    const crossColumn = !from || from.value !== col.value;
-    const items = col.entries.map((e) => ({ id: e.file.path, rank: this.rankOf(e) }));
-    const rest = items.filter((i) => i.id !== path);
-    let index;
-    if (target === null) index = rest.length;
-    else {
-      const pos = rest.findIndex((i) => i.id === target.file.path);
-      if (pos === -1) return;
-      index = before ? pos : pos + 1;
+  /** Map the base's (filtered) entries to Rows and resolve the group-by into a
+   * {@link BoardInput}. A writable `note.*` group-by uses its real key so the board writes
+   * back to it; a read-only group-by buckets by a synthetic, never-written key. */
+  buildInput() {
+    const writableKey = this.resolveGroupKey();
+    const pid = this.groupByPid();
+    const entries = this.entries();
+    let groupBy;
+    let rows;
+    if (writableKey) {
+      groupBy = writableKey;
+      rows = entries.map((e) => makeRow(buildRawNote(this.app, e.file), {}));
+    } else {
+      groupBy = READONLY_GROUP_KEY;
+      rows = entries.map((e) => {
+        const note = buildRawNote(this.app, e.file);
+        note.frontmatter[READONLY_GROUP_KEY] = pid ? this.valueOf(e, pid) : "";
+        return makeRow(note, {});
+      });
     }
-    const rankWrites = planReorder(items, path, index);
-    if (rankWrites.length === 0 && !crossColumn) return;
-    const rankById = new Map(rankWrites.map((w) => [w.id, w.rank]));
-    try {
-      if (crossColumn || rankById.has(path)) {
-        await this.app.fileManager.processFrontMatter(moved.file, (fm) => {
-          if (crossColumn) {
-            if (col.value === "") delete fm[ctx.groupKey];
-            else fm[ctx.groupKey] = col.value;
-          }
-          if (rankById.has(path)) fm[RANK_PROP] = rankById.get(path);
-        });
-      }
-      for (const write of rankWrites) {
-        if (write.id === path) continue;
-        const neighbour = ctx.entryOf.get(write.id);
-        if (neighbour) {
-          await this.app.fileManager.processFrontMatter(neighbour.file, (fm) => {
-            fm[RANK_PROP] = write.rank;
-          });
-        }
-      }
-    } catch (error) {
-      new import_obsidian8.Notice(`Bases Power Pack: could not move the card (${String(error)}).`);
-    }
+    return {
+      revision: ++this.revision,
+      rows,
+      formulas: {},
+      searchQuery: "",
+      showControls: false,
+      groupBy,
+      swimlaneProp: "",
+      hoverSource: KANBAN_BASES_VIEW_ID
+    };
   }
-  // ---- menus ----------------------------------------------------------------
-  openCardMenu(anchor, entry, col, ctx) {
-    anchor.preventDefault();
-    const menu = new import_obsidian8.Menu();
-    menu.addItem((i) => i.setTitle("Open").setIcon("file").onClick(() => void this.app.workspace.getLeaf(false).openFile(entry.file)));
-    menu.addItem((i) => i.setTitle("Open to the right").setIcon("separator-vertical").onClick(() => void this.app.workspace.getLeaf("split").openFile(entry.file)));
-    if (ctx.groupKey) {
-      menu.addSeparator();
-      for (const other of this.otherColumnNames(col, ctx)) {
-        menu.addItem((i) => i.setTitle(`Move to "${other.name}"`).setIcon("arrow-right").onClick(() => void this.moveTo(entry, other, ctx)));
-      }
-    }
-    menu.addSeparator();
-    menu.addItem((i) => i.setTitle("Rename note\u2026").setIcon("text-cursor-input").onClick(() => this.renameNote(entry)));
-    menu.addItem((i) => i.setTitle("Delete note").setIcon("trash").onClick(() => this.deleteNote(entry)));
-    menu.showAtMouseEvent(anchor);
-  }
-  openColumnMenu(anchor, col, names, ctx) {
-    anchor.preventDefault();
-    const menu = new import_obsidian8.Menu();
-    if (ctx.groupKey) {
-      menu.addItem((i) => i.setTitle("Add note").setIcon("plus").onClick(() => void this.addNote(col, ctx.groupKey)));
-      menu.addItem((i) => i.setTitle("Rename column\u2026").setIcon("pencil").onClick(() => this.renameColumn(col, ctx.groupKey)));
-      menu.addSeparator();
-      const idx = names.indexOf(col.name);
-      if (idx > 0) menu.addItem((i) => i.setTitle("Move column left").setIcon("arrow-left").onClick(() => void this.moveColumnBy(names, col.name, -1, ctx.groupKey)));
-      if (idx !== -1 && idx < names.length - 1) menu.addItem((i) => i.setTitle("Move column right").setIcon("arrow-right").onClick(() => void this.moveColumnBy(names, col.name, 1, ctx.groupKey)));
-      menu.addSeparator();
-    }
-    for (const [label, hue] of COLOR_SWATCHES) {
-      menu.addItem((i) => i.setTitle(label).setIcon("circle").onClick(() => void this.setColumnColor(col.name, hue)));
-    }
-    menu.addItem((i) => i.setTitle("Reset color").onClick(() => void this.setColumnColor(col.name, null)));
-    if (col.extra && col.entries.length === 0 && ctx.groupKey) {
-      menu.addSeparator();
-      menu.addItem((i) => i.setTitle("Remove empty column").setIcon("trash").onClick(() => void this.removeExtraColumn(col.name, ctx.groupKey)));
-    }
-    menu.showAtMouseEvent(anchor);
-  }
-  // ---- mutations (settings shared with the standalone board) ----------------
-  async reorderColumn(moved, target, names, groupKey) {
-    this.plugin.settings.kanbanColumnOrder[groupKey] = reorderColumns(names, moved, target);
-    await this.plugin.saveSettings({ invalidateResolved: false });
-    this.onDataUpdated();
-  }
-  async moveColumnBy(names, name, delta, groupKey) {
-    const idx = names.indexOf(name);
-    const to = idx + delta;
-    if (idx === -1 || to < 0 || to >= names.length) return;
-    const next = [...names];
-    [next[idx], next[to]] = [next[to], next[idx]];
-    this.plugin.settings.kanbanColumnOrder[groupKey] = next;
-    await this.plugin.saveSettings({ invalidateResolved: false });
-    this.onDataUpdated();
-  }
-  async setColumnColor(name, hue) {
-    const map = this.plugin.settings.kanbanColorOverrides;
-    if (hue === null) delete map[name];
-    else map[name] = String(hue);
-    await this.plugin.saveSettings({ invalidateResolved: false });
-    this.onDataUpdated();
-  }
-  async addExtraColumn(name, groupKey) {
+  // ---- Bases API access (guarded — the API is young) -----------------------
+  /** The base's current (filtered) entry set, or [] if the API shape is unexpected. */
+  entries() {
     var _a;
-    const map = this.plugin.settings.kanbanExtraColumns;
-    const existing = (_a = map[groupKey]) != null ? _a : [];
-    if (!existing.some((n) => n.toLocaleLowerCase() === name.toLocaleLowerCase())) {
-      map[groupKey] = [...existing, name];
-      await this.plugin.saveSettings({ invalidateResolved: false });
-    }
-    this.onDataUpdated();
-  }
-  async removeExtraColumn(name, groupKey) {
-    var _a;
-    const map = this.plugin.settings.kanbanExtraColumns;
-    const next = ((_a = map[groupKey]) != null ? _a : []).filter((n) => n !== name);
-    if (next.length > 0) map[groupKey] = next;
-    else delete map[groupKey];
-    await this.plugin.saveSettings({ invalidateResolved: false });
-    this.onDataUpdated();
-  }
-  async moveTo(entry, col, ctx) {
-    await this.drop(entry.file.path, col, null, true, ctx);
-  }
-  async addNote(col, groupKey) {
     try {
-      const value = col.value || col.name;
-      const file = await createSeededNote(this.plugin, this.plugin.settings.kanbanQuickAddFolder, groupKey, value, `New ${value}`);
-      new import_obsidian8.Notice(`Created ${file.basename}`);
-    } catch (error) {
-      new import_obsidian8.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
-    }
-  }
-  renameNote(entry) {
-    new PromptModal(this.app, {
-      title: "Rename note",
-      value: entry.file.basename,
-      cta: "Rename",
-      onSubmit: (name) => {
-        var _a;
-        const clean = name.trim();
-        if (!clean || clean === entry.file.basename) return;
-        const parent = ((_a = entry.file.parent) == null ? void 0 : _a.path) ? `${entry.file.parent.path}/` : "";
-        const target = (0, import_obsidian8.normalizePath)(`${parent}${clean}.${entry.file.extension}`);
-        this.app.fileManager.renameFile(entry.file, target).catch((e) => new import_obsidian8.Notice(`Rename failed: ${String(e)}`));
-      }
-    }).open();
-  }
-  deleteNote(entry) {
-    new ConfirmModal(this.app, {
-      title: "Delete note?",
-      body: `"${entry.file.basename}" will be moved to trash.`,
-      cta: "Delete",
-      onConfirm: () => void this.app.fileManager.trashFile(entry.file).catch((e) => new import_obsidian8.Notice(`Delete failed: ${String(e)}`))
-    }).open();
-  }
-  renameColumn(col, groupKey) {
-    if (col.value === "") {
-      new import_obsidian8.Notice("The (no value) column can't be renamed.");
-      return;
-    }
-    new PromptModal(this.app, {
-      title: `Rename column "${col.name}"`,
-      value: col.name,
-      cta: "Rename",
-      onSubmit: (next) => {
-        const to = next.trim();
-        if (!to || to === col.value) return;
-        const run = () => void this.doColumnRename(col, to, groupKey);
-        if (col.entries.length > 5) {
-          new ConfirmModal(this.app, {
-            title: "Rename column?",
-            body: `This rewrites "${groupKey}: ${col.value}" \u2192 "${to}" on ${col.entries.length} notes.`,
-            cta: "Rename",
-            onConfirm: run
-          }).open();
-        } else run();
-      }
-    }).open();
-  }
-  async doColumnRename(col, to, groupKey) {
-    let ok = 0;
-    for (const entry of col.entries) {
-      try {
-        await this.app.fileManager.processFrontMatter(entry.file, (fm) => {
-          fm[groupKey] = to;
-        });
-        ok++;
-      } catch (e) {
-      }
-    }
-    const colors = this.plugin.settings.kanbanColorOverrides;
-    if (colors[col.value] !== void 0) {
-      colors[to] = colors[col.value];
-      delete colors[col.value];
-    }
-    const order = this.plugin.settings.kanbanColumnOrder[groupKey];
-    if (order) this.plugin.settings.kanbanColumnOrder[groupKey] = order.map((n) => n === col.value ? to : n);
-    await this.plugin.saveSettings({ invalidateResolved: false });
-    new import_obsidian8.Notice(`Renamed "${col.value}" \u2192 "${to}" on ${ok} note${ok === 1 ? "" : "s"}.`);
-  }
-  // ---- helpers --------------------------------------------------------------
-  otherColumnNames(col, ctx) {
-    return ctx.columns.filter((c) => c.name !== col.name);
-  }
-  hueFor(name) {
-    var _a;
-    return (_a = this.plugin.settings.kanbanColorOverrides[name]) != null ? _a : String(columnHue(name));
-  }
-  fieldValue(entry, field) {
-    try {
-      const v = entry.getValue(`note.${field}`);
-      const s = v == null ? "" : v.toString();
-      return s.trim() ? s : null;
-    } catch (e) {
-      return null;
-    }
-  }
-  dismissHover() {
-    var _a;
-    const hp = this.hoverPopover;
-    if (hp) {
-      (_a = hp.hoverEl) == null ? void 0 : _a.remove();
-      this.hoverPopover = null;
-    }
-  }
-  inTopHalf(el, e) {
-    const rect = el.getBoundingClientRect();
-    return e.clientY < rect.top + rect.height / 2;
-  }
-  rankOf(entry) {
-    try {
-      const v = entry.getValue(RANK_PROP_ID);
-      return v == null ? null : parseRank(v.toString());
-    } catch (e) {
-      return null;
-    }
-  }
-  compareRank(a, b) {
-    const ar = this.rankOf(a);
-    const br = this.rankOf(b);
-    if (ar !== null && br !== null && ar !== br) return ar - br;
-    if (ar === null && br !== null) return 1;
-    if (ar !== null && br === null) return -1;
-    return a.file.basename.localeCompare(b.file.basename, void 0, { sensitivity: "base" });
-  }
-  empty(board, title, body) {
-    const box = board.createDiv({ cls: "bpp-emptystate" });
-    box.createDiv({ cls: "bpp-emptystate-title", text: title });
-    box.createDiv({ cls: "bpp-emptystate-body", text: body });
-  }
-  safeGroups() {
-    var _a, _b, _c;
-    try {
-      const grouped = (_a = this.data) == null ? void 0 : _a.groupedData;
-      if (Array.isArray(grouped) && grouped.length > 0) return grouped;
+      const flat = (_a = this.data) == null ? void 0 : _a.data;
+      if (Array.isArray(flat)) return flat;
     } catch (e) {
     }
+    return [];
+  }
+  /** An entry's value for a property id, as a display string ("" when null/absent). */
+  valueOf(entry, pid) {
     try {
-      const flat = (_c = (_b = this.data) == null ? void 0 : _b.data) != null ? _c : [];
-      return flat.length > 0 ? [{ entries: flat, hasKey: () => false }] : [];
+      const v = entry.getValue(pid);
+      return v == null ? "" : v.toString();
     } catch (e) {
-      return [];
+      return "";
     }
   }
-  hasKey(group) {
-    try {
-      return typeof group.hasKey === "function" ? group.hasKey() : group.key != null;
-    } catch (e) {
-      return group.key != null;
-    }
-  }
-  /** The raw group-by property id ("note.status" / "file.name" / …), or null when no
-   * Group by is configured. The typings don't expose it, so read the untyped config
-   * paths the reference plugins use, then getAsPropertyId. */
+  /** The raw group-by property id ("note.status" / "file.name" / "formula.x"), or null
+   * when no Group by is configured. The typings don't expose it, so read the untyped
+   * config paths the reference plugins use, then getAsPropertyId. */
   groupByPid() {
     const cfg = this.config;
     const gb = cfg.groupBy;
@@ -11173,6 +10823,9 @@ var BasesPowerPackPlugin = class extends import_obsidian14.Plugin {
     /** Memoized resolved view (rows + parsed base) so a re-render doesn't re-read the
      * .base file and rebuild every Row when nothing changed. */
     this.resolvedCache = null;
+    /** Non-leaf hosts (the native Bases view) subscribed to plugin-wide refreshes via
+     * {@link registerRefresh}, invoked by {@link refreshViews}. */
+    this.refreshCallbacks = /* @__PURE__ */ new Set();
     /** Pending old→new path mappings from rename events, flushed together. */
     this.renameRetargets = /* @__PURE__ */ new Map();
     this.renameFlushTimer = null;
@@ -11554,6 +11207,23 @@ status: ${status}
         void ((_a = view.render) == null ? void 0 : _a.call(view));
       }
     }
+    for (const cb of [...this.refreshCallbacks]) {
+      try {
+        cb();
+      } catch (error) {
+        console.error("Bases Power Pack: a refresh subscriber threw", error);
+      }
+    }
+  }
+  /**
+   * Subscribe a non-leaf host (the native Bases view) to plugin-wide refreshes fired by
+   * {@link refreshViews} — undo replay, license/settings changes. Returns an unsubscribe
+   * the host MUST call on unload, or a closed board's callback leaks and repaints a dead
+   * DOM. Leaf views don't need this (refreshViews walks their leaves directly).
+   */
+  registerRefresh(cb) {
+    this.refreshCallbacks.add(cb);
+    return () => this.refreshCallbacks.delete(cb);
   }
   /**
    * Re-verify the license key (offline) and cache the result. Returns whether
