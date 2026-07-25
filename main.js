@@ -5390,8 +5390,21 @@ var KanbanView = class extends PowerPackView {
     /** Satisfies Obsidian's HoverParent so card hover can drive the core Page Preview
      * popover (the "hover-link" trigger in renderCard). */
     this.hoverPopover = null;
+    /** True while a card is being dragged — suppresses the hover preview so its popover
+     * can't sit on top of the card and swallow the drag. */
+    this.cardDragActive = false;
     /** Edge auto-scroll driver for mouse (HTML5) drags over the board. */
     this.boardScroller = null;
+  }
+  /** Tear down any open Page Preview popover this view owns (on mousedown / dragstart),
+   * so it can't block a drag. */
+  dismissCardHover() {
+    var _a;
+    const hp = this.hoverPopover;
+    if (hp) {
+      (_a = hp.hoverEl) == null ? void 0 : _a.remove();
+      this.hoverPopover = null;
+    }
   }
   /** The swimlane (second group-by) property, or "" when off. Free — horizontal
    * bands split the board by a second property (the flat board is "None"). */
@@ -5708,6 +5721,8 @@ var KanbanView = class extends PowerPackView {
     card.addEventListener("dragstart", (event) => {
       var _a2, _b;
       card.addClass("is-dragging");
+      this.cardDragActive = true;
+      this.dismissCardHover();
       (_a2 = event.dataTransfer) == null ? void 0 : _a2.setData("text/plain", row.id);
       (_b = event.dataTransfer) == null ? void 0 : _b.setData(DND_ROW, row.id);
       if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
@@ -5715,6 +5730,7 @@ var KanbanView = class extends PowerPackView {
     card.addEventListener("dragend", () => {
       var _a2;
       card.removeClass("is-dragging");
+      this.cardDragActive = false;
       (_a2 = this.boardScroller) == null ? void 0 : _a2.stop();
     });
     if (ctx.reorderEnabled) this.wireCardReorder(card, row, columnName, ctx.groupBy, ctx.laneKey);
@@ -5734,7 +5750,9 @@ var KanbanView = class extends PowerPackView {
         this.beginTitleRename(card, titleEl, row);
       }
     });
+    card.addEventListener("mousedown", () => this.dismissCardHover());
     card.addEventListener("mouseover", (event) => {
+      if (this.cardDragActive) return;
       this.app.workspace.trigger("hover-link", {
         event,
         source: VIEW_TYPE_KANBAN,
@@ -7903,10 +7921,24 @@ var import_obsidian7 = require("obsidian");
 var KANBAN_BASES_VIEW_ID = "kanban";
 var RANK_PROP = "rank";
 var RANK_PROP_ID = `note.${RANK_PROP}`;
+var COLOR_SWATCHES = [
+  ["Red", 0],
+  ["Orange", 30],
+  ["Yellow", 50],
+  ["Green", 130],
+  ["Teal", 175],
+  ["Blue", 215],
+  ["Purple", 270],
+  ["Pink", 320]
+];
 var KanbanBasesView = class extends import_obsidian7.BasesView {
-  constructor(controller, containerEl) {
+  constructor(controller, containerEl, plugin) {
     super(controller);
+    this.plugin = plugin;
     this.type = KANBAN_BASES_VIEW_ID;
+    /** Satisfies HoverParent for the Ctrl+hover preview. */
+    this.hoverPopover = null;
+    this.cardDragActive = false;
     this.root = containerEl;
   }
   onunload() {
@@ -7916,7 +7948,9 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
     const el = this.root;
     el.empty();
     el.addClass("bpp-view");
-    const board = el.createDiv({ cls: "bpp-kanban-board is-colored bpp-bases-kanban" });
+    const colored = this.plugin.settings.kanbanColorColumns;
+    const board = el.createDiv({ cls: "bpp-kanban-board bpp-bases-kanban" });
+    if (colored) board.addClass("is-colored");
     const groups = this.safeGroups();
     if (groups.length === 0) {
       this.empty(board, "No results", "Add notes, or adjust this base's filters.");
@@ -7930,12 +7964,8 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
       );
       return;
     }
-    const writeKey = this.resolveGroupKey();
-    const columns = groups.map((group) => ({
-      value: this.hasKey(group) && group.key ? group.key.toString() : "",
-      name: this.hasKey(group) && group.key ? group.key.toString() : "(no value)",
-      entries: [...group.entries].sort((a, b) => this.compareRank(a, b))
-    }));
+    const groupKey = this.resolveGroupKey();
+    const columns = this.buildColumns(groups, groupKey);
     const columnOf = /* @__PURE__ */ new Map();
     const entryOf = /* @__PURE__ */ new Map();
     for (const col of columns) {
@@ -7944,49 +7974,159 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
         entryOf.set(entry.file.path, entry);
       }
     }
-    const ctx = { writeKey, columns, columnOf, entryOf };
-    for (const col of columns) {
-      const colEl = board.createDiv({ cls: "bpp-kanban-column" });
-      colEl.setCssProps({ "--bpp-col-hue": String(columnHue(col.name)) });
-      if (writeKey) this.wireColumnDrop(colEl, col, ctx);
-      const head = colEl.createDiv({ cls: "bpp-kanban-column-head" });
-      const label = head.createDiv({ cls: "bpp-kanban-column-label" });
-      label.createSpan({ text: col.name });
-      label.createSpan({ cls: "bpp-count", text: String(col.entries.length) });
-      for (const entry of col.entries) this.renderCard(colEl, entry, col, ctx);
-    }
+    const ctx = { groupKey, columnOf, entryOf };
+    const names = columns.map((c) => c.name);
+    for (const col of columns) this.renderColumn(board, col, names, ctx, colored);
+    if (groupKey) this.renderAddColumnTile(board, groupKey);
   }
+  // ---- columns --------------------------------------------------------------
+  buildColumns(groups, groupKey) {
+    var _a, _b;
+    const map = /* @__PURE__ */ new Map();
+    for (const group of groups) {
+      const value = this.hasKey(group) && group.key ? group.key.toString() : "";
+      const name = value || "(no value)";
+      map.set(name, {
+        value,
+        name,
+        extra: false,
+        entries: [...group.entries].sort((a, b) => this.compareRank(a, b))
+      });
+    }
+    if (groupKey) {
+      for (const name of (_a = this.plugin.settings.kanbanExtraColumns[groupKey]) != null ? _a : []) {
+        const clean = name.trim();
+        if (clean && !map.has(clean)) map.set(clean, { value: clean, name: clean, extra: true, entries: [] });
+      }
+    }
+    const columns = [...map.values()];
+    const order = groupKey ? (_b = this.plugin.settings.kanbanColumnOrder[groupKey]) != null ? _b : [] : [];
+    if (order.length > 0) {
+      const rank = new Map(order.map((n, i) => [n, i]));
+      columns.sort((a, b) => {
+        var _a2, _b2;
+        return ((_a2 = rank.get(a.name)) != null ? _a2 : Infinity) - ((_b2 = rank.get(b.name)) != null ? _b2 : Infinity);
+      });
+    }
+    return columns;
+  }
+  renderColumn(board, col, names, ctx, colored) {
+    const colEl = board.createDiv({ cls: "bpp-kanban-column" });
+    colEl.setAttr("data-bpp-col", col.name);
+    if (colored) colEl.setCssProps({ "--bpp-col-hue": this.hueFor(col.name) });
+    if (ctx.groupKey) this.wireColumnDrop(colEl, col, ctx);
+    const head = colEl.createDiv({ cls: "bpp-kanban-column-head" });
+    if (ctx.groupKey) this.makeColumnDraggable(colEl, head, col.name, ctx.groupKey);
+    head.addEventListener("contextmenu", (e) => this.openColumnMenu(e, col, names, ctx));
+    const label = head.createDiv({ cls: "bpp-kanban-column-label" });
+    label.createSpan({ text: col.name });
+    label.createSpan({ cls: "bpp-count", text: String(col.entries.length) });
+    if (ctx.groupKey) {
+      const actions = head.createDiv({ cls: "bpp-column-actions" });
+      const add = actions.createEl("button", { cls: "bpp-column-add", text: "+", attr: { "aria-label": `Add note to ${col.name}` } });
+      add.addEventListener("click", () => void this.addNote(col, ctx.groupKey));
+      if (col.extra && col.entries.length === 0) {
+        const rm = actions.createEl("button", { cls: "bpp-column-remove clickable-icon", text: "\xD7", attr: { "aria-label": `Remove column ${col.name}` } });
+        rm.addEventListener("click", () => void this.removeExtraColumn(col.name, ctx.groupKey));
+      }
+    }
+    for (const entry of col.entries) this.renderCard(colEl, entry, col, ctx);
+  }
+  renderAddColumnTile(board, groupKey) {
+    const tile = board.createDiv({ cls: "bpp-kanban-column bpp-kanban-add-column" });
+    const form = tile.createDiv({ cls: "bpp-add-column-form" });
+    const input = form.createEl("input", { type: "text", cls: "bpp-lite-input", placeholder: "New column\u2026" });
+    const commit = () => {
+      const name = input.value.trim();
+      if (name) void this.addExtraColumn(name, groupKey);
+    };
+    form.createEl("button", { cls: "bpp-add-column-btn", text: "+ Add column" }).addEventListener("click", commit);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commit();
+      }
+    });
+  }
+  // ---- cards ----------------------------------------------------------------
   renderCard(colEl, entry, col, ctx) {
     const card = colEl.createDiv({ cls: "bpp-card" });
+    card.setAttr("data-bpp-row", entry.file.path);
     card.createDiv({ cls: "bpp-card-head" }).createDiv({ cls: "bpp-card-title", text: entry.file.basename });
-    if (ctx.writeKey) {
+    const meta = card.createDiv({ cls: "bpp-card-meta" });
+    for (const field of this.plugin.settings.kanbanCardFields) {
+      const value = this.fieldValue(entry, field);
+      if (value) meta.createSpan({ cls: "bpp-chip bpp-chip-tag", text: value, attr: { title: `${field}: ${value}` } });
+    }
+    if (!meta.hasChildNodes()) meta.remove();
+    if (ctx.groupKey) {
       card.draggable = true;
       card.addEventListener("dragstart", (e) => {
         var _a;
         card.addClass("is-dragging");
+        this.cardDragActive = true;
+        this.dismissHover();
         (_a = e.dataTransfer) == null ? void 0 : _a.setData("text/plain", entry.file.path);
         if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
       });
-      card.addEventListener("dragend", () => card.removeClass("is-dragging"));
+      card.addEventListener("dragend", () => {
+        card.removeClass("is-dragging");
+        this.cardDragActive = false;
+      });
       this.wireCardReorder(card, entry, col, ctx);
     }
     card.addEventListener("click", () => void this.app.workspace.getLeaf(false).openFile(entry.file));
+    card.addEventListener("contextmenu", (e) => this.openCardMenu(e, entry, col, ctx));
+    card.addEventListener("mousedown", () => this.dismissHover());
+    card.addEventListener("mouseover", (event) => {
+      if (this.cardDragActive) return;
+      this.app.workspace.trigger("hover-link", {
+        event,
+        source: KANBAN_BASES_VIEW_ID,
+        hoverParent: this,
+        targetEl: card,
+        linktext: entry.file.path,
+        sourcePath: entry.file.path
+      });
+    });
   }
-  /** Whole-column drop (on empty space): a cross-column move appended at the end. */
+  // ---- drag & drop ----------------------------------------------------------
+  makeColumnDraggable(colEl, head, name, groupKey) {
+    head.draggable = true;
+    head.addEventListener("dragstart", (e) => {
+      var _a;
+      colEl.addClass("is-col-dragging");
+      (_a = e.dataTransfer) == null ? void 0 : _a.setData("application/x-bpp-bcol", name);
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+    });
+    head.addEventListener("dragend", () => colEl.removeClass("is-col-dragging"));
+    void groupKey;
+  }
   wireColumnDrop(colEl, col, ctx) {
     colEl.addEventListener("dragover", (e) => {
       var _a, _b;
-      if (!((_b = (_a = e.dataTransfer) == null ? void 0 : _a.types) != null ? _b : []).includes("text/plain")) return;
+      const types = (_b = (_a = e.dataTransfer) == null ? void 0 : _a.types) != null ? _b : [];
+      const isCol = types.includes("application/x-bpp-bcol");
+      if (!isCol && !types.includes("text/plain")) return;
       e.preventDefault();
-      colEl.addClass("is-drop-target");
+      colEl.addClass(isCol ? "is-col-drop-target" : "is-drop-target");
       if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
     });
-    colEl.addEventListener("dragleave", () => colEl.removeClass("is-drop-target"));
+    colEl.addEventListener("dragleave", () => {
+      colEl.removeClass("is-drop-target");
+      colEl.removeClass("is-col-drop-target");
+    });
     colEl.addEventListener("drop", (e) => {
-      var _a;
+      var _a, _b;
       e.preventDefault();
       colEl.removeClass("is-drop-target");
-      const path = (_a = e.dataTransfer) == null ? void 0 : _a.getData("text/plain");
+      colEl.removeClass("is-col-drop-target");
+      const movedCol = (_a = e.dataTransfer) == null ? void 0 : _a.getData("application/x-bpp-bcol");
+      if (movedCol && ctx.groupKey) {
+        void this.reorderColumn(movedCol, col.name, ctx.groupKey);
+        return;
+      }
+      const path = (_b = e.dataTransfer) == null ? void 0 : _b.getData("text/plain");
       if (path) void this.drop(path, col, null, true, ctx);
     });
   }
@@ -8017,23 +8157,19 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
       void this.drop(path, col, target, this.inTopHalf(card, e), ctx);
     });
   }
-  /**
-   * Commit a drop: move the dragged note to `col` (writing the group property if the
-   * column changed) and set its `rank` so it lands before/after `target` (or at the
-   * end when `target` is null). Renumbers the destination column only when the gap
-   * can't be split — the same plan the standalone board uses.
-   */
+  /** Move the dragged note to `col` (writing the group property when the column
+   * changed) and set its `rank` so it lands before/after `target` (end when null). */
   async drop(path, col, target, before, ctx) {
     const moved = ctx.entryOf.get(path);
-    if (!moved) return;
+    if (!moved || !ctx.groupKey) return;
     const from = ctx.columnOf.get(path);
-    const crossColumn = ctx.writeKey !== null && (!from || from.value !== col.value);
-    const items = col.entries.filter((e) => e.file.path !== path).map((e) => ({ id: e.file.path, rank: this.rankOf(e) }));
-    if (moved) items.push({ id: path, rank: this.rankOf(moved) });
+    const crossColumn = !from || from.value !== col.value;
+    const rest = col.entries.filter((e) => e.file.path !== path);
+    const items = rest.map((e) => ({ id: e.file.path, rank: this.rankOf(e) }));
+    items.push({ id: path, rank: this.rankOf(moved) });
     let index;
-    if (target === null) index = col.entries.filter((e) => e.file.path !== path).length;
+    if (target === null) index = rest.length;
     else {
-      const rest = col.entries.filter((e) => e.file.path !== path);
       const pos = rest.findIndex((e) => e.file.path === target.file.path);
       if (pos === -1) return;
       index = before ? pos : pos + 1;
@@ -8042,9 +8178,9 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
     const rankById = new Map(rankWrites.map((w) => [w.id, w.rank]));
     try {
       await this.app.fileManager.processFrontMatter(moved.file, (fm) => {
-        if (crossColumn && ctx.writeKey) {
-          if (col.value === "") delete fm[ctx.writeKey];
-          else fm[ctx.writeKey] = col.value;
+        if (crossColumn) {
+          if (col.value === "") delete fm[ctx.groupKey];
+          else fm[ctx.groupKey] = col.value;
         }
         if (rankById.has(path)) fm[RANK_PROP] = rankById.get(path);
       });
@@ -8061,12 +8197,207 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
       new import_obsidian7.Notice(`Bases Power Pack: could not move the card (${String(error)}).`);
     }
   }
-  // ---- helpers (defensive against the young Bases API) ----------------------
+  // ---- menus ----------------------------------------------------------------
+  openCardMenu(anchor, entry, col, ctx) {
+    anchor.preventDefault();
+    const menu = new import_obsidian7.Menu();
+    menu.addItem((i) => i.setTitle("Open").setIcon("file").onClick(() => void this.app.workspace.getLeaf(false).openFile(entry.file)));
+    menu.addItem((i) => i.setTitle("Open to the right").setIcon("separator-vertical").onClick(() => void this.app.workspace.getLeaf("split").openFile(entry.file)));
+    if (ctx.groupKey) {
+      menu.addSeparator();
+      for (const other of this.otherColumnNames(col, ctx)) {
+        menu.addItem((i) => i.setTitle(`Move to "${other.name}"`).setIcon("arrow-right").onClick(() => void this.moveTo(entry, other, ctx)));
+      }
+    }
+    menu.addSeparator();
+    menu.addItem((i) => i.setTitle("Rename note\u2026").setIcon("text-cursor-input").onClick(() => this.renameNote(entry)));
+    menu.addItem((i) => i.setTitle("Delete note").setIcon("trash").onClick(() => this.deleteNote(entry)));
+    menu.showAtMouseEvent(anchor);
+  }
+  openColumnMenu(anchor, col, names, ctx) {
+    anchor.preventDefault();
+    const menu = new import_obsidian7.Menu();
+    if (ctx.groupKey) {
+      menu.addItem((i) => i.setTitle("Add note").setIcon("plus").onClick(() => void this.addNote(col, ctx.groupKey)));
+      menu.addItem((i) => i.setTitle("Rename column\u2026").setIcon("pencil").onClick(() => this.renameColumn(col, ctx.groupKey)));
+      menu.addSeparator();
+      const idx = names.indexOf(col.name);
+      if (idx > 0) menu.addItem((i) => i.setTitle("Move column left").setIcon("arrow-left").onClick(() => void this.moveColumnBy(names, col.name, -1, ctx.groupKey)));
+      if (idx !== -1 && idx < names.length - 1) menu.addItem((i) => i.setTitle("Move column right").setIcon("arrow-right").onClick(() => void this.moveColumnBy(names, col.name, 1, ctx.groupKey)));
+      menu.addSeparator();
+    }
+    for (const [label, hue] of COLOR_SWATCHES) {
+      menu.addItem((i) => i.setTitle(label).setIcon("circle").onClick(() => void this.setColumnColor(col.name, hue)));
+    }
+    menu.addItem((i) => i.setTitle("Reset color").onClick(() => void this.setColumnColor(col.name, null)));
+    if (col.extra && col.entries.length === 0 && ctx.groupKey) {
+      menu.addSeparator();
+      menu.addItem((i) => i.setTitle("Remove empty column").setIcon("trash").onClick(() => void this.removeExtraColumn(col.name, ctx.groupKey)));
+    }
+    menu.showAtMouseEvent(anchor);
+  }
+  // ---- mutations (settings shared with the standalone board) ----------------
+  async reorderColumn(moved, target, groupKey) {
+    var _a;
+    const current = (_a = this.plugin.settings.kanbanColumnOrder[groupKey]) != null ? _a : this.currentColumnNames();
+    this.plugin.settings.kanbanColumnOrder[groupKey] = reorderColumns(current, moved, target);
+    await this.plugin.saveSettings({ invalidateResolved: false });
+    this.onDataUpdated();
+  }
+  async moveColumnBy(names, name, delta, groupKey) {
+    const idx = names.indexOf(name);
+    const to = idx + delta;
+    if (idx === -1 || to < 0 || to >= names.length) return;
+    const next = [...names];
+    [next[idx], next[to]] = [next[to], next[idx]];
+    this.plugin.settings.kanbanColumnOrder[groupKey] = next;
+    await this.plugin.saveSettings({ invalidateResolved: false });
+    this.onDataUpdated();
+  }
+  async setColumnColor(name, hue) {
+    const map = this.plugin.settings.kanbanColorOverrides;
+    if (hue === null) delete map[name];
+    else map[name] = String(hue);
+    await this.plugin.saveSettings({ invalidateResolved: false });
+    this.onDataUpdated();
+  }
+  async addExtraColumn(name, groupKey) {
+    var _a;
+    const map = this.plugin.settings.kanbanExtraColumns;
+    const existing = (_a = map[groupKey]) != null ? _a : [];
+    if (!existing.some((n) => n.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+      map[groupKey] = [...existing, name];
+      await this.plugin.saveSettings({ invalidateResolved: false });
+    }
+    this.onDataUpdated();
+  }
+  async removeExtraColumn(name, groupKey) {
+    var _a;
+    const map = this.plugin.settings.kanbanExtraColumns;
+    const next = ((_a = map[groupKey]) != null ? _a : []).filter((n) => n !== name);
+    if (next.length > 0) map[groupKey] = next;
+    else delete map[groupKey];
+    await this.plugin.saveSettings({ invalidateResolved: false });
+    this.onDataUpdated();
+  }
+  async moveTo(entry, col, ctx) {
+    await this.drop(entry.file.path, col, null, true, ctx);
+  }
+  async addNote(col, groupKey) {
+    try {
+      const value = col.value || col.name;
+      const file = await createSeededNote(this.plugin, this.plugin.settings.kanbanQuickAddFolder, groupKey, value, `New ${value}`);
+      new import_obsidian7.Notice(`Created ${file.basename}`);
+    } catch (error) {
+      new import_obsidian7.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
+    }
+  }
+  renameNote(entry) {
+    new PromptModal(this.app, {
+      title: "Rename note",
+      value: entry.file.basename,
+      cta: "Rename",
+      onSubmit: (name) => {
+        var _a;
+        const clean = name.trim();
+        if (!clean || clean === entry.file.basename) return;
+        const parent = ((_a = entry.file.parent) == null ? void 0 : _a.path) ? `${entry.file.parent.path}/` : "";
+        const target = (0, import_obsidian7.normalizePath)(`${parent}${clean}.${entry.file.extension}`);
+        this.app.fileManager.renameFile(entry.file, target).catch((e) => new import_obsidian7.Notice(`Rename failed: ${String(e)}`));
+      }
+    }).open();
+  }
+  deleteNote(entry) {
+    new ConfirmModal(this.app, {
+      title: "Delete note?",
+      body: `"${entry.file.basename}" will be moved to trash.`,
+      cta: "Delete",
+      onConfirm: () => void this.app.fileManager.trashFile(entry.file).catch((e) => new import_obsidian7.Notice(`Delete failed: ${String(e)}`))
+    }).open();
+  }
+  renameColumn(col, groupKey) {
+    if (col.value === "") {
+      new import_obsidian7.Notice("The (no value) column can't be renamed.");
+      return;
+    }
+    new PromptModal(this.app, {
+      title: `Rename column "${col.name}"`,
+      value: col.name,
+      cta: "Rename",
+      onSubmit: (next) => {
+        const to = next.trim();
+        if (!to || to === col.value) return;
+        const run = () => void this.doColumnRename(col, to, groupKey);
+        if (col.entries.length > 5) {
+          new ConfirmModal(this.app, {
+            title: "Rename column?",
+            body: `This rewrites "${groupKey}: ${col.value}" \u2192 "${to}" on ${col.entries.length} notes.`,
+            cta: "Rename",
+            onConfirm: run
+          }).open();
+        } else run();
+      }
+    }).open();
+  }
+  async doColumnRename(col, to, groupKey) {
+    let ok = 0;
+    for (const entry of col.entries) {
+      try {
+        await this.app.fileManager.processFrontMatter(entry.file, (fm) => {
+          fm[groupKey] = to;
+        });
+        ok++;
+      } catch (e) {
+      }
+    }
+    const colors = this.plugin.settings.kanbanColorOverrides;
+    if (colors[col.value] !== void 0) {
+      colors[to] = colors[col.value];
+      delete colors[col.value];
+    }
+    const order = this.plugin.settings.kanbanColumnOrder[groupKey];
+    if (order) this.plugin.settings.kanbanColumnOrder[groupKey] = order.map((n) => n === col.value ? to : n);
+    await this.plugin.saveSettings({ invalidateResolved: false });
+    new import_obsidian7.Notice(`Renamed "${col.value}" \u2192 "${to}" on ${ok} note${ok === 1 ? "" : "s"}.`);
+  }
+  // ---- helpers --------------------------------------------------------------
+  otherColumnNames(col, ctx) {
+    const seen = /* @__PURE__ */ new Map();
+    for (const c of ctx.columnOf.values()) if (c.name !== col.name) seen.set(c.name, c);
+    return [...seen.values()];
+  }
+  currentColumnNames() {
+    const names = /* @__PURE__ */ new Set();
+    for (const g of this.safeGroups()) {
+      if (this.hasKey(g) && g.key) names.add(g.key.toString());
+    }
+    return [...names];
+  }
+  hueFor(name) {
+    var _a;
+    return (_a = this.plugin.settings.kanbanColorOverrides[name]) != null ? _a : String(columnHue(name));
+  }
+  fieldValue(entry, field) {
+    try {
+      const v = entry.getValue(`note.${field}`);
+      const s = v == null ? "" : v.toString();
+      return s.trim() ? s : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  dismissHover() {
+    var _a;
+    const hp = this.hoverPopover;
+    if (hp) {
+      (_a = hp.hoverEl) == null ? void 0 : _a.remove();
+      this.hoverPopover = null;
+    }
+  }
   inTopHalf(el, e) {
     const rect = el.getBoundingClientRect();
     return e.clientY < rect.top + rect.height / 2;
   }
-  /** A card's manual rank, or null when it has never been hand-ordered. */
   rankOf(entry) {
     try {
       const v = entry.getValue(RANK_PROP_ID);
@@ -8075,8 +8406,6 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
       return null;
     }
   }
-  /** Order two entries by rank (unranked last), ties broken by file name — the same
-   * order the standalone board shows, so a reorder plans against what's on screen. */
   compareRank(a, b) {
     const ar = this.rankOf(a);
     const br = this.rankOf(b);
@@ -8111,12 +8440,6 @@ var KanbanBasesView = class extends import_obsidian7.BasesView {
       return group.key != null;
     }
   }
-  /**
-   * The writable frontmatter key backing the group-by, or null (→ a read-only board).
-   * The typings don't expose the group property, so try the untyped config paths the
-   * reference plugins read, then `getAsPropertyId`; only a `note.*` property is a
-   * writable frontmatter key (a `file.*` / `formula.*` group stays read-only).
-   */
   resolveGroupKey() {
     const cfg = this.config;
     let pid = null;
@@ -10775,8 +11098,9 @@ var BasesPowerPackPlugin = class extends import_obsidian13.Plugin {
     this.registerBasesView(KANBAN_BASES_VIEW_ID, {
       name: "Kanban",
       icon: "layout-dashboard",
-      factory: (controller, containerEl) => new KanbanBasesView(controller, containerEl)
+      factory: (controller, containerEl) => new KanbanBasesView(controller, containerEl, this)
     });
+    this.registerHoverLinkSource(KANBAN_BASES_VIEW_ID, { display: "Bases Power Pack kanban", defaultMod: true });
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => this.queueHierarchyRetarget(file.path, oldPath))
     );

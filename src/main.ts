@@ -170,8 +170,11 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.registerBasesView(KANBAN_BASES_VIEW_ID, {
 			name: "Kanban",
 			icon: "layout-dashboard",
-			factory: (controller, containerEl) => new KanbanBasesView(controller, containerEl),
+			factory: (controller, containerEl) => new KanbanBasesView(controller, containerEl, this),
 		});
+		// Ctrl+hover preview for Bases kanban cards (defaultMod: true so a plain hover
+		// never pops a popover that would block dragging).
+		this.registerHoverLinkSource(KANBAN_BASES_VIEW_ID, { display: "Bases Power Pack kanban", defaultMod: true });
 
 		// Keep the hierarchy intact when a parent note is renamed/moved: repoint any
 		// child whose parent property pointed at the old path (premium; one undo
