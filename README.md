@@ -10,190 +10,60 @@ Turn Obsidian **Bases** into a real planning workspace: a genuinely useful free 
 
 _Move a card across columns and reorder it in one gesture._
 
-![Push work cleanly from review to done](docs/assets/review-to-done.gif)
+![Push work cleanly from review to done without leaving the board](docs/assets/review-to-done.gif)
 
 _Push work cleanly from review to done without leaving the board._
 
-### Why it feels different
+![Kanban board with rich card metadata](docs/assets/hero-board.png)
 
-- **Real drag-and-drop** writes frontmatter back to your notes.
-- **Manual ordering** lets you place a card between two others and keep that rank.
-- **Quick-edit boards** mean less context switching and less YAML janitor work.
-- **Lite is actually useful**; Premium adds Calendar, Gantt, Dashboard, Gallery, Pivot, Feed, formulas, roll-ups, and saved filters.
+_Kanban cards can show due dates, priority, owners, and more — without turning into YAML sludge._
 
----
+![Workflow completion after a drag](docs/assets/review-done.png)
+
+_One drag can move the work and leave the board in a cleaner state._
+
+## Why people buy it
+
+- **The free tier is actually useful.** You get a real Kanban board, not a crippled teaser.
+- **It writes back to your notes.** Drag a card, reschedule a date, resize a timeline bar — the frontmatter updates.
+- **It reduces note janitor work.** Inline edits, bulk edit, search, saved filters, and automation keep you in the workflow instead of babysitting YAML.
+- **Premium adds planning depth, not filler.** Calendar, Gantt, Dashboard, Gallery, Pivot, Feed, formulas, roll-ups, and `.base` workflows are the upgrade story.
+- **It stays local-friendly.** No account and no mandatory cloud dependency just to unlock what you bought.
+
+## What you get
+
+| Capability | Lite (free) | Premium |
+| --- | :---: | :---: |
+| Real Kanban board for Bases / frontmatter notes | ✅ | ✅ |
+| Drag cards across columns and reorder them manually | ✅ | ✅ |
+| Quick add, inline edit, bulk edit, search, export to Markdown | ✅ | ✅ |
+| Swimlanes, WIP limits, multi-select moves, touch + keyboard moves | ✅ | ✅ |
+| Calendar + Gantt planning views | — | ✅ |
+| Dashboard + Pivot + Gallery + Feed views | — | ✅ |
+| Formulas, roll-ups, saved filters, `.base`-driven workflows | — | ✅ |
+| Move Rules automation, CSV export, color rules | — | ✅ |
+
+## Views at a glance
+
+- **Kanban** — group work by a property like `status`, drag cards, reorder them, and edit metadata in place.
+- **Calendar** — see work by day/week/month and drag events to reschedule them.
+- **Gantt** — plan spans and milestones on a timeline; drag bars to move or resize them.
+- **Outline** — turn parent/child notes into a real hierarchy with progress roll-ups.
+- **Pivot** — cross-tabulate rows × columns like a lightweight spreadsheet.
+- **Dashboard** — KPI cards and distribution charts over your current dataset.
+- **Gallery** — visual card grid with cover images and metadata pills.
+- **Feed** — reverse-chronological stream grouped by day, week, or month.
 
 ## 2-minute quick start
 
-1. Run **Open Kanban view (Lite)** from the command palette (or click the ribbon icon) to open the board.
-2. Add `status: To Do` to a few notes' frontmatter so they show up as cards.
-3. Drag a card to another column — the `status` frontmatter is rewritten for you.
-4. Click the **⋯** on a card for edit / rename / delete actions.
-5. Use the toolbar **search** to filter cards and **⤓ Export** to copy the board out.
-6. Premium adds the **Calendar, Gantt, Outline, Pivot, Dashboard, Gallery, and Feed** views.
+1. Run **Open Kanban view (Lite)** from the command palette or click the ribbon icon.
+2. Add a property like `status: To Do` to a few notes.
+3. Drag a card to another column and watch the note update.
+4. Click **⋯** on a card to edit, rename, move, or delete.
+5. Use **search** to narrow the board and **Export** to copy it out.
+6. If you want planning views and database-style workflows, unlock Premium.
 
----
-
-## Lite vs. Premium
-
-| Feature | Lite (free) | Premium (~$29 one-time) |
-| --- | :---: | :---: |
-| **Kanban view** (group notes by a frontmatter property) | ✅ | ✅ |
-| **Kanban quick filters** (search, sort, hide done) | ✅ | ✅ |
-| **Kanban quick add** (create a note directly from a column) | ✅ | ✅ |
-| **Kanban drag-and-drop updates** (move a card, write frontmatter) | ✅ | ✅ |
-| **Kanban add / remove columns** (create a new status column from the board) | ✅ | ✅ |
-| **Kanban reorder columns** (drag a column header to reposition it) | ✅ | ✅ |
-| **Manual card ordering** (drag a card between two others; a rank is written) | ✅ | ✅ |
-| **Keyboard & touch card moves** (long-press to drag on touch; Move up/down + Move to column/lane from the menu) | ✅ | ✅ |
-| **Auto-scroll while dragging** (the board follows a card to off-screen columns / down a tall column) | ✅ | ✅ |
-| **Multi-select move** (Ctrl/Cmd/Shift-click cards, then move the whole set in one undo step) | ✅ | ✅ |
-| **Date picker on cards** (a real date picker when editing a `due`/calendar/Gantt date field) | ✅ | ✅ |
-| **Swimlanes** (a second group-by splits the board into horizontal bands) | ✅ | ✅ |
-| **Floating editor** (open a card's note in an editor floating over the board) | ✅ | ✅ |
-| **New Kanban board command** (scaffold a folder + sample notes + open the board) | ✅ | ✅ |
-| **Predefined column sets** (apply an ordered, colored, done-marked layout in one click) | ✅ | ✅ |
-| **Native Bases view** (a "Kanban" view type inside the Bases dropdown; Obsidian 1.10+) | ✅ | ✅ |
-| **Kanban color-coded columns & cards** (stable color per column value) | ✅ | ✅ |
-| **Kanban card metadata** (due / priority / owner / tags on the card) | ✅ | ✅ |
-| **Semantic card chips** (overdue/due-soon pill, priority badge, tag pills) | ✅ | ✅ |
-| **Kanban inline card edit** (click a field, write frontmatter in place) | ✅ | ✅ |
-| **Kanban group-by picker** (re-group the board from the toolbar) | ✅ | ✅ |
-| **Right-click menus** (card: open/move/rename/edit/delete · column: color/rename/WIP/add) | ✅ | ✅ |
-| **Bulk edit** (set/clear/toggle a property across the visible cards) | ✅ | ✅ |
-| **WIP limits** (per-column work-in-progress caps; flag or block over-limit) | ✅ | ✅ |
-| **Undo** (reverse the last move, edit, bulk change, or column rename) | ✅ | ✅ |
-| **Export as Markdown** (copy the board / any view as a Markdown table or task board) | ✅ | ✅ |
-| **Export as CSV** (copy the current view or pivot matrix as CSV) | — | ✅ |
-| **Move Rules automation** (on entering a column, auto-write frontmatter) | — | ✅ |
-| **Rule-based color coding** (color cards / events / bars by an expression rule) | — | ✅ |
-| **Calendar view** (Month / Week / Agenda with an Overdue section) | — | ✅ |
-| **Calendar drag-to-reschedule** (move an event, write the date) | — | ✅ |
-| **Calendar create-on-day** + color-by property | — | ✅ |
-| **Quick search** (by name/path/folder/tags, plus `key:value` property tokens) | ✅ | ✅ |
-| **Right-click menus on calendar events & Gantt bars** (reschedule/set-date, open, rename, delete) | — | ✅ |
-| **Gantt timeline view** (bars from start/end dates) | — | ✅ |
-| **Gantt drag-to-move / resize** (reschedule + change duration) | — | ✅ |
-| **Gantt zoom, scroll-to-today, progress fill & milestones** | — | ✅ |
-| **Outline / hierarchy view** (nest notes by a parent property into a tree) | — | ✅ |
-| **Outline drag-to-reparent** + add-child, branch roll-ups (count · done/total · progress) | — | ✅ |
-| **Rename-safe hierarchy** (renaming a parent repoints its children) | — | ✅ |
-| **Pivot / matrix view** (cross-tabulate rows × columns with totals) | — | ✅ |
-| **Dashboard / analytics view** (KPI cards + bar/donut distribution charts) | — | ✅ |
-| **Gallery view** (visual grid of cover images with detail pills) | — | ✅ |
-| **Feed / timeline view** (reverse-chron stream grouped by day / week / month) | — | ✅ |
-| **Roll-ups** (aggregate an expression across rows, plus per-column chips) | — | ✅ |
-| **Formulas** (computed columns / card values) | — | ✅ |
-| **Saved filters & view presets** | — | ✅ |
-| **`.base` file as data source** (read Bases filters + formulas) | — | ✅ |
-
-Lite is a genuinely useful kanban layer: create, move, and inline-edit cards, re-group and search/sort the board, all without paying. Premium is the **interactive planning suite** — a calendar and Gantt you can *drag to plan* (they write dates back to your notes, just like the free board writes status), plus the database brains: formulas, roll-ups, saved filters, and `.base`-driven workflows.
-
-### How the views work
-
-All views run on a shared query engine. In the **Lite** tier they read standard frontmatter across the vault; in **Premium** they can instead take a `.base` file as their data source, applying its filters and formulas.
-
-- **Kanban** — groups rows by a configurable property (default `status`), supports quick search/sort/hide-done controls and a toolbar **group-by picker** (sort and hide-done are remembered per group-by across restarts), lets you create a note directly from any column, add brand-new status columns from the board (so you can drag a card to a status no note has yet), drag cards between columns to update frontmatter, and drag column headers to reorder the board. Card fields render as **semantic chips**: a due pill that turns red when overdue (and amber when due within 2 days), a priority badge, and tag pills — click any of them to **edit the value in place**. Set a **WIP limit** on any column (right-click its header) to cap its cards — the count is the column's true membership, so a search can't sneak a move past the cap. Columns and their cards are color-coded by a stable hue per value (toggle in settings). Premium cards can also show a formula value (e.g. `round(done / total * 100, 0) + "%"`), and premium roll-ups also compute **per column** ("Doing 6/8 · 21 pts"). Click a card to open the note. Cards are **hand-orderable by default** — with the **Manual** sort (the default), **drag a card between two others** and its position is saved to a numeric `rank` property. The toolbar **⤓ Export** copies the board as a Markdown task list or table (free), or as CSV (premium). Dragging a card near an edge **auto-scrolls** the board to reach off-screen columns or the bottom of a tall column, on mouse and touch alike; **long-press** a card on a phone or tablet to drag it, and **Ctrl/Cmd/Shift-click** cards to multi-select and move the whole set at once. Choose a second property in the toolbar's **Swimlanes** control (free) and the board splits into horizontal bands — columns stay aligned across every lane, and dragging a card into another band rewrites the lane property. Cards can show a **cover image** (set a card image property — a path, wikilink, or URL), reveal a **native hover preview** on hover, be **renamed inline** (the hover ✎, F2, or the menu; double-click a column header to rename a column), and their **tag chips filter the board** on click. **Collapse** a column to a narrow strip (its chevron) to focus the board — it still accepts drops.
-- **Calendar** — Month, Week, or Agenda. Places rows onto days using a configurable date property (default `due`), highlights today, and can color events by any property. The Agenda leads with an **Overdue** section so slipped work is impossible to miss, and past-day events carry a red edge in Month/Week. **Drag an event to another day to reschedule it** (the date property is rewritten, preserving any time-of-day), or hover a day and click **+** to create a note dated to that day. A toolbar **search** filters events; **right-click an event** to reschedule via a prompt, open, rename, or delete without dragging.
-- **Gantt** — horizontal timeline; each row becomes a bar from a start date property to an optional end date. **Drag a bar to move it, drag its right edge to resize** (both write frontmatter). Zoom the time scale, scroll to today, fill bars by a `progress` property (accepts a `0–1` fraction or a `0–100` percent), and show `milestone` notes as diamonds. A toolbar **search** filters bars; **right-click a bar** to set its start/end date via a prompt, open, rename, or delete.
-- **Outline** — an indented tree of your notes linked by a `parent` frontmatter property holding the parent note's path. Each branch rolls up a **descendant count** and a **done / total + progress** bar over its leaf tasks. **Drag a row onto another to reparent it**, drop it on the top strip to detach it, or right-click to add a child, set/clear the parent, and open/rename/delete. Cycles and dangling parents are flagged, not crashed; a parent that's filtered out still appears as a faint placeholder so its children stay nested. Renaming or moving a parent note automatically repoints its children.
-- **Pivot** _(Premium)_ — a spreadsheet-style matrix. Pick a **row property** and a **column property** and the view cross-tabulates your notes at every intersection, aggregating with `count`, `sum`, `avg`, `min`/`max`, `unique`, and more (feed it a formula for weighted or computed cells). Every row, every column, and the corner carry a **total**. Row/column/aggregation are chosen from the toolbar and remembered; high-cardinality properties are capped so the grid can't explode.
-- **Dashboard** _(Premium)_ — a live reporting surface. **KPI cards** show your configured roll-ups (or built-in totals — notes, done, remaining — when you have none), and a **distribution chart** groups notes by any property and aggregates each category, drawn as horizontal **bars** or a **donut** (toggle from the toolbar). Everything reuses the roll-up engine, so a headline number and its chart always agree; it honors your active base and saved filters.
-- **Gallery** _(Premium)_ — a visual grid of cards. Each card shows a **cover image** taken from a configurable frontmatter property (a vault path, wikilink, markdown image, or URL), the note title, and your card-detail fields as pills. Notes with no cover get a tidy monogram placeholder so the grid stays even. Click a card to open it; the ⋯ / right-click menu offers the shared open / edit / rename / delete actions.
-- **Feed** _(Premium)_ — a reverse-chronological **timeline** of your notes, the "time as a stream" companion to the Calendar's grid and the Gantt's spans. Group by **modified** or **created** date (`file.mtime` / `file.ctime`) for an activity log, or by any frontmatter date for a due/publish stream — then bucket by **day, week, or month** from the toolbar. Each entry carries your card-detail fields as pills, opens on click, and offers the shared ⋯ / right-click actions; a quick-search narrows the stream and notes with no date collect in an **Undated** section.
-
-### Quick search (Free)
-
-Every view's toolbar search matches note **name, path, folder, and tags** — and
-understands **property tokens**: `priority:high`, `owner:sam`, `tag:blocked`, or
-any `key:value` (substring, case-insensitive; premium formulas resolve too).
-Multiple tokens must all match, so `owner:sam urgent` narrows to Sam's urgent
-items. A literal `foo:bar` string in a note name still matches as plain text.
-
-### WIP limits (Free)
-
-Right-click a Kanban column header and choose **Set WIP limit…** to cap how many cards it should hold. The header then shows `count / limit`, and a column over its cap turns red. Turn on **Settings → Bases Power Pack → Enforce WIP limits** to *block* a move that would push a column past its limit (a notice explains why) — with it off, over-limit columns are simply flagged. Creating notes, bulk edits, and Move Rules are never blocked; only moves are. A limit follows its column across a rename.
-
-### Undo (Free)
-
-Every frontmatter write Power Pack makes — a drag-to-move, a reschedule, a Gantt resize, an inline card edit, a bulk edit, or a whole column rename across many notes — is reversible. Run **Undo last change** from the command palette, or click the **Undo** button in any view's toolbar (its tooltip names the exact action) — the prior values are restored, and a multi-note operation undoes as a single step.
-
-### Accessibility & mobile (Free)
-
-Every view works without a mouse and on touch. Each card, calendar event, Gantt bar, and Outline row is keyboard-focusable — **Enter** opens it, **Shift+F10** (or the Menu key) opens its actions — and carries a **⋯ button** that opens the same action menu by tap, so moving a card, rescheduling an event, resizing a bar, or reparenting a note never requires a drag. On the Kanban board you can also **long-press a card to drag it** on touch, and reorder or re-lane a card straight from its menu (**Move up / Move down in column**, **Move to column**, **Move to lane**) — a full no-mouse path for hand-ordering and banding. The Outline is a proper ARIA tree (arrow keys navigate and expand/collapse); Gantt bars move and resize with the arrow keys; the board honors high-contrast / forced-colors themes.
-
-### Outline / hierarchy (Premium)
-
-Give your notes real structure: initiative → project → task → subtask. Each note names its parent by **path** in a frontmatter property (default `parent`, e.g. `parent: Projects/Website.md`), and the **Outline** view renders the whole forest as an indented, collapsible tree.
-
-- **Branch roll-ups.** Every parent shows how many notes are under it and a **done / total** progress bar over its leaf tasks (a note counts as done when its group value is `done` or it has a truthy `done`).
-- **Drag to reparent.** Drag a row onto another to nest it (writes the parent path), or drop it on the top strip to make it top-level — all undoable. The right-click menu adds *Add child note*, *Set parent…*, *Make top-level*, plus the shared open / rename / delete actions.
-- **Safe by construction.** Parent cycles and dangling parent paths are flagged and quarantined, never crashed. A parent filtered out of the current view shows as a faint placeholder so its visible children stay nested. Renaming or moving a parent note automatically repoints its children.
-- Set the parent property, an optional sibling-`order` property, and a quick-add folder in **Settings → Bases Power Pack**.
-
-### `.base` integration (Premium)
-
-Point **Settings → Bases Power Pack → Active base** at any `.base` file. The plugin parses its `filters` and `formulas` and uses that as the row set for every view — so a Bases database can be visualized as a kanban board, calendar, or Gantt chart. Choose *All notes* to run over the whole vault instead.
-
-### Formulas & roll-ups (Premium)
-
-Formulas and roll-ups share one safe expression language (no `eval`): arithmetic, comparisons, `&&`/`||`, `if(cond, a, b)`, and functions like `sum`, `avg`, `round`, `contains`, `empty`, `default`, `date`, and `datediff`. Reference any frontmatter key by name (`done`, `total`), `file.*` fields (`file.name`, `file.mtime`), or a key with spaces via `prop("key name")`.
-
-- **Formulas** from the active `.base` are available to every filter, roll-up, and the Kanban card line.
-- **Roll-ups** aggregate an expression across the visible rows (`count`, `sum`, `avg`, `min`, `max`, `unique`, `filled`, `empty`, `range`) and render as a summary bar. Configure them in settings.
-
-### Automation — Move Rules (Premium)
-
-Turn the Kanban board into a workflow. A **Move Rule** fires when a card's
-trigger property *enters* a value — for example, dragging a card into the
-**Done** column. Each rule runs an ordered list of frontmatter actions:
-
-- **Set to value** — write a literal (e.g. `done = true`).
-- **Set to today / now** — stamp a date (e.g. `completed = 2026-07-15`) or a
-  timestamp.
-- **Clear** — remove a property.
-- **Toggle** — flip a boolean.
-- **Copy from** — copy another property's current value.
-
-Rules fire only on a genuine transition (dropping a card back where it already
-was does nothing), and the writes a rule makes never trigger another rule.
-Configure them under **Settings → Bases Power Pack → Move Rules**.
-
-### Right-click menus & bulk edit (Free)
-
-Right-click a **card** to open it, move it to another column (which fires any
-Move Rules), edit a field, rename the note, or delete it. Right-click a
-**column header** to add a note, recolor the column, rename it (which rewrites
-the property on every note in that column), or remove an empty column. The
-**Bulk edit** toolbar button sets, clears, or toggles a property across every
-card currently visible on the board.
-
-### Saved filters (Premium)
-
-Save named filter expressions (e.g. `status != "done" && priority > 2`) in settings, then switch between them from each view's toolbar. They apply on top of the active base's own filters.
-
-Configure everything in **Settings → Bases Power Pack**.
-
----
-
-## Usage
-
-Commands (open the command palette):
-
-- **Open Kanban view (Lite)**
-- **Open Calendar view (Premium)** — always visible; if you have not unlocked Premium yet, it opens an in-view unlock screen
-- **Open Gantt view (Premium)** — always visible; if you have not unlocked Premium yet, it opens an in-view unlock screen
-- **Open Outline view (Premium)** — always visible; if you have not unlocked Premium yet, it opens an in-view unlock screen
-- **Open Pivot view (Premium)** — always visible; if you have not unlocked Premium yet, it opens an in-view unlock screen
-- **Open Dashboard view (Premium)** — always visible; if you have not unlocked Premium yet, it opens an in-view unlock screen
-- **Open Gallery view (Premium)** — always visible; if you have not unlocked Premium yet, it opens an in-view unlock screen
-- **Open Feed view (Premium)** — always visible; if you have not unlocked Premium yet, it opens an in-view unlock screen
-- **Undo last change** — reverse the most recent frontmatter edit (available only when there is something to undo)
-- **Verify license key**
-
-There's also a ribbon icon for the Kanban board.
-
-### Premium activation
+## Premium activation
 
 Premium is a **one-time unlock**, not a subscription.
 
@@ -208,62 +78,53 @@ Premium includes:
 - formulas, roll-ups, saved filters, and `.base`-driven workflows
 - Move Rules automation, CSV export, and rule-based color coding
 
----
+## Commands
+
+Available from the command palette:
+
+- **Open Kanban view (Lite)**
+- **Open Calendar view (Premium)**
+- **Open Gantt view (Premium)**
+- **Open Outline view (Premium)**
+- **Open Pivot view (Premium)**
+- **Open Dashboard view (Premium)**
+- **Open Gallery view (Premium)**
+- **Open Feed view (Premium)**
+- **Undo last change**
+- **Verify license key**
+
+Premium view commands are always visible. If you have not unlocked Premium yet, they open an in-view unlock screen instead of disappearing like cowards.
+
+## Install into a vault for testing
+
+Copy these three files into:
+
+```text
+<your-vault>/.obsidian/plugins/bases-power-pack/
+```
+
+Files:
+
+```text
+main.js
+manifest.json
+styles.css
+```
+
+Then enable **Bases Power Pack** in **Settings → Community plugins**.
 
 ## Build
 
 ```bash
 npm install
-npm run build      # bundles to main.js
-npm run dev        # watch mode
-npm run typecheck  # tsc --noEmit
-npm test           # offline license verification tests
+npm run build
+npm run dev
+npm run typecheck
+npm test
 ```
 
-`npm run build` produces `main.js` in the project root alongside `manifest.json` and `styles.css` — the three files Obsidian loads.
-
-### Install into a vault for testing
-
-Copy `main.js`, `manifest.json`, and `styles.css` into:
-
-```
-<your-vault>/.obsidian/plugins/bases-power-pack/
-```
-
-Then enable **Bases Power Pack** in *Settings → Community plugins*.
-
----
-
-## Project layout
-
-```
-bases-power-pack/
-├── manifest.json          # Obsidian plugin manifest
-├── versions.json          # version -> minAppVersion map
-├── package.json
-├── tsconfig.json
-├── esbuild.config.mjs     # bundler config
-├── styles.css
-├── .github/workflows/
-│   └── release.yml        # tag-driven GitHub release (build + attach assets)
-├── scripts/
-│   ├── keygen.mjs         # one-time Ed25519 keypair generator (author)
-│   ├── generate-license.mjs   # mint a customer key (author)
-│   └── customer-license-template.txt
-├── tests/
-│   └── license.test.mjs   # offline license sign/verify round-trip
-└── src/
-    ├── main.ts            # plugin entry, commands, view registration
-    ├── settings.ts        # settings interface + settings tab
-    ├── license/
-    │   ├── LicenseManager.ts  # offline Ed25519 verification
-    │   └── publicKey.ts       # embedded public key
-    ├── types/tweetnacl.d.ts   # minimal tweetnacl type shim
-    └── views/
-        ├── kanbanView.ts  # Lite (free) view
-        └── calendarView.ts# Premium (gated) view
-```
+`npm run build` produces `main.js` in the project root alongside `manifest.json` and `styles.css`.
 
 ## License
 
-MIT (plugin source). Premium feature access is governed by a signed license key.
+MIT for the source code. Premium feature access is governed by a signed license key.
