@@ -395,6 +395,10 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.refreshViews();
 	}
 
+	/** Non-leaf hosts (the native Bases view) subscribed to plugin-wide refreshes via
+	 * {@link registerRefresh}, invoked by {@link refreshViews}. */
+	private refreshCallbacks = new Set<() => void>();
+
 	/** Pending old→new path mappings from rename events, flushed together. */
 	private renameRetargets = new Map<string, string>();
 	private renameFlushTimer: number | null = null;
@@ -558,6 +562,29 @@ export default class BasesPowerPackPlugin extends Plugin {
 				void view.render?.();
 			}
 		}
+		// Non-leaf hosts (the native Bases view isn't a workspace leaf, so it's absent from
+		// ALL_VIEW_TYPES) subscribe here, so an undo replay or a license flip — neither of
+		// which need touch a note, so neither fires a metadataCache event — still repaints
+		// them. Without this an open Bases board would keep showing pre-undo/pre-license
+		// state and read as data loss. A throwing subscriber can't abort the rest.
+		for (const cb of [...this.refreshCallbacks]) {
+			try {
+				cb();
+			} catch (error) {
+				console.error("Bases Power Pack: a refresh subscriber threw", error);
+			}
+		}
+	}
+
+	/**
+	 * Subscribe a non-leaf host (the native Bases view) to plugin-wide refreshes fired by
+	 * {@link refreshViews} — undo replay, license/settings changes. Returns an unsubscribe
+	 * the host MUST call on unload, or a closed board's callback leaks and repaints a dead
+	 * DOM. Leaf views don't need this (refreshViews walks their leaves directly).
+	 */
+	registerRefresh(cb: () => void): () => void {
+		this.refreshCallbacks.add(cb);
+		return () => this.refreshCallbacks.delete(cb);
 	}
 
 	/**

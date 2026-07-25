@@ -196,15 +196,18 @@ export class KanbanBoard implements HoverParent {
 
 	// ---- settings-derived getters (board reads settings directly) --------------
 
+	/** The active swimlane property (or ""), sourced from the rendered snapshot so an
+	 * interaction handler agrees with what was painted — the host's input, not a live
+	 * settings read (the standalone's input already carries the degenerate-lane guard; the
+	 * Bases host sends ""). */
 	private get swimlaneProp(): string {
-		const p = (this.plugin.settings.kanbanSwimlaneBy || "").trim();
-		// A lane property equal to the column group-by is degenerate (one card per cell)
-		// — treat it as "off" rather than render a broken board.
-		return p && p !== (this.plugin.settings.kanbanGroupBy || "status") ? p : "";
+		return this.input.swimlaneProp;
 	}
 
+	/** The active group-by, from the rendered snapshot (standalone: settings.kanbanGroupBy;
+	 * Bases: the base's resolved key). Keys the per-group sort / hide-done settings. */
 	private get groupByProp(): string {
-		return this.plugin.settings.kanbanGroupBy || "status";
+		return this.input.groupBy || "status";
 	}
 
 	private get rankProp(): string {
@@ -224,6 +227,22 @@ export class KanbanBoard implements HoverParent {
 
 	private get hideDoneColumn(): boolean {
 		return this.plugin.settings.kanbanHideDone[this.groupByProp] === true;
+	}
+
+	// ---- host capabilities (all true for the standalone; a Bases host may restrict) ----
+
+	/** The group-by is a writable `note.*` property. False → read-only board: no card drag,
+	 * no cross-column move, no column add/remove/rename (a `file.*`/`formula.*` group-by). */
+	private get canWrite(): boolean {
+		return this.host.capabilities.canWriteGroupBy;
+	}
+	/** Modifier-click multi-select + the bulk selection bar are available. */
+	private get canMultiSelect(): boolean {
+		return this.host.capabilities.canMultiSelect;
+	}
+	/** The column-chrome surface (add/remove/rename/WIP/collapse/column-sets) is offered. */
+	private get canColumnChrome(): boolean {
+		return this.host.capabilities.canColumnChrome;
 	}
 
 	/** Open the plugin's settings tab — the empty-state "Choose another property" CTA. */
@@ -424,18 +443,20 @@ export class KanbanBoard implements HoverParent {
 			}
 
 			const actions = colHead.createDiv({ cls: "bpp-column-actions" });
-			const addButton = actions.createEl("button", {
-				cls: "bpp-column-add",
-				text: "+",
-				attr: { "aria-label": `Add note to ${column.name}` },
-			});
-			addButton.addEventListener("click", () => void this.quickAddNote(column.name, groupBy));
+			if (this.canWrite) {
+				const addButton = actions.createEl("button", {
+					cls: "bpp-column-add",
+					text: "+",
+					attr: { "aria-label": `Add note to ${column.name}` },
+				});
+				addButton.addEventListener("click", () => void this.quickAddNote(column.name, groupBy));
+			}
 			rowActions.addOverflowButton(actions, `column ${column.name}`, (a) =>
 				this.openColumnMenu(a, column.name, groupBy, removable, orderedNames)
 			);
 
 			// An empty user-added column can be removed — no notes are affected.
-			if (column.rows.length === 0 && extraColumns.includes(column.name)) {
+			if (this.canColumnChrome && column.rows.length === 0 && extraColumns.includes(column.name)) {
 				const removeButton = actions.createEl("button", {
 					cls: "bpp-column-remove clickable-icon",
 					text: "×",
@@ -479,7 +500,8 @@ export class KanbanBoard implements HoverParent {
 		card.setAttr("data-bpp-row", row.id);
 		if (this.selected.has(row.id)) card.addClass("is-selected");
 		rowActions.applyColorRule(this.plugin, card, row);
-		card.draggable = true;
+		// Read-only board (a `file.*`/`formula.*` group-by): cards open but don't drag.
+		if (this.canWrite) card.draggable = true;
 
 		// Cover image (free): a resolved cover from the configured image property sits at
 		// the top of the card. An absent or unresolvable ref simply shows no cover.
@@ -542,11 +564,11 @@ export class KanbanBoard implements HoverParent {
 		});
 		// Hand-order sort: each card is a precise drop target so a drag lands BETWEEN two
 		// cards, writing a rank that sorts it there.
-		if (ctx.reorderEnabled) this.wireCardReorder(card, row, columnName, ctx.groupBy, ctx.laneKey);
-		// Modifier-click multi-selects; a plain click opens the note (in a tab, or the
-		// floating editor when that's the configured click action).
+		if (ctx.reorderEnabled && this.canWrite) this.wireCardReorder(card, row, columnName, ctx.groupBy, ctx.laneKey);
+		// Modifier-click multi-selects (when the host allows it); a plain click opens the
+		// note (in a tab, or the floating editor when that's the configured click action).
 		card.addEventListener("click", (evt) => {
-			if (evt.ctrlKey || evt.metaKey || evt.shiftKey) {
+			if (this.canMultiSelect && (evt.ctrlKey || evt.metaKey || evt.shiftKey)) {
 				evt.preventDefault();
 				this.toggleSelect(row.id);
 			} else {
@@ -581,7 +603,7 @@ export class KanbanBoard implements HoverParent {
 			});
 		});
 		// Touch: long-press to pick up and drag (mouse keeps the HTML5 path above).
-		this.touch?.attach(card, row.id);
+		if (this.canWrite) this.touch?.attach(card, row.id);
 	}
 
 	/**
@@ -642,6 +664,7 @@ export class KanbanBoard implements HoverParent {
 	}
 
 	private renderAddColumnTile(board: HTMLElement, groupBy: string): void {
+		if (!this.canColumnChrome) return; // read-only board — no add-column affordance
 		const tile = board.createDiv({ cls: "bpp-kanban-column bpp-kanban-add-column" });
 		const form = tile.createDiv({ cls: "bpp-add-column-form" });
 		const input = form.createEl("input", {
@@ -671,6 +694,7 @@ export class KanbanBoard implements HoverParent {
 	 * double-click and the column menu.
 	 */
 	private beginColumnRename(labelSpan: HTMLElement, columnName: string, groupBy: string): void {
+		if (!this.canColumnChrome) return; // read-only board — the column value isn't writable
 		// Disable the header's HTML5 drag while editing, else a mouse text-selection inside
 		// the input hijacks into a column-reorder drag (a re-render — which every exit path
 		// triggers — recreates the header with drag restored).
@@ -892,7 +916,7 @@ export class KanbanBoard implements HoverParent {
 		menu.addSeparator();
 
 		// Keyboard/touch hand-ordering: nudge the card one slot within its cell.
-		if (this.reorderEnabled && columnName) {
+		if (this.reorderEnabled && columnName && this.canWrite) {
 			menu.addItem((i) =>
 				i.setTitle("Move up in column").setIcon("arrow-up").onClick(() => void this.moveCardWithinColumn(row, groupBy, columnName, laneKey, -1))
 			);
@@ -906,7 +930,7 @@ export class KanbanBoard implements HoverParent {
 		// the keyboard/touch move path, since HTML5 drag is dead on touch.
 		const current = toStr(row.scope.get(groupBy));
 		const others = columns.filter((c) => c !== current);
-		if (others.length > 0) {
+		if (others.length > 0 && this.canWrite) {
 			for (const col of others) {
 				menu.addItem((i) =>
 					i.setTitle(`Move to "${col}"`).setIcon("arrow-right").onClick(() => void this.moveRowToColumn(row, groupBy, col))
@@ -917,7 +941,7 @@ export class KanbanBoard implements HoverParent {
 
 		// Swimlane board: move the card to another band (keeps its column).
 		const swimProp = this.swimlaneProp;
-		if (swimProp && laneKey !== null) {
+		if (swimProp && laneKey !== null && this.canWrite) {
 			const otherLanes = this.lastLaneKeys.filter((l) => l !== laneKey);
 			if (otherLanes.length > 0) {
 				const col = toStr(row.scope.get(groupBy));
@@ -949,8 +973,10 @@ export class KanbanBoard implements HoverParent {
 		const laneProp = laneKey === null ? null : this.swimlaneProp || null;
 		const group = groupBy || "status";
 		const rankProp = this.rankProp;
-		const resolved = await this.plugin.getResolvedView();
-		const cell = resolved.rows.filter(
+		// Plan against the rendered snapshot (host-agnostic): the standalone's resolved rows
+		// or the Bases-filtered entry set — never a fresh getResolvedView, which would ignore
+		// a base's filters and re-fetch mid-interaction.
+		const cell = this.input.rows.filter(
 			(r) => toStr(r.scope.get(group)) === columnName && (laneProp === null || laneKeyOf(r, laneProp) === laneKey)
 		);
 		const sorted = [...cell].sort((a, b) => compareRowsByRank(a, b, rankProp));
@@ -971,36 +997,40 @@ export class KanbanBoard implements HoverParent {
 	): void {
 		if (anchor instanceof MouseEvent) anchor.preventDefault();
 		const menu = new Menu();
-		menu.addItem((i) => i.setTitle("Add note").setIcon("plus").onClick(() => void this.quickAddNote(columnName, groupBy)));
-		menu.addItem((i) => i.setTitle("Rename column…").setIcon("pencil").onClick(() => this.renameColumnValue(groupBy, columnName)));
-		menu.addItem((i) =>
-			i.setTitle("Set WIP limit…").setIcon("gauge").onClick(() => this.setWipLimit(columnName))
-		);
-		// Collapse is flat-board only (swimlanes share a header); offer it there.
-		if (!this.swimlaneProp) {
-			const isCollapsed = this.plugin.settings.kanbanCollapsedColumns[columnName] === true;
+		// The column-chrome actions (add/rename/WIP/collapse/reorder) need a writable group
+		// key; a read-only Bases board (file.*/formula.* group-by) still gets colors below.
+		if (this.canColumnChrome) {
+			menu.addItem((i) => i.setTitle("Add note").setIcon("plus").onClick(() => void this.quickAddNote(columnName, groupBy)));
+			menu.addItem((i) => i.setTitle("Rename column…").setIcon("pencil").onClick(() => this.renameColumnValue(groupBy, columnName)));
 			menu.addItem((i) =>
-				i
-					.setTitle(isCollapsed ? "Expand column" : "Collapse column")
-					.setIcon(isCollapsed ? "chevrons-up-down" : "chevrons-down-up")
-					.onClick(() => void this.toggleColumnCollapse(columnName))
+				i.setTitle("Set WIP limit…").setIcon("gauge").onClick(() => this.setWipLimit(columnName))
 			);
-		}
+			// Collapse is flat-board only (swimlanes share a header); offer it there.
+			if (!this.swimlaneProp) {
+				const isCollapsed = this.plugin.settings.kanbanCollapsedColumns[columnName] === true;
+				menu.addItem((i) =>
+					i
+						.setTitle(isCollapsed ? "Expand column" : "Collapse column")
+						.setIcon(isCollapsed ? "chevrons-up-down" : "chevrons-down-up")
+						.onClick(() => void this.toggleColumnCollapse(columnName))
+				);
+			}
 
-		// Keyboard/touch column reorder (drag is otherwise the only path).
-		const idx = orderedNames.indexOf(columnName);
-		if (idx > 0) {
-			menu.addItem((i) =>
-				i.setTitle("Move column left").setIcon("arrow-left").onClick(() => void this.moveColumnBy(groupBy, orderedNames, columnName, -1))
-			);
-		}
-		if (idx !== -1 && idx < orderedNames.length - 1) {
-			menu.addItem((i) =>
-				i.setTitle("Move column right").setIcon("arrow-right").onClick(() => void this.moveColumnBy(groupBy, orderedNames, columnName, 1))
-			);
-		}
+			// Keyboard/touch column reorder (drag is otherwise the only path).
+			const idx = orderedNames.indexOf(columnName);
+			if (idx > 0) {
+				menu.addItem((i) =>
+					i.setTitle("Move column left").setIcon("arrow-left").onClick(() => void this.moveColumnBy(groupBy, orderedNames, columnName, -1))
+				);
+			}
+			if (idx !== -1 && idx < orderedNames.length - 1) {
+				menu.addItem((i) =>
+					i.setTitle("Move column right").setIcon("arrow-right").onClick(() => void this.moveColumnBy(groupBy, orderedNames, columnName, 1))
+				);
+			}
 
-		menu.addSeparator();
+			menu.addSeparator();
+		}
 		const swatches: Array<[string, number]> = [
 			["Red", 0],
 			["Orange", 30],
@@ -1016,7 +1046,7 @@ export class KanbanBoard implements HoverParent {
 		}
 		menu.addItem((i) => i.setTitle("Reset color").onClick(() => void this.setColumnColor(columnName, null)));
 
-		if (removable) {
+		if (removable && this.canColumnChrome) {
 			menu.addSeparator();
 			menu.addItem((i) =>
 				i.setTitle("Remove empty column").setIcon("trash").onClick(() => void this.removeExtraColumn(groupBy, columnName))
@@ -1120,8 +1150,7 @@ export class KanbanBoard implements HoverParent {
 
 	private async applyBulk(rows: Row[], prop: string, op: BulkOp, value: string): Promise<void> {
 		// Refuse to write a computed field — a `file.*` accessor or a base formula.
-		const resolved = await this.plugin.getResolvedView();
-		if (COMPUTED_FILE_PROPS.has(prop) || Object.prototype.hasOwnProperty.call(resolved.def.formulas ?? {}, prop)) {
+		if (COMPUTED_FILE_PROPS.has(prop) || Object.prototype.hasOwnProperty.call(this.input.formulas, prop)) {
 			new Notice(`"${prop}" is a computed/formula field — edit it at its source, not in bulk.`);
 			return;
 		}
@@ -1263,6 +1292,7 @@ export class KanbanBoard implements HoverParent {
 		rowById: Map<string, Row>,
 		orderedNames: string[]
 	): void {
+		if (!this.canWrite) return; // read-only board — cards/columns don't accept drops
 		columnEl.addEventListener("dragover", (event) => {
 			const types = event.dataTransfer?.types ?? [];
 			const isColumn = types.includes(DND_COLUMN);
@@ -1303,6 +1333,7 @@ export class KanbanBoard implements HoverParent {
 	}
 
 	private makeColumnDraggable(columnEl: HTMLElement, colHead: HTMLElement, columnName: string): void {
+		if (!this.canColumnChrome) return; // read-only board — no column reordering
 		colHead.draggable = true;
 		colHead.addEventListener("dragstart", (event) => {
 			columnEl.addClass("is-col-dragging");
@@ -1336,12 +1367,11 @@ export class KanbanBoard implements HoverParent {
 		if (!crossColumn && !crossLane) return;
 
 		// Refuse to move onto a computed field — a `file.*` accessor or a base formula.
-		const resolved = await this.plugin.getResolvedView();
-		if (crossColumn && this.isComputedField(resolved.def.formulas ?? {}, key)) {
+		if (crossColumn && this.isComputedField(this.input.formulas, key)) {
 			new Notice(`"${key}" is a computed/formula field — cards grouped by it can't be moved here.`);
 			return;
 		}
-		if (crossLane && laneProp !== null && this.isComputedField(resolved.def.formulas ?? {}, laneProp)) {
+		if (crossLane && laneProp !== null && this.isComputedField(this.input.formulas, laneProp)) {
 			new Notice(`"${laneProp}" is a computed/formula field — cards can't be moved across swimlanes here.`);
 			return;
 		}
@@ -1454,22 +1484,21 @@ export class KanbanBoard implements HoverParent {
 			new Notice(`Manual order property ("${rankProp}") must differ from the group-by and swimlane properties — pick a separate numeric property in settings.`);
 			return;
 		}
-		const resolved = await this.plugin.getResolvedView();
-		const movedRow = resolved.rows.find((r) => r.id === rowId);
+		const movedRow = this.input.rows.find((r) => r.id === rowId);
 		if (!movedRow) return;
 		// The rank property must be a real writable frontmatter key.
-		if (COMPUTED_FILE_PROPS.has(rankProp) || Object.prototype.hasOwnProperty.call(resolved.def.formulas ?? {}, rankProp)) {
+		if (COMPUTED_FILE_PROPS.has(rankProp) || Object.prototype.hasOwnProperty.call(this.input.formulas, rankProp)) {
 			new Notice(`"${rankProp}" is a computed/formula field — pick a plain property for the manual order.`);
 			return;
 		}
 
 		const crossColumn = toStr(movedRow.scope.get(group)) !== columnName;
 		const crossLane = laneProp !== null && laneKeyOf(movedRow, laneProp) !== laneKey;
-		if (crossColumn && this.isComputedField(resolved.def.formulas ?? {}, group)) {
+		if (crossColumn && this.isComputedField(this.input.formulas, group)) {
 			new Notice(`"${group}" is a computed/formula field — cards grouped by it can't be moved here.`);
 			return;
 		}
-		if (crossLane && laneProp !== null && this.isComputedField(resolved.def.formulas ?? {}, laneProp)) {
+		if (crossLane && laneProp !== null && this.isComputedField(this.input.formulas, laneProp)) {
 			new Notice(`"${laneProp}" is a computed/formula field — cards can't be moved across swimlanes here.`);
 			return;
 		}
@@ -1489,7 +1518,7 @@ export class KanbanBoard implements HoverParent {
 		// (column ∩ lane), so ranks stay local to one band's stack.
 		const cellRows =
 			laneProp !== null
-				? resolved.rows.filter(
+				? this.input.rows.filter(
 						(r) => toStr(r.scope.get(group)) === columnName && laneKeyOf(r, laneProp) === laneKey
 					)
 				: (this.lastColumnRows.get(columnName) ?? []);
@@ -1605,8 +1634,7 @@ export class KanbanBoard implements HoverParent {
 		const laneProp = target.laneKey === null ? null : swimProp || null;
 		let targetRow: Row | null = null;
 		if (target.beforeRowId) {
-			const resolved = await this.plugin.getResolvedView();
-			targetRow = resolved.rows.find((r) => r.id === target.beforeRowId) ?? null;
+			targetRow = this.input.rows.find((r) => r.id === target.beforeRowId) ?? null;
 		}
 		// A precise before-card drop inserts before it; otherwise append at the cell end.
 		await this.applyCardReorder(rowId, target.columnName, targetRow, true, groupBy, laneProp, target.laneKey);
@@ -1753,8 +1781,7 @@ export class KanbanBoard implements HoverParent {
 			// Seed the lane too, unless this is the catch-all "(empty)" band or the lane
 			// prop is a formula/computed field (which a literal would shadow).
 			if (laneKey !== SWIMLANE_EMPTY && swimProp) {
-				const resolved = await this.plugin.getResolvedView();
-				if (!this.isComputedField(resolved.def.formulas ?? {}, swimProp)) {
+				if (!this.isComputedField(this.input.formulas, swimProp)) {
 					await writeRowProperty(this.plugin, file.path, swimProp, laneKey, false, { label: "Set swimlane" });
 				}
 			}
@@ -1780,7 +1807,7 @@ export class KanbanBoard implements HoverParent {
 
 	/** The bulk action bar shown while cards are multi-selected. */
 	private renderSelectionBar(container: HTMLElement, groupBy: string, columnNames: string[]): void {
-		if (this.selected.size === 0) return;
+		if (!this.canMultiSelect || this.selected.size === 0) return;
 		const bar = container.createDiv({ cls: "bpp-selection-bar" });
 		bar.createSpan({
 			cls: "bpp-selection-count",
@@ -1808,10 +1835,9 @@ export class KanbanBoard implements HoverParent {
 		if (ids.length === 0) return;
 		const group = groupBy || "status";
 		const laneProp = laneKey === null ? null : this.swimlaneProp || null;
-		const resolved = await this.plugin.getResolvedView();
-		const formulas = resolved.def.formulas ?? {};
+		const formulas = this.input.formulas;
 		const targetRows = ids
-			.map((id) => resolved.rows.find((r) => r.id === id))
+			.map((id) => this.input.rows.find((r) => r.id === id))
 			.filter((r): r is Row => r !== undefined);
 		if (targetRows.length === 0) {
 			this.selected.clear();
