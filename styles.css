@@ -2461,3 +2461,10 @@ th.bpp-drillable:hover {
   padding-left: 22px;
   border-top: none;
 }
+
+/* Kanban rendered as a native Bases view: pad + scroll within the Bases container. */
+.bpp-bases-kanban {
+  padding: 10px;
+  overflow-x: auto;
+  min-height: 120px;
+}

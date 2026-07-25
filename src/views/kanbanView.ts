@@ -89,6 +89,19 @@ export class KanbanView extends PowerPackView {
 	/** Satisfies Obsidian's HoverParent so card hover can drive the core Page Preview
 	 * popover (the "hover-link" trigger in renderCard). */
 	hoverPopover: HoverPopover | null = null;
+	/** True while a card is being dragged — suppresses the hover preview so its popover
+	 * can't sit on top of the card and swallow the drag. */
+	private cardDragActive = false;
+
+	/** Tear down any open Page Preview popover this view owns (on mousedown / dragstart),
+	 * so it can't block a drag. */
+	private dismissCardHover(): void {
+		const hp = this.hoverPopover;
+		if (hp) {
+			hp.hoverEl?.remove();
+			this.hoverPopover = null;
+		}
+	}
 	/** Edge auto-scroll driver for mouse (HTML5) drags over the board. */
 	private boardScroller: DragScroller | null = null;
 
@@ -480,12 +493,17 @@ export class KanbanView extends PowerPackView {
 		}
 		card.addEventListener("dragstart", (event) => {
 			card.addClass("is-dragging");
+			// Kill any open hover preview and stop new ones, so the popover can't sit on
+			// top of the card and swallow the drag.
+			this.cardDragActive = true;
+			this.dismissCardHover();
 			event.dataTransfer?.setData("text/plain", row.id);
 			event.dataTransfer?.setData(DND_ROW, row.id);
 			if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
 		});
 		card.addEventListener("dragend", () => {
 			card.removeClass("is-dragging");
+			this.cardDragActive = false;
 			this.boardScroller?.stop();
 		});
 		// Hand-order sort: each card is a precise drop target so a drag lands
@@ -511,10 +529,14 @@ export class KanbanView extends PowerPackView {
 				this.beginTitleRename(card, titleEl, row);
 			}
 		});
+		// Dismiss any preview the moment you press on a card to grab it.
+		card.addEventListener("mousedown", () => this.dismissCardHover());
 		// Native hover preview via the core Page Preview plugin (the "feels native"
 		// touch). `source` MUST match the id registered with registerHoverLinkSource in
-		// onload, or Page Preview falls back to requiring the Mod key.
+		// onload, or Page Preview falls back to requiring the Mod key. Suppressed while a
+		// card drag is active so a mid-drag popover can't block the drop.
 		card.addEventListener("mouseover", (event) => {
+			if (this.cardDragActive) return;
 			this.app.workspace.trigger("hover-link", {
 				event,
 				source: VIEW_TYPE_KANBAN,
