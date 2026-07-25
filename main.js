@@ -5037,8 +5037,8 @@ var PowerPackView = class extends import_obsidian5.ItemView {
       for (const f of features) ul.createEl("li", { text: f });
     }
     const actions = box.createDiv({ cls: "bpp-upgrade-actions" });
-    const buy = actions.createEl("button", { text: "Get Premium \u2014 ~$29 one-time", cls: "mod-cta" });
-    buy.addEventListener("click", () => this.openSettings());
+    const buy = actions.createEl("button", { text: "Buy Premium / purchase info", cls: "mod-cta" });
+    buy.addEventListener("click", () => window.open(this.plugin.settings.purchaseUrl, "_blank", "noopener,noreferrer"));
     const enter = actions.createEl("button", { text: "Already purchased? Enter your license key" });
     enter.addEventListener("click", () => this.openSettings());
   }
@@ -7570,7 +7570,7 @@ var DEFAULT_SETTINGS = {
   licenseKey: "",
   isPro: false,
   licenseEmail: "",
-  purchaseUrl: "https://buymeacoffee.com/vaultspotlight/e/560211",
+  purchaseUrl: "https://github.com/israerusan/bases-power-pack#buy-premium",
   kanbanGroupBy: "status",
   kanbanDoneValue: "done",
   kanbanCardFields: ["due", "priority"],
@@ -7684,7 +7684,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian8.PluginSettingTab {
       );
       const cta = status.createDiv({ cls: "bpp-premium-summary-cta" });
       const link = cta.createEl("a", {
-        text: "Get Bases Power Pack premium",
+        text: "Buy Premium / purchase info",
         href: this.plugin.settings.purchaseUrl
       });
       link.setAttr("target", "_blank");
