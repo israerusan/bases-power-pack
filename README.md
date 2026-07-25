@@ -1,8 +1,8 @@
 # Bases Power Pack
 
-Advanced database views and automation on top of Obsidian's native **Bases** feature. Bases Power Pack adds extra view types, roll-ups/formulas, and saved filters so your Bases behave like a real lightweight database.
+Turn Obsidian **Bases** into a real planning workspace: a genuinely useful free Kanban board, plus premium Calendar, Gantt, Dashboard, Gallery, Pivot, Feed, formulas, roll-ups, saved filters, and automation.
 
-> **Open-core / one-time purchase.** The plugin is free to use in its Lite tier. Premium features unlock with a one-time license — **~$29 (one-time)**.
+> **Start free. Upgrade once.** Bases Power Pack has a free Lite tier, and Premium unlocks with a **~$29 one-time** license.
 
 ## See it in action
 
@@ -181,32 +181,32 @@ Configure everything in **Settings → Bases Power Pack**.
 Commands (open the command palette):
 
 - **Open Kanban view (Lite)**
-- **Open Calendar view (Premium)** — hidden until a valid license is active
-- **Open Gantt view (Premium)** — hidden until a valid license is active
-- **Open Outline view (Premium)** — hidden until a valid license is active
-- **Open Pivot view (Premium)** — hidden until a valid license is active
-- **Open Dashboard view (Premium)** — hidden until a valid license is active
-- **Open Gallery view (Premium)** — hidden until a valid license is active
-- **Open Feed view (Premium)** — hidden until a valid license is active
+- **Open Calendar view (Premium)** — always visible; if you have not unlocked Premium yet, it opens an in-view unlock screen
+- **Open Gantt view (Premium)** — always visible; if you have not unlocked Premium yet, it opens an in-view unlock screen
+- **Open Outline view (Premium)** — always visible; if you have not unlocked Premium yet, it opens an in-view unlock screen
+- **Open Pivot view (Premium)** — always visible; if you have not unlocked Premium yet, it opens an in-view unlock screen
+- **Open Dashboard view (Premium)** — always visible; if you have not unlocked Premium yet, it opens an in-view unlock screen
+- **Open Gallery view (Premium)** — always visible; if you have not unlocked Premium yet, it opens an in-view unlock screen
+- **Open Feed view (Premium)** — always visible; if you have not unlocked Premium yet, it opens an in-view unlock screen
 - **Undo last change** — reverse the most recent frontmatter edit (available only when there is something to undo)
 - **Verify license key**
 
 There's also a ribbon icon for the Kanban board.
 
-### Premium / licensing
+### Premium activation
 
-Enter your license key in **Settings → Bases Power Pack → License**. Keys are verified **offline with Ed25519 signatures** (via [tweetnacl](https://www.npmjs.com/package/tweetnacl)) — no account, server, or network call. The result is cached in `isPro`; premium views and settings unlock immediately on a valid key.
+Premium is a **one-time unlock**, not a subscription.
 
-A license key is `base64url(payload).base64url(signature)`, signed by the author's private key and verified against the public key embedded in `src/license/publicKey.ts`.
+1. Buy a license.
+2. Paste the key into **Settings → Bases Power Pack → License**.
+3. Premium views and features unlock immediately.
 
-**Selling keys (author workflow):**
+Your key is verified **offline**. No account, no always-on server, no mandatory cloud dependency.
 
-```bash
-node scripts/keygen.mjs                 # one-time: create keypair (.license-private.key + public key)
-npm run license:generate -- buyer@email.com   # after a sale: mint a key to email the customer
-```
-
-> Billing/delivery (taking payment, emailing the key) is handled out-of-band by **Lemon Squeezy / Gumroad** — see the `TODO(billing)` in `src/license/LicenseManager.ts`. No plugin code changes are needed to wire a storefront; you just deliver the generated key.
+Premium includes:
+- Calendar, Gantt, Outline, Pivot, Dashboard, Gallery, and Feed views
+- formulas, roll-ups, saved filters, and `.base`-driven workflows
+- Move Rules automation, CSV export, and rule-based color coding
 
 ---
 
@@ -263,8 +263,6 @@ bases-power-pack/
         ├── kanbanView.ts  # Lite (free) view
         └── calendarView.ts# Premium (gated) view
 ```
-
-> **Reference:** the licensing approach, settings-tab patterns, build/test setup, and project layout are adapted from the [Vault Spotlight](https://github.com/) plugin — see "Borrowed from Vault Spotlight" notes in the repo.
 
 ## License
 
