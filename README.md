@@ -4,6 +4,23 @@ Advanced database views and automation on top of Obsidian's native **Bases** fea
 
 > **Open-core / one-time purchase.** The plugin is free to use in its Lite tier. Premium features unlock with a one-time license — **~$29 (one-time)**.
 
+## See it in action
+
+![Move a card across columns and reorder it in one gesture](docs/assets/hero-drag.gif)
+
+_Move a card across columns and reorder it in one gesture._
+
+![Push work cleanly from review to done](docs/assets/review-to-done.gif)
+
+_Push work cleanly from review to done without leaving the board._
+
+### Why it feels different
+
+- **Real drag-and-drop** writes frontmatter back to your notes.
+- **Manual ordering** lets you place a card between two others and keep that rank.
+- **Quick-edit boards** mean less context switching and less YAML janitor work.
+- **Lite is actually useful**; Premium adds Calendar, Gantt, Dashboard, Gallery, Pivot, Feed, formulas, roll-ups, and saved filters.
+
 ---
 
 ## 2-minute quick start
