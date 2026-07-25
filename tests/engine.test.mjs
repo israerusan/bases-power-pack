@@ -25,6 +25,7 @@ await build({
 			export * as swimlane from "./src/query/swimlane.ts";
 			export * as cardLayout from "./src/query/cardLayout.ts";
 			export * as relations from "./src/query/relations.ts";
+			export * as analytics from "./src/query/analytics.ts";
 			export * as autoscroll from "./src/views/autoscroll.ts";
 			export * as colorRules from "./src/query/colorRules.ts";
 			export * as pivot from "./src/query/pivot.ts";
@@ -49,7 +50,7 @@ await build({
 });
 
 const m = await import(`file://${outfile.replace(/\\/g, "/")}`);
-const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, hierarchy, kanban, swimlane, cardLayout, relations, autoscroll, colorRules, pivot, dashboard, gallery, ranking, exporter, feed, kanbanActions, base, resolve, rowmod } = m;
+const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, hierarchy, kanban, swimlane, cardLayout, relations, analytics, autoscroll, colorRules, pivot, dashboard, gallery, ranking, exporter, feed, kanbanActions, base, resolve, rowmod } = m;
 
 /** Build a Row-like object with the given frontmatter/name for the pure engines. */
 function makeTestRow(name, fm) {
@@ -1485,6 +1486,64 @@ assert.deepEqual(
 );
 assert.equal(childIdx.get("other")?.length, 1, "a child under a different parent is indexed there");
 assert.equal(childIdx.get("t2"), undefined, "a parent with no children isn't in the index");
+
+// ---- analytics -------------------------------------------------------------
+assert.equal(analytics.median([1, 2, 3]), 2, "odd-length median");
+assert.equal(analytics.median([1, 2, 3, 4]), 2.5, "even-length median averages the middle two");
+assert.equal(analytics.median([]), null, "empty median → null");
+assert.equal(new Date(analytics.weekStartMs(Date.parse("2026-07-25T12:00:00Z"))).getUTCDay(), 1, "weekStartMs lands on a Monday");
+assert.ok(analytics.weekStartMs(Date.parse("2026-07-25T12:00:00Z")) <= Date.parse("2026-07-25T12:00:00Z"), "week start is not in the future");
+
+const A_DAY = 86400000;
+const A_NOW = Date.parse("2026-07-25T00:00:00Z");
+const arow = (name, fm, ctime, mtime) => ({
+	id: `${name}.md`,
+	name,
+	note: { path: `${name}.md`, name, folder: "", ext: "md", tags: [], ctime, mtime, size: 0, frontmatter: fm },
+	scope: { get: (k) => ({ "file.name": name, ...fm })[k] },
+});
+const aRows = [
+	arow("A", { status: "done", owner: "Sam", done: "2026-07-20" }, A_NOW - 10 * A_DAY, A_NOW - 2 * A_DAY),
+	arow("B", { status: "doing", owner: "Sam" }, A_NOW - 5 * A_DAY, A_NOW),
+	arow("C", { status: "todo", owner: "Kai" }, A_NOW - 20 * A_DAY, A_NOW),
+	arow("D", { status: "done", owner: "Kai", done: "2026-07-13" }, A_NOW - 30 * A_DAY, A_NOW),
+];
+const aDone = (r) => r.note.frontmatter.status === "done";
+const rep = analytics.computeAnalytics(aRows, {
+	groupBy: "status",
+	isDone: aDone,
+	assigneeProp: "owner",
+	completedProp: "done",
+	now: A_NOW,
+	weeks: 3,
+	top: 5,
+});
+assert.equal(rep.total, 4, "total cards");
+assert.equal(rep.doneCount, 2, "done count");
+assert.deepEqual(rep.wipByColumn, [{ label: "done", count: 2 }, { label: "doing", count: 1 }, { label: "todo", count: 1 }], "cards by column, most first");
+assert.deepEqual(
+	rep.workloadByAssignee.slice().sort((a, b) => a.label.localeCompare(b.label)),
+	[{ label: "Kai", count: 1 }, { label: "Sam", count: 1 }],
+	"workload counts OPEN cards only — Sam's done A and Kai's done D are excluded"
+);
+assert.equal(rep.cycle.count, 2, "two done cards have a start→finish span");
+assert.equal(rep.cycle.avgDays, 11.5, "avg cycle = (5 + 18) / 2");
+assert.equal(rep.cycle.maxDays, 18, "max cycle 18 days");
+assert.deepEqual(rep.aging.map((x) => x.name), ["C", "B"], "aging: longest-open not-done first");
+assert.equal(rep.aging[0].days, 20, "C has been open 20 days");
+assert.equal(rep.throughputByWeek.length, 3, "throughput reports the requested 3 weeks");
+assert.equal(rep.throughputByWeek.reduce((s, b) => s + b.count, 0), 2, "both done cards fall inside the 3-week window");
+// completedProp fallback: with no completed property, a done card's mtime is the finish.
+const rep2 = analytics.computeAnalytics([arow("E", { status: "done" }, A_NOW - 4 * A_DAY, A_NOW - 1 * A_DAY)], {
+	groupBy: "status",
+	isDone: aDone,
+	assigneeProp: "",
+	completedProp: "",
+	now: A_NOW,
+});
+assert.equal(rep2.cycle.count, 1, "mtime fallback gives a cycle span");
+assert.equal(rep2.cycle.avgDays, 3, "E: mtime(now-1d) - ctime(now-4d) = 3 days");
+assert.equal(rep2.workloadByAssignee.length, 0, "no assignee property → no workload breakdown");
 
 // ---- auto-scroll velocity --------------------------------------------------
 // Calm middle → no scroll.

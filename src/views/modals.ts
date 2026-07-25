@@ -1,4 +1,5 @@
 import { App, Modal, Setting, TFile, WorkspaceLeaf } from "obsidian";
+import type { AnalyticsBucket, BoardAnalytics } from "../query/analytics";
 
 /**
  * A floating editor: opens a note in a REAL, editable Obsidian view floating over the
@@ -189,5 +190,78 @@ export class BulkEditModal extends Modal {
 
 	onClose(): void {
 		this.contentEl.empty();
+	}
+}
+
+/**
+ * Read-only analytics panel for the current board (premium). Renders a pre-computed
+ * {@link BoardAnalytics}: summary stats, cards by column, workload by assignee, weekly
+ * throughput, and the longest-open cards — as simple horizontal bars.
+ */
+export class AnalyticsModal extends Modal {
+	constructor(app: App, private readonly data: BoardAnalytics) {
+		super(app);
+	}
+
+	onOpen(): void {
+		this.titleEl.setText("Board analytics");
+		const el = this.contentEl;
+		el.addClass("bpp-analytics");
+
+		const summary = el.createDiv({ cls: "bpp-analytics-summary" });
+		this.stat(summary, "Cards", String(this.data.total));
+		this.stat(summary, "Done", String(this.data.doneCount));
+		this.stat(summary, "Avg cycle", this.days(this.data.cycle.avgDays));
+		this.stat(summary, "Median cycle", this.days(this.data.cycle.medianDays));
+
+		this.barSection(el, "Cards by column", this.data.wipByColumn);
+		if (this.data.workloadByAssignee.length > 0) {
+			this.barSection(el, "Workload by assignee", this.data.workloadByAssignee);
+		}
+		this.barSection(el, "Completed per week", this.data.throughputByWeek);
+
+		if (this.data.aging.length > 0) {
+			el.createEl("h4", { text: "Longest open" });
+			const list = el.createDiv({ cls: "bpp-analytics-aging" });
+			for (const a of this.data.aging) {
+				const row = list.createDiv({ cls: "bpp-analytics-aging-row" });
+				row.createSpan({ cls: "bpp-analytics-aging-name", text: a.name });
+				row.createSpan({ cls: "bpp-analytics-aging-col", text: a.column });
+				row.createSpan({ cls: "bpp-analytics-aging-days", text: `${a.days}d` });
+			}
+		}
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+	}
+
+	private stat(parent: HTMLElement, label: string, value: string): void {
+		const s = parent.createDiv({ cls: "bpp-analytics-stat" });
+		s.createDiv({ cls: "bpp-analytics-stat-value", text: value });
+		s.createDiv({ cls: "bpp-analytics-stat-label", text: label });
+	}
+
+	private days(n: number | null): string {
+		return n === null ? "—" : `${n.toFixed(1)}d`;
+	}
+
+	private barSection(parent: HTMLElement, title: string, buckets: AnalyticsBucket[]): void {
+		parent.createEl("h4", { text: title });
+		const wrap = parent.createDiv({ cls: "bpp-analytics-bars" });
+		if (buckets.length === 0) {
+			wrap.createDiv({ cls: "bpp-muted", text: "No data." });
+			return;
+		}
+		const max = Math.max(1, ...buckets.map((b) => b.count));
+		for (const b of buckets) {
+			const rowEl = wrap.createDiv({ cls: "bpp-analytics-bar-row" });
+			rowEl.createSpan({ cls: "bpp-analytics-bar-label", text: b.label });
+			const track = rowEl.createDiv({ cls: "bpp-analytics-bar-track" });
+			track
+				.createDiv({ cls: "bpp-analytics-bar-fill" })
+				.setCssProps({ "--bpp-bar": `${Math.round((b.count / max) * 100)}%` });
+			rowEl.createSpan({ cls: "bpp-analytics-bar-count", text: String(b.count) });
+		}
 	}
 }

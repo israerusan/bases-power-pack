@@ -1,7 +1,11 @@
+import { Notice } from "obsidian";
+import type { Row } from "../model/row";
 import { PowerPackView } from "./abstractView";
-import { type KanbanSort } from "../query/kanban";
+import { isRowDone, type KanbanSort } from "../query/kanban";
 import { buildCsv, buildMarkdownBoard, buildMarkdownTable } from "../query/export";
+import { computeAnalytics } from "../query/analytics";
 import { renderContextControls, renderRollupBar } from "./viewChrome";
+import { AnalyticsModal } from "./modals";
 import { KanbanBoard, SORT_OPTIONS, type BoardHost, type BoardInput } from "./kanbanBoard";
 
 export const VIEW_TYPE_KANBAN = "bpp-kanban-view";
@@ -151,6 +155,7 @@ export class KanbanView extends PowerPackView {
 			{ label: "Copy as Markdown table", build: () => buildMarkdownTable(this.board.visibleRows, this.exportFields(groupBy)) },
 			{ label: "Export as CSV", premium: true, build: () => buildCsv(this.board.visibleRows, this.exportFields(groupBy)) },
 		]);
+		this.renderAnalyticsButton(header, resolved.rows, groupBy);
 
 		renderContextControls(container, this.plugin, resolved, () => void this.render());
 		this.renderLiteControls(container);
@@ -270,6 +275,36 @@ export class KanbanView extends PowerPackView {
 		const bulkBtn = bulkWrap.createEl("button", { cls: "bpp-lite-btn", text: "Bulk edit" });
 		bulkBtn.setAttr("aria-label", "Bulk edit the visible cards");
 		bulkBtn.addEventListener("click", () => this.board.openBulkEdit());
+	}
+
+	/**
+	 * The premium "Analytics" toolbar button. Computes a board-analytics snapshot from the
+	 * rows this render resolved (deterministic `now`) and shows it in a modal — cards by
+	 * column, workload by assignee, weekly throughput, cycle time, aging. Free tier gets an
+	 * upgrade nudge instead.
+	 */
+	private renderAnalyticsButton(header: HTMLElement, rows: readonly Row[], groupBy: string): void {
+		const btn = header.createEl("button", {
+			cls: "bpp-analytics-btn",
+			text: "📊 Analytics",
+			attr: { "aria-label": "Board analytics" },
+		});
+		btn.addEventListener("click", () => {
+			if (!this.plugin.settings.isPro) {
+				new Notice("Analytics is a Premium feature — unlock Bases Power Pack to use it.");
+				this.openSettings();
+				return;
+			}
+			const s = this.plugin.settings;
+			const data = computeAnalytics(rows, {
+				groupBy,
+				isDone: (r) => isRowDone(r, groupBy, s.kanbanDoneValue),
+				assigneeProp: s.kanbanCardAvatarProp.trim(),
+				completedProp: s.kanbanCompletedProp.trim(),
+				now: Date.now(),
+			});
+			new AnalyticsModal(this.app, data).open();
+		});
 	}
 
 	/** Fields for a row-oriented export (Markdown table / CSV): the note title, the

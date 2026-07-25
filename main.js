@@ -2271,10 +2271,10 @@ __export(main_exports, {
   default: () => BasesPowerPackPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian14 = require("obsidian");
+var import_obsidian15 = require("obsidian");
 
 // src/settings.ts
-var import_obsidian7 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 
 // src/views/inputSuggest.ts
 var import_obsidian = require("obsidian");
@@ -2326,6 +2326,9 @@ var FolderSuggest = class extends import_obsidian.AbstractInputSuggest {
     this.close();
   }
 };
+
+// src/views/kanbanView.ts
+var import_obsidian7 = require("obsidian");
 
 // src/views/abstractView.ts
 var import_obsidian5 = require("obsidian");
@@ -4376,6 +4379,64 @@ var BulkEditModal = class extends import_obsidian3.Modal {
     this.contentEl.empty();
   }
 };
+var AnalyticsModal = class extends import_obsidian3.Modal {
+  constructor(app, data) {
+    super(app);
+    this.data = data;
+  }
+  onOpen() {
+    this.titleEl.setText("Board analytics");
+    const el = this.contentEl;
+    el.addClass("bpp-analytics");
+    const summary = el.createDiv({ cls: "bpp-analytics-summary" });
+    this.stat(summary, "Cards", String(this.data.total));
+    this.stat(summary, "Done", String(this.data.doneCount));
+    this.stat(summary, "Avg cycle", this.days(this.data.cycle.avgDays));
+    this.stat(summary, "Median cycle", this.days(this.data.cycle.medianDays));
+    this.barSection(el, "Cards by column", this.data.wipByColumn);
+    if (this.data.workloadByAssignee.length > 0) {
+      this.barSection(el, "Workload by assignee", this.data.workloadByAssignee);
+    }
+    this.barSection(el, "Completed per week", this.data.throughputByWeek);
+    if (this.data.aging.length > 0) {
+      el.createEl("h4", { text: "Longest open" });
+      const list = el.createDiv({ cls: "bpp-analytics-aging" });
+      for (const a of this.data.aging) {
+        const row = list.createDiv({ cls: "bpp-analytics-aging-row" });
+        row.createSpan({ cls: "bpp-analytics-aging-name", text: a.name });
+        row.createSpan({ cls: "bpp-analytics-aging-col", text: a.column });
+        row.createSpan({ cls: "bpp-analytics-aging-days", text: `${a.days}d` });
+      }
+    }
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+  stat(parent, label, value) {
+    const s = parent.createDiv({ cls: "bpp-analytics-stat" });
+    s.createDiv({ cls: "bpp-analytics-stat-value", text: value });
+    s.createDiv({ cls: "bpp-analytics-stat-label", text: label });
+  }
+  days(n) {
+    return n === null ? "\u2014" : `${n.toFixed(1)}d`;
+  }
+  barSection(parent, title, buckets) {
+    parent.createEl("h4", { text: title });
+    const wrap = parent.createDiv({ cls: "bpp-analytics-bars" });
+    if (buckets.length === 0) {
+      wrap.createDiv({ cls: "bpp-muted", text: "No data." });
+      return;
+    }
+    const max = Math.max(1, ...buckets.map((b) => b.count));
+    for (const b of buckets) {
+      const rowEl = wrap.createDiv({ cls: "bpp-analytics-bar-row" });
+      rowEl.createSpan({ cls: "bpp-analytics-bar-label", text: b.label });
+      const track = rowEl.createDiv({ cls: "bpp-analytics-bar-track" });
+      track.createDiv({ cls: "bpp-analytics-bar-fill" }).setCssProps({ "--bpp-bar": `${Math.round(b.count / max * 100)}%` });
+      rowEl.createSpan({ cls: "bpp-analytics-bar-count", text: String(b.count) });
+    }
+  }
+};
 
 // src/views/rowActions.ts
 function fileFor(env, row) {
@@ -4982,6 +5043,90 @@ var PowerPackView = class extends import_obsidian5.ItemView {
     enter.addEventListener("click", () => this.openSettings());
   }
 };
+
+// src/query/analytics.ts
+var DAY_MS = 864e5;
+function weekStartMs(ms) {
+  const d = new Date(ms);
+  const day = d.getUTCDay();
+  const mondayOffset = (day + 6) % 7;
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()) - mondayOffset * DAY_MS;
+}
+function isoDay(ms) {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+function median(values) {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+function dateMs(value) {
+  if (value instanceof Date) {
+    const t2 = value.getTime();
+    return Number.isFinite(t2) ? t2 : null;
+  }
+  const s = toStr(value).trim();
+  if (!s) return null;
+  const t = Date.parse(s);
+  return Number.isFinite(t) ? t : null;
+}
+function toBuckets(counts) {
+  return [...counts.entries()].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count);
+}
+function computeAnalytics(rows, opts) {
+  var _a, _b, _c, _d, _e, _f, _g, _h;
+  const weeks = (_a = opts.weeks) != null ? _a : 8;
+  const top = (_b = opts.top) != null ? _b : 12;
+  const byColumn = /* @__PURE__ */ new Map();
+  const byAssignee = /* @__PURE__ */ new Map();
+  const cycleDays = [];
+  const doneByWeek = /* @__PURE__ */ new Map();
+  const aging = [];
+  let doneCount = 0;
+  for (const row of rows) {
+    const column = toStr(row.scope.get(opts.groupBy)).trim() || "(none)";
+    byColumn.set(column, ((_c = byColumn.get(column)) != null ? _c : 0) + 1);
+    const startMs = row.note.ctime;
+    const done = opts.isDone(row);
+    if (opts.assigneeProp && !done) {
+      const raw = row.scope.get(opts.assigneeProp);
+      const first = Array.isArray(raw) ? raw[0] : raw;
+      const target = toStr(first).trim().replace(/^\[\[/, "").replace(/\]\]$/, "").trim();
+      const who = (target.includes("|") ? (_d = target.split("|")[0]) != null ? _d : target : target).trim() || "(unassigned)";
+      byAssignee.set(who, ((_e = byAssignee.get(who)) != null ? _e : 0) + 1);
+    }
+    if (done) {
+      doneCount++;
+      const finishMs = (_f = opts.completedProp ? dateMs(row.scope.get(opts.completedProp)) : null) != null ? _f : row.note.mtime;
+      const wk = weekStartMs(finishMs);
+      doneByWeek.set(wk, ((_g = doneByWeek.get(wk)) != null ? _g : 0) + 1);
+      if (Number.isFinite(startMs) && finishMs >= startMs) cycleDays.push((finishMs - startMs) / DAY_MS);
+    } else if (Number.isFinite(startMs)) {
+      aging.push({ name: row.name, column, days: Math.max(0, Math.floor((opts.now - startMs) / DAY_MS)) });
+    }
+  }
+  const throughputByWeek = [];
+  const thisWeek = weekStartMs(opts.now);
+  for (let i = weeks - 1; i >= 0; i--) {
+    const wk = thisWeek - i * 7 * DAY_MS;
+    throughputByWeek.push({ label: isoDay(wk), count: (_h = doneByWeek.get(wk)) != null ? _h : 0 });
+  }
+  return {
+    total: rows.length,
+    doneCount,
+    wipByColumn: toBuckets(byColumn),
+    workloadByAssignee: toBuckets(byAssignee).slice(0, top),
+    throughputByWeek,
+    cycle: {
+      count: cycleDays.length,
+      avgDays: cycleDays.length ? cycleDays.reduce((a, b) => a + b, 0) / cycleDays.length : null,
+      medianDays: median(cycleDays),
+      maxDays: cycleDays.length ? Math.max(...cycleDays) : null
+    },
+    aging: aging.sort((a, b) => b.days - a.days).slice(0, top)
+  };
+}
 
 // src/views/kanbanBoard.ts
 var import_obsidian6 = require("obsidian");
@@ -7275,6 +7420,7 @@ var KanbanView = class extends PowerPackView {
       { label: "Copy as Markdown table", build: () => buildMarkdownTable(this.board.visibleRows, this.exportFields(groupBy)) },
       { label: "Export as CSV", premium: true, build: () => buildCsv(this.board.visibleRows, this.exportFields(groupBy)) }
     ]);
+    this.renderAnalyticsButton(header, resolved.rows, groupBy);
     renderContextControls(container, this.plugin, resolved, () => void this.render());
     this.renderLiteControls(container);
     renderRollupBar(container, this.plugin, resolved.rows);
@@ -7374,6 +7520,35 @@ var KanbanView = class extends PowerPackView {
     bulkBtn.setAttr("aria-label", "Bulk edit the visible cards");
     bulkBtn.addEventListener("click", () => this.board.openBulkEdit());
   }
+  /**
+   * The premium "Analytics" toolbar button. Computes a board-analytics snapshot from the
+   * rows this render resolved (deterministic `now`) and shows it in a modal — cards by
+   * column, workload by assignee, weekly throughput, cycle time, aging. Free tier gets an
+   * upgrade nudge instead.
+   */
+  renderAnalyticsButton(header, rows, groupBy) {
+    const btn = header.createEl("button", {
+      cls: "bpp-analytics-btn",
+      text: "\u{1F4CA} Analytics",
+      attr: { "aria-label": "Board analytics" }
+    });
+    btn.addEventListener("click", () => {
+      if (!this.plugin.settings.isPro) {
+        new import_obsidian7.Notice("Analytics is a Premium feature \u2014 unlock Bases Power Pack to use it.");
+        this.openSettings();
+        return;
+      }
+      const s = this.plugin.settings;
+      const data = computeAnalytics(rows, {
+        groupBy,
+        isDone: (r) => isRowDone(r, groupBy, s.kanbanDoneValue),
+        assigneeProp: s.kanbanCardAvatarProp.trim(),
+        completedProp: s.kanbanCompletedProp.trim(),
+        now: Date.now()
+      });
+      new AnalyticsModal(this.app, data).open();
+    });
+  }
   /** Fields for a row-oriented export (Markdown table / CSV): the note title, the
    * group-by value, then each configured card field, de-duplicated. */
   exportFields(groupBy) {
@@ -7420,6 +7595,7 @@ var DEFAULT_SETTINGS = {
   kanbanCardAvatarProp: "",
   kanbanDependsProp: "",
   kanbanSubtasksProp: "",
+  kanbanCompletedProp: "",
   feedDateProp: "file.mtime",
   feedGranularity: "day",
   calendarDateProp: "due",
@@ -7461,7 +7637,7 @@ function genId(prefix) {
   if (c == null ? void 0 : c.randomUUID) return `${prefix}-${c.randomUUID()}`;
   return `${prefix}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
 }
-var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
+var BasesPowerPackSettingTab = class extends import_obsidian8.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -7488,8 +7664,8 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
     startBtn.addEventListener("click", () => {
       void this.plugin.activateView(VIEW_TYPE_KANBAN);
     });
-    new import_obsidian7.Setting(containerEl).setName("License").setHeading();
-    new import_obsidian7.Setting(containerEl).setName("License key").setDesc("Enter your premium license key. Verified offline \u2014 no account or server required.").addText(
+    new import_obsidian8.Setting(containerEl).setName("License").setHeading();
+    new import_obsidian8.Setting(containerEl).setName("License key").setDesc("Enter your premium license key. Verified offline \u2014 no account or server required.").addText(
       (text) => text.setPlaceholder("payload.signature").setValue(this.plugin.settings.licenseKey).onChange((value) => {
         this.plugin.settings.licenseKey = value;
         void this.plugin.refreshLicense(true).then((changed) => {
@@ -7520,8 +7696,8 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         text: `Key not accepted: ${typeof reason === "string" ? reason : ""}`
       });
     }
-    new import_obsidian7.Setting(containerEl).setName("Kanban view (Lite)").setHeading();
-    new import_obsidian7.Setting(containerEl).setName("Group by property").setDesc(
+    new import_obsidian8.Setting(containerEl).setName("Kanban view (Lite)").setHeading();
+    new import_obsidian8.Setting(containerEl).setName("Group by property").setDesc(
       "Frontmatter property (or, with premium, a formula) used to build kanban columns. The Outline view also reads it to decide which notes count as done."
     ).addText(
       (text) => this.keySuggest(text).setValue(this.plugin.settings.kanbanGroupBy).onChange((value) => {
@@ -7529,7 +7705,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Done value").setDesc(
+    new import_obsidian8.Setting(containerEl).setName("Done value").setDesc(
       'The group value treated as "done" \u2014 used by the Kanban "Hide done" toggle and the Outline progress bars. e.g. done, Complete, Shipped.'
     ).addText(
       (text) => text.setPlaceholder("done").setValue(this.plugin.settings.kanbanDoneValue).onChange((value) => {
@@ -7537,7 +7713,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Card detail fields").setDesc(
+    new import_obsidian8.Setting(containerEl).setName("Card detail fields").setDesc(
       "Comma-separated raw properties shown on cards and editable from every view's menu, e.g. due, priority, owner, tags."
     ).addText(
       (text) => text.setValue(this.plugin.settings.kanbanCardFields.join(", ")).onChange((value) => {
@@ -7545,7 +7721,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         void this.plugin.saveSettings();
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Card image property").setDesc(
+    new import_obsidian8.Setting(containerEl).setName("Card image property").setDesc(
       "Optional frontmatter property holding a cover image shown at the top of each kanban card \u2014 a path, [[wikilink]], markdown image, or URL. Leave blank for no covers."
     ).addText(
       (text) => this.keySuggest(text).setPlaceholder("(none)").setValue(this.plugin.settings.kanbanCardImageProp).onChange((value) => {
@@ -7553,7 +7729,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Card progress property").setDesc(
+    new import_obsidian8.Setting(containerEl).setName("Card progress property").setDesc(
       "Optional numeric property rendered as a progress bar on each card, measured against the max below (e.g. progress). Leave blank for no bar."
     ).addText(
       (text) => this.keySuggest(text).setPlaceholder("(none)").setValue(this.plugin.settings.kanbanCardProgressProp).onChange((value) => {
@@ -7561,14 +7737,14 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Progress max").setDesc("The value that reads as 100% \u2014 100 for a 0\u2013100 percent property, or 1 for a 0\u20131 fraction.").addText(
+    new import_obsidian8.Setting(containerEl).setName("Progress max").setDesc("The value that reads as 100% \u2014 100 for a 0\u2013100 percent property, or 1 for a 0\u20131 fraction.").addText(
       (text) => text.setPlaceholder("100").setValue(String(this.plugin.settings.kanbanCardProgressMax)).onChange((value) => {
         const n = Number(value);
         this.plugin.settings.kanbanCardProgressMax = Number.isFinite(n) && n > 0 ? n : 100;
         void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Card avatar property").setDesc(
+    new import_obsidian8.Setting(containerEl).setName("Card avatar property").setDesc(
       "Optional person/assignee property rendered as a colored initials avatar on each card (e.g. owner, assignee). Leave blank for no avatar."
     ).addText(
       (text) => this.keySuggest(text).setPlaceholder("(none)").setValue(this.plugin.settings.kanbanCardAvatarProp).onChange((value) => {
@@ -7576,7 +7752,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Dependency property").setDesc(
+    new import_obsidian8.Setting(containerEl).setName("Dependency property").setDesc(
       `Optional property listing a card's dependencies as [[links]] (e.g. blockedBy, depends). A card whose dependency isn't at the "done" value shows a Blocked badge naming what's still blocking it. Leave blank for off.`
     ).addText(
       (text) => this.keySuggest(text).setPlaceholder("(none)").setValue(this.plugin.settings.kanbanDependsProp).onChange((value) => {
@@ -7584,7 +7760,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Subtasks (parent) property").setDesc(
+    new import_obsidian8.Setting(containerEl).setName("Subtasks (parent) property").setDesc(
       "Optional property linking a card to its parent as a [[link]] (e.g. parent). A parent card then shows a subtask count and an expandable list of its child cards. Leave blank for off."
     ).addText(
       (text) => this.keySuggest(text).setPlaceholder("(none)").setValue(this.plugin.settings.kanbanSubtasksProp).onChange((value) => {
@@ -7592,19 +7768,27 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Quick add folder").setDesc("Optional folder for the kanban + button. Leave blank to create notes at the vault root.").addText(
+    new import_obsidian8.Setting(containerEl).setName("Completed-date property").setDesc(
+      "Optional date property marking when a card was finished, used by the board's Analytics (throughput + cycle time). When blank, a done card's file modified-time is used instead."
+    ).addText(
+      (text) => this.keySuggest(text).setPlaceholder("(uses file mtime)").setValue(this.plugin.settings.kanbanCompletedProp).onChange((value) => {
+        this.plugin.settings.kanbanCompletedProp = value.trim();
+        void this.plugin.saveSettings({ invalidateResolved: false });
+      })
+    );
+    new import_obsidian8.Setting(containerEl).setName("Quick add folder").setDesc("Optional folder for the kanban + button. Leave blank to create notes at the vault root.").addText(
       (text) => this.folderSuggest(text).setValue(this.plugin.settings.kanbanQuickAddFolder).onChange((value) => {
         this.plugin.settings.kanbanQuickAddFolder = value.trim();
         void this.plugin.saveSettings();
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Color columns").setDesc("Tint each column and its cards with a stable color derived from the column value. Add new columns directly from the board with the \u201C+ Add column\u201D tile.").addToggle(
+    new import_obsidian8.Setting(containerEl).setName("Color columns").setDesc("Tint each column and its cards with a stable color derived from the column value. Add new columns directly from the board with the \u201C+ Add column\u201D tile.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.kanbanColorColumns).onChange((value) => {
         this.plugin.settings.kanbanColorColumns = value;
         void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Enforce WIP limits").setDesc(
+    new import_obsidian8.Setting(containerEl).setName("Enforce WIP limits").setDesc(
       "Set a per-column work-in-progress limit by right-clicking a column header on the board. When on, a move that would push a column past its limit is blocked; when off, over-limit columns are only flagged in red."
     ).addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.kanbanBlockOverWip).onChange((value) => {
@@ -7612,7 +7796,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         void this.plugin.saveSettings();
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Manual order property").setDesc(
+    new import_obsidian8.Setting(containerEl).setName("Manual order property").setDesc(
       'Numeric frontmatter property written when you hand-order cards. With the default "Manual" sort, drag a card between two others to reorder it \u2014 its position is saved here.'
     ).addText(
       (text) => this.keySuggest(text).setPlaceholder("rank").setValue(this.plugin.settings.kanbanRankProp).onChange((value) => {
@@ -7620,7 +7804,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Swimlane property").setDesc(
+    new import_obsidian8.Setting(containerEl).setName("Swimlane property").setDesc(
       "A second property that splits the board by a second dimension \u2014 e.g. owner or project \u2014 with columns still grouped by the group-by property. Leave blank for a flat board; also switchable from the board's Swimlanes control."
     ).addText(
       (text) => this.keySuggest(text).setPlaceholder("(none)").setValue(this.plugin.settings.kanbanSwimlaneBy).onChange((value) => {
@@ -7628,7 +7812,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Second-group layout").setDesc(
+    new import_obsidian8.Setting(containerEl).setName("Second-group layout").setDesc(
       "How the swimlane property is laid out: horizontal Lanes (bands across the columns), or Nested columns \u2014 sub-columns within each column, for multi-level grouping (e.g. Status columns each split by Priority). Also switchable from the board's Layout control."
     ).addDropdown(
       (dd) => dd.addOption("lanes", "Lanes (horizontal bands)").addOption("columns", "Nested columns (sub-columns)").setValue(this.plugin.settings.kanbanSwimlaneLayout).onChange((v) => {
@@ -7636,7 +7820,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Card click opens").setDesc("What a plain click on a card does. The card menu always offers both, and modifier-click still multi-selects.").addDropdown(
+    new import_obsidian8.Setting(containerEl).setName("Card click opens").setDesc("What a plain click on a card does. The card menu always offers both, and modifier-click still multi-selects.").addDropdown(
       (dd) => dd.addOption("tab", "Open in a tab").addOption("floating", "Open in a floating editor").setValue(this.plugin.settings.kanbanCardClickAction).onChange((v) => {
         this.plugin.settings.kanbanCardClickAction = v === "floating" ? "floating" : "tab";
         void this.plugin.saveSettings({ invalidateResolved: false });
@@ -7644,9 +7828,9 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
     );
     this.renderColumnSets(containerEl);
     this.renderCardTemplates(containerEl);
-    new import_obsidian7.Setting(containerEl).setName("Premium").setHeading();
+    new import_obsidian8.Setting(containerEl).setName("Premium").setHeading();
     const premiumIn = (parent, name, desc, render) => {
-      const setting = new import_obsidian7.Setting(parent).setName(name).setDesc(desc);
+      const setting = new import_obsidian8.Setting(parent).setName(name).setDesc(desc);
       if (!this.plugin.settings.isPro) {
         setting.settingEl.addClass("bpp-setting-locked");
         setting.descEl.appendText(" (Premium)");
@@ -7657,7 +7841,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
     };
     const premium = (name, desc, render) => premiumIn(containerEl, name, desc, render);
     const subHeading = (name) => {
-      new import_obsidian7.Setting(containerEl).setName(name).setHeading();
+      new import_obsidian8.Setting(containerEl).setName(name).setHeading();
     };
     const viewSection = (title, liteSummary, build) => {
       const details = containerEl.createEl("details", { cls: "bpp-settings-section" });
@@ -7999,7 +8183,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
     return text;
   }
   renderColumnSets(containerEl) {
-    new import_obsidian7.Setting(containerEl).setName("Column sets").setDesc(
+    new import_obsidian8.Setting(containerEl).setName("Column sets").setDesc(
       `Predefined column layouts \u2014 an ordered set of columns, each with a color and an optional "done" marker. Apply one from the board's Column set control to set the group-by, order, colors, and done value in one step.`
     ).setHeading();
     const swatches = [
@@ -8016,7 +8200,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
     const saveRedraw = () => void save().then(() => this.display());
     const sets = this.plugin.settings.kanbanColumnSets;
     sets.forEach((set) => {
-      const head = new import_obsidian7.Setting(containerEl).setClass("bpp-colset-head");
+      const head = new import_obsidian8.Setting(containerEl).setClass("bpp-colset-head");
       head.addText(
         (t) => t.setPlaceholder("Set name").setValue(set.name).onChange((v) => {
           set.name = v;
@@ -8042,7 +8226,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         })
       );
       set.columns.forEach((col, ci) => {
-        const row = new import_obsidian7.Setting(containerEl).setClass("bpp-colset-col");
+        const row = new import_obsidian8.Setting(containerEl).setClass("bpp-colset-col");
         row.addText(
           (t) => t.setPlaceholder("Column value").setValue(col.name).onChange((v) => {
             col.name = v;
@@ -8086,7 +8270,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         );
       });
     });
-    new import_obsidian7.Setting(containerEl).addButton(
+    new import_obsidian8.Setting(containerEl).addButton(
       (b) => b.setButtonText("Add column set").setCta().onClick(() => {
         this.plugin.settings.kanbanColumnSets.push({
           id: genId("cols"),
@@ -8103,14 +8287,14 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
     );
   }
   renderCardTemplates(containerEl) {
-    new import_obsidian7.Setting(containerEl).setName("Card templates").setDesc(
+    new import_obsidian8.Setting(containerEl).setName("Card templates").setDesc(
       "Reusable card templates \u2014 a named set of frontmatter defaults. When any exist, the board's + button offers a picker (Blank + each template) that seeds a new card with these fields. The card's column value always wins a conflict."
     ).setHeading();
     const save = () => this.plugin.saveSettings({ invalidateResolved: false });
     const saveRedraw = () => void save().then(() => this.display());
     const templates = this.plugin.settings.kanbanCardTemplates;
     templates.forEach((tpl) => {
-      const head = new import_obsidian7.Setting(containerEl).setClass("bpp-colset-head");
+      const head = new import_obsidian8.Setting(containerEl).setClass("bpp-colset-head");
       head.addText(
         (t) => t.setPlaceholder("Template name").setValue(tpl.name).onChange((v) => {
           tpl.name = v;
@@ -8130,7 +8314,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         })
       );
       tpl.fields.forEach((field, fi) => {
-        const row = new import_obsidian7.Setting(containerEl).setClass("bpp-colset-col");
+        const row = new import_obsidian8.Setting(containerEl).setClass("bpp-colset-col");
         row.addText(
           (t) => this.keySuggest(t).setPlaceholder("property").setValue(field.key).onChange((v) => {
             field.key = v.trim();
@@ -8151,7 +8335,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         );
       });
     });
-    new import_obsidian7.Setting(containerEl).addButton(
+    new import_obsidian8.Setting(containerEl).addButton(
       (b) => b.setButtonText("Add card template").setCta().onClick(() => {
         this.plugin.settings.kanbanCardTemplates.push({
           id: genId("tpl"),
@@ -8163,12 +8347,12 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
     );
   }
   renderColorRules(containerEl) {
-    new import_obsidian7.Setting(containerEl).setName("Color rules").setDesc(
+    new import_obsidian8.Setting(containerEl).setName("Color rules").setDesc(
       'Color cards, calendar events, and Gantt bars by rule. The first matching rule wins \u2014 order by priority with the arrows. Expressions use the formula engine, e.g. due < today() or priority == "high".'
     ).setHeading();
     const rules = this.plugin.settings.colorRules;
     rules.forEach((rule, index) => {
-      const row = new import_obsidian7.Setting(containerEl);
+      const row = new import_obsidian8.Setting(containerEl);
       if (!rule.expression.trim()) row.setDesc("No expression yet \u2014 this rule is inactive.");
       row.addColorPicker(
         (cp) => (
@@ -8222,7 +8406,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         })
       );
     });
-    new import_obsidian7.Setting(containerEl).addButton(
+    new import_obsidian8.Setting(containerEl).addButton(
       (b) => b.setButtonText("Add color rule").setCta().onClick(() => {
         this.plugin.settings.colorRules.push({ id: genId("color"), label: "", expression: "", color: "#e53935" });
         void this.plugin.saveSettings().then(() => this.display());
@@ -8230,12 +8414,12 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
     );
   }
   renderAutomations(containerEl) {
-    new import_obsidian7.Setting(containerEl).setName("Move Rules").setDesc(
+    new import_obsidian8.Setting(containerEl).setName("Move Rules").setDesc(
       "When a card's trigger property enters a value (e.g. dragged into a Kanban column), run these frontmatter actions automatically."
     ).setHeading();
     for (const rule of this.plugin.settings.automations) {
       const box = containerEl.createDiv({ cls: "bpp-rule" });
-      new import_obsidian7.Setting(box).setName("When").addToggle(
+      new import_obsidian8.Setting(box).setName("When").addToggle(
         (t) => t.setTooltip("Enable this rule").setValue(rule.enabled).onChange((v) => {
           rule.enabled = v;
           void this.plugin.saveSettings();
@@ -8262,7 +8446,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         })
       );
       for (const action of rule.actions) {
-        const row = new import_obsidian7.Setting(box).setClass("bpp-rule-action");
+        const row = new import_obsidian8.Setting(box).setClass("bpp-rule-action");
         row.addText(
           (t) => t.setPlaceholder("property").setValue(action.prop).onChange((v) => {
             action.prop = v.trim();
@@ -8291,14 +8475,14 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
           })
         );
       }
-      new import_obsidian7.Setting(box).addButton(
+      new import_obsidian8.Setting(box).addButton(
         (b) => b.setButtonText("Add action").onClick(() => {
           rule.actions.push({ prop: "", type: "set", value: "" });
           void this.plugin.saveSettings().then(() => this.display());
         })
       );
     }
-    new import_obsidian7.Setting(containerEl).addButton(
+    new import_obsidian8.Setting(containerEl).addButton(
       (b) => b.setButtonText("Add rule").setCta().onClick(() => {
         this.plugin.settings.automations.push({
           id: genId("rule"),
@@ -8313,9 +8497,9 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
     );
   }
   renderRollups(containerEl) {
-    new import_obsidian7.Setting(containerEl).setName("Roll-ups").setDesc("Aggregate an expression across the rows in each view (shown as a summary bar).").setHeading();
+    new import_obsidian8.Setting(containerEl).setName("Roll-ups").setDesc("Aggregate an expression across the rows in each view (shown as a summary bar).").setHeading();
     for (const rollup of this.plugin.settings.rollups) {
-      const row = new import_obsidian7.Setting(containerEl);
+      const row = new import_obsidian8.Setting(containerEl);
       row.addText(
         (t) => t.setPlaceholder("Label").setValue(rollup.label).onChange((v) => {
           rollup.label = v;
@@ -8346,7 +8530,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         })
       );
     }
-    new import_obsidian7.Setting(containerEl).addButton(
+    new import_obsidian8.Setting(containerEl).addButton(
       (b) => b.setButtonText("Add roll-up").setCta().onClick(() => {
         this.plugin.settings.rollups.push({
           id: genId("rollup"),
@@ -8359,9 +8543,9 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
     );
   }
   renderSavedFilters(containerEl) {
-    new import_obsidian7.Setting(containerEl).setName("Saved filters").setDesc(`Named filter expressions selectable from each view's toolbar, e.g. status != "done" && priority > 2.`).setHeading();
+    new import_obsidian8.Setting(containerEl).setName("Saved filters").setDesc(`Named filter expressions selectable from each view's toolbar, e.g. status != "done" && priority > 2.`).setHeading();
     for (const filter of this.plugin.settings.savedFilters) {
-      const row = new import_obsidian7.Setting(containerEl);
+      const row = new import_obsidian8.Setting(containerEl);
       row.addText(
         (t) => t.setPlaceholder("Name").setValue(filter.name).onChange((v) => {
           filter.name = v;
@@ -8387,7 +8571,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian7.PluginSettingTab {
         })
       );
     }
-    new import_obsidian7.Setting(containerEl).addButton(
+    new import_obsidian8.Setting(containerEl).addButton(
       (b) => b.setButtonText("Add saved filter").setCta().onClick(() => {
         this.plugin.settings.savedFilters.push({
           id: genId("filter"),
@@ -8451,10 +8635,10 @@ _LicenseManager.PRODUCT = "bases-power-pack";
 var LicenseManager = _LicenseManager;
 
 // src/bases/kanbanBasesView.ts
-var import_obsidian8 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 var KANBAN_BASES_VIEW_ID = "kanban";
 var READONLY_GROUP_KEY = "__bpp_bases_group";
-var KanbanBasesView = class extends import_obsidian8.BasesView {
+var KanbanBasesView = class extends import_obsidian9.BasesView {
   constructor(controller, containerEl, plugin) {
     super(controller);
     this.plugin = plugin;
@@ -8625,7 +8809,7 @@ var KanbanBasesView = class extends import_obsidian8.BasesView {
 };
 
 // src/views/calendarView.ts
-var import_obsidian9 = require("obsidian");
+var import_obsidian10 = require("obsidian");
 var VIEW_TYPE_CALENDAR = "bpp-calendar-view";
 var CalendarView = class extends PowerPackView {
   constructor() {
@@ -8873,7 +9057,7 @@ var CalendarView = class extends PowerPackView {
   openEventMenu(anchor, row, dateProp) {
     if (anchor instanceof MouseEvent) anchor.preventDefault();
     const after = () => void this.render();
-    const menu = new import_obsidian9.Menu();
+    const menu = new import_obsidian10.Menu();
     menu.addItem(
       (i) => i.setTitle("Reschedule\u2026").setIcon("calendar-clock").onClick(() => {
         var _a;
@@ -8886,7 +9070,7 @@ var CalendarView = class extends PowerPackView {
           onSubmit: (v) => {
             const key = toIsoDateKey(v);
             if (!key) {
-              new import_obsidian9.Notice("Enter a date as YYYY-MM-DD.");
+              new import_obsidian10.Notice("Enter a date as YYYY-MM-DD.");
               return;
             }
             void this.reschedule(row.id, dateProp, key);
@@ -8958,7 +9142,7 @@ var CalendarView = class extends PowerPackView {
   async reschedule(rowId, dateProp, targetKey) {
     var _a;
     const file = this.app.vault.getAbstractFileByPath(rowId);
-    if (!(file instanceof import_obsidian9.TFile)) return;
+    if (!(file instanceof import_obsidian10.TFile)) return;
     const cache = this.app.metadataCache.getFileCache(file);
     const original = (_a = cache == null ? void 0 : cache.frontmatter) == null ? void 0 : _a[dateProp];
     await writeRowProperty(this.plugin, rowId, dateProp, rescheduleDateValue(original, targetKey), false, {
@@ -8975,16 +9159,16 @@ var CalendarView = class extends PowerPackView {
         key,
         `Note ${key}`
       );
-      new import_obsidian9.Notice(`Created ${file.basename}`);
+      new import_obsidian10.Notice(`Created ${file.basename}`);
     } catch (error) {
-      new import_obsidian9.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
+      new import_obsidian10.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
     }
     await this.render();
   }
 };
 
 // src/views/ganttView.ts
-var import_obsidian10 = require("obsidian");
+var import_obsidian11 = require("obsidian");
 var VIEW_TYPE_GANTT = "bpp-gantt-view";
 var ZOOM_PRESETS = [
   { label: "Quarter", px: 4 },
@@ -9309,7 +9493,7 @@ var GanttView = class extends PowerPackView {
   openBarMenu(anchor, row, startProp, endProp) {
     if (anchor instanceof MouseEvent) anchor.preventDefault();
     const after = () => void this.render();
-    const menu = new import_obsidian10.Menu();
+    const menu = new import_obsidian11.Menu();
     menu.addItem(
       (i) => i.setTitle("Set start date\u2026").setIcon("calendar").onClick(() => this.setDateViaPrompt(row, startProp, "start"))
     );
@@ -9332,7 +9516,7 @@ var GanttView = class extends PowerPackView {
       onSubmit: (v) => {
         const key = toIsoDateKey(v);
         if (!key) {
-          new import_obsidian10.Notice("Enter a date as YYYY-MM-DD.");
+          new import_obsidian11.Notice("Enter a date as YYYY-MM-DD.");
           return;
         }
         void writeRowProperty(this.plugin, row.id, prop, rescheduleDateValue(raw, key), false, {
@@ -9402,7 +9586,7 @@ function valueToDateString(value) {
 }
 
 // src/views/hierarchyView.ts
-var import_obsidian11 = require("obsidian");
+var import_obsidian12 = require("obsidian");
 
 // src/query/hierarchy.ts
 function baseName(path) {
@@ -9919,7 +10103,7 @@ var HierarchyView = class extends PowerPackView {
     var _a;
     if (anchor instanceof MouseEvent) anchor.preventDefault();
     const after = () => void this.render();
-    const menu = new import_obsidian11.Menu();
+    const menu = new import_obsidian12.Menu();
     menu.addItem((i) => i.setTitle("Add child note").setIcon("plus").onClick(() => void this.addChildNote(id, parentProp)));
     menu.addItem(
       (i) => i.setTitle("Set parent\u2026").setIcon("indent").onClick(() => this.setParentViaPrompt(row, id, forest, parentProp))
@@ -9948,7 +10132,7 @@ var HierarchyView = class extends PowerPackView {
     const check = canReparent(childId, newParentId, byId);
     if (!check.ok) {
       if (check.reason && check.reason !== "already there" && check.reason !== "already a root") {
-        new import_obsidian11.Notice(`Can't move: ${check.reason}.`);
+        new import_obsidian12.Notice(`Can't move: ${check.reason}.`);
       }
       return;
     }
@@ -9985,9 +10169,9 @@ var HierarchyView = class extends PowerPackView {
         parentId,
         "New child"
       );
-      new import_obsidian11.Notice(`Created ${file.basename}`);
+      new import_obsidian12.Notice(`Created ${file.basename}`);
     } catch (error) {
-      new import_obsidian11.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
+      new import_obsidian12.Notice(`Bases Power Pack: could not create note (${String(error)}).`);
     }
     await this.render();
   }
@@ -10861,7 +11045,7 @@ function formatValue(n) {
 }
 
 // src/views/galleryView.ts
-var import_obsidian12 = require("obsidian");
+var import_obsidian13 = require("obsidian");
 var VIEW_TYPE_GALLERY = "bpp-gallery-view";
 var GalleryView = class extends PowerPackView {
   getViewType() {
@@ -10980,7 +11164,7 @@ var GalleryView = class extends PowerPackView {
   }
   openCardMenu(anchor, row) {
     if (anchor instanceof MouseEvent) anchor.preventDefault();
-    const menu = new import_obsidian12.Menu();
+    const menu = new import_obsidian13.Menu();
     this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, () => void this.render());
     this.showMenuAtAnchor(menu, anchor);
   }
@@ -10992,7 +11176,7 @@ var GalleryView = class extends PowerPackView {
 };
 
 // src/views/feedView.ts
-var import_obsidian13 = require("obsidian");
+var import_obsidian14 = require("obsidian");
 var VIEW_TYPE_FEED = "bpp-feed-view";
 var FILE_DATE_OPTIONS = [
   { value: "file.mtime", label: "Modified date" },
@@ -11151,7 +11335,7 @@ var FeedView = class extends PowerPackView {
   }
   openItemMenu(anchor, row) {
     if (anchor instanceof MouseEvent) anchor.preventDefault();
-    const menu = new import_obsidian13.Menu();
+    const menu = new import_obsidian14.Menu();
     this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, () => void this.render());
     this.showMenuAtAnchor(menu, anchor);
   }
@@ -11191,7 +11375,7 @@ var VIEW_NAME_TO_TYPE = {
   gallery: VIEW_TYPE_GALLERY,
   feed: VIEW_TYPE_FEED
 };
-var BasesPowerPackPlugin = class extends import_obsidian14.Plugin {
+var BasesPowerPackPlugin = class extends import_obsidian15.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -11229,19 +11413,19 @@ var BasesPowerPackPlugin = class extends import_obsidian14.Plugin {
     this.registerEvent(this.app.metadataCache.on("changed", (file) => this.patchNote(file)));
     this.registerEvent(
       this.app.vault.on("create", (file) => {
-        if (file instanceof import_obsidian14.TFile) this.patchNote(file);
+        if (file instanceof import_obsidian15.TFile) this.patchNote(file);
         else this.invalidateSnapshot();
       })
     );
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
-        if (file instanceof import_obsidian14.TFile) this.removeNote(file.path);
+        if (file instanceof import_obsidian15.TFile) this.removeNote(file.path);
         else this.invalidateSnapshot();
       })
     );
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
-        if (file instanceof import_obsidian14.TFile) {
+        if (file instanceof import_obsidian15.TFile) {
           this.removeNote(oldPath);
           this.patchNote(file);
         } else {
@@ -11251,7 +11435,7 @@ var BasesPowerPackPlugin = class extends import_obsidian14.Plugin {
     );
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof import_obsidian14.TFile && file.extension === "base") this.invalidateResolved();
+        if (file instanceof import_obsidian15.TFile && file.extension === "base") this.invalidateResolved();
       })
     );
     this.registerView(VIEW_TYPE_KANBAN, (leaf) => new KanbanView(leaf, this));
@@ -11336,7 +11520,7 @@ var BasesPowerPackPlugin = class extends import_obsidian14.Plugin {
         await this.refreshLicense();
         this.refreshViews();
         const message = this.settings.isPro ? "Premium active." : this.licenseError ? `License: ${this.licenseError}` : "Lite tier (no valid license).";
-        new import_obsidian14.Notice(message);
+        new import_obsidian15.Notice(message);
       }
     });
     this.addSettingTab(new BasesPowerPackSettingTab(this.app, this));
@@ -11447,7 +11631,7 @@ var BasesPowerPackPlugin = class extends import_obsidian14.Plugin {
     }
     const missed = entry.notes.length - ok;
     const detail = missed > 0 ? ` (${missed} no longer at ${missed === 1 ? "its" : "their"} original path)` : "";
-    new import_obsidian14.Notice(`Undid "${entry.label}" \u2014 restored ${ok} note${ok === 1 ? "" : "s"}${detail}.`);
+    new import_obsidian15.Notice(`Undid "${entry.label}" \u2014 restored ${ok} note${ok === 1 ? "" : "s"}${detail}.`);
     this.refreshViews();
   }
   queueHierarchyRetarget(newPath, oldPath) {
@@ -11488,7 +11672,7 @@ var BasesPowerPackPlugin = class extends import_obsidian14.Plugin {
     }
     this.undo.commitBatch(batch);
     if (ok > 0) {
-      new import_obsidian14.Notice(`Bases Power Pack: repointed ${ok} child note${ok === 1 ? "" : "s"} after rename.`);
+      new import_obsidian15.Notice(`Bases Power Pack: repointed ${ok} child note${ok === 1 ? "" : "s"} after rename.`);
       this.refreshViews();
     }
   }
@@ -11497,21 +11681,21 @@ var BasesPowerPackPlugin = class extends import_obsidian14.Plugin {
       openView: async (view, basePath) => {
         const viewType = VIEW_NAME_TO_TYPE[view];
         if (!viewType) {
-          new import_obsidian14.Notice(`Bases Power Pack: unknown view "${String(view)}".`);
+          new import_obsidian15.Notice(`Bases Power Pack: unknown view "${String(view)}".`);
           return false;
         }
         if (PREMIUM_VIEW_TYPES.includes(viewType) && !this.settings.isPro) {
-          new import_obsidian14.Notice("Bases Power Pack: this view requires a premium license.");
+          new import_obsidian15.Notice("Bases Power Pack: this view requires a premium license.");
           return false;
         }
         if (basePath) {
           if (!this.settings.isPro) {
-            new import_obsidian14.Notice("Bases Power Pack: opening a base as the data source requires premium.");
+            new import_obsidian15.Notice("Bases Power Pack: opening a base as the data source requires premium.");
             return false;
           }
-          const file = this.app.vault.getAbstractFileByPath((0, import_obsidian14.normalizePath)(basePath));
-          if (!(file instanceof import_obsidian14.TFile) || file.extension !== "base") {
-            new import_obsidian14.Notice("Bases Power Pack: base file not found.");
+          const file = this.app.vault.getAbstractFileByPath((0, import_obsidian15.normalizePath)(basePath));
+          if (!(file instanceof import_obsidian15.TFile) || file.extension !== "base") {
+            new import_obsidian15.Notice("Bases Power Pack: base file not found.");
             return false;
           }
           if (this.settings.activeBasePath !== file.path) {
@@ -11548,7 +11732,7 @@ var BasesPowerPackPlugin = class extends import_obsidian14.Plugin {
       ];
       let created = 0;
       for (const [title, status] of samples) {
-        const path = (0, import_obsidian14.normalizePath)(`${folder}/${title}.md`);
+        const path = (0, import_obsidian15.normalizePath)(`${folder}/${title}.md`);
         if (!vault.getAbstractFileByPath(path)) {
           const file = await vault.create(path, `---
 status: ${status}
@@ -11565,11 +11749,11 @@ status: ${status}
       await this.saveSettings();
       await this.activateView(VIEW_TYPE_KANBAN);
       this.refreshViews();
-      new import_obsidian14.Notice(
+      new import_obsidian15.Notice(
         created > 0 ? `Kanban board ready \u2014 added ${created} sample note${created === 1 ? "" : "s"} in "${folder}".` : "Opened your Kanban board (grouped by status)."
       );
     } catch (error) {
-      new import_obsidian14.Notice(`Bases Power Pack: could not create the board (${String(error)}).`);
+      new import_obsidian15.Notice(`Bases Power Pack: could not create the board (${String(error)}).`);
     }
   }
   /** Reveal (or create) a leaf hosting the given view type. */

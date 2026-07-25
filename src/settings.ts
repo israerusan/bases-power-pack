@@ -131,6 +131,9 @@ export interface BasesPowerPackSettings {
 	/** A frontmatter property linking a card to its parent, for nested cards: a parent card
 	 * shows a subtask count and an expandable list of its children. "" = off. */
 	kanbanSubtasksProp: string;
+	/** A completion-date property used by Analytics for throughput + cycle time. When empty
+	 * or unparseable, a done card's file mtime is used as the finish time. */
+	kanbanCompletedProp: string;
 
 	/** Feed / timeline (premium) */
 	feedDateProp: string;
@@ -231,6 +234,7 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	kanbanCardAvatarProp: "",
 	kanbanDependsProp: "",
 	kanbanSubtasksProp: "",
+	kanbanCompletedProp: "",
 	feedDateProp: "file.mtime",
 	feedGranularity: "day",
 	calendarDateProp: "due",
@@ -497,6 +501,21 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 					.onChange((value) => {
 						this.plugin.settings.kanbanSubtasksProp = value.trim();
 						void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
+					})
+			);
+
+		new Setting(containerEl)
+			.setName("Completed-date property")
+			.setDesc(
+				"Optional date property marking when a card was finished, used by the board's Analytics (throughput + cycle time). When blank, a done card's file modified-time is used instead."
+			)
+			.addText((text) =>
+				this.keySuggest(text)
+					.setPlaceholder("(uses file mtime)")
+					.setValue(this.plugin.settings.kanbanCompletedProp)
+					.onChange((value) => {
+						this.plugin.settings.kanbanCompletedProp = value.trim();
+						void this.plugin.saveSettings({ invalidateResolved: false });
 					})
 			);
 
