@@ -61,7 +61,7 @@ Purchase: [Buy Me a Coffee — Bases Power Pack Premium](https://buymeacoffee.co
 ### Activate Premium
 
 1. Purchase via [Buy Me a Coffee](https://buymeacoffee.com/vaultspotlight/e/560211) ($29 one-time).
-2. Your license key arrives by email.
+2. Your license key is emailed to you **automatically, within seconds** — delivery is fully automated, no waiting.
 3. Paste it into **Settings → Bases Power Pack → License** — it unlocks instantly, offline.
 
 ## Views at a glance
