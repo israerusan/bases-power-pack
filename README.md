@@ -111,7 +111,11 @@ Available from the command palette:
 
 Premium view commands are always visible. If you have not unlocked Premium yet, they open an in-view unlock screen rather than quietly vanishing from the palette.
 
-## Install into a vault for testing
+## Install
+
+**Community plugins (recommended):** open **Settings → Community plugins**, search **Bases Power Pack**, and install it — one click, auto-updates.
+
+### Manual install (for testing / sideload)
 
 Copy these three files into:
 
