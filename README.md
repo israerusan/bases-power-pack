@@ -1,8 +1,10 @@
 # Bases Power Pack
 
+_Stop babysitting YAML — run your projects from a board, calendar, and timeline that write straight back to your notes._
+
 Turn Obsidian **Bases** into a real planning workspace: a genuinely useful free Kanban board, plus premium Calendar, Gantt, Dashboard, Gallery, Pivot, Feed, formulas, roll-ups, saved filters, and automation.
 
-> **Start free. Upgrade once.** Bases Power Pack has a free Lite tier, and Premium unlocks with a **~$29 one-time** license.
+> **Start free. Upgrade once.** Bases Power Pack has a free Lite tier, and Premium unlocks with a **$29 one-time** license.
 
 [Buy Premium / purchase info](#buy-premium) · [See premium views](#premium-views) · [Compare Lite vs Premium](#what-you-get)
 
@@ -12,9 +14,9 @@ Turn Obsidian **Bases** into a real planning workspace: a genuinely useful free 
 
 _Move a card across columns and reorder it in one gesture._
 
-![Kanban board with rich card metadata and covers](docs/assets/hero-board.png)
+![Move a card from Review to Done in one motion](docs/assets/review-to-done.gif)
 
-_A free Kanban board that already looks and behaves like a real workflow tool, not a crippled teaser._
+_Move work cleanly from Review to Done without opening a note or babysitting frontmatter._
 
 ## Premium views
 
@@ -51,6 +53,16 @@ _Analytics makes the board answer the obvious management questions: throughput, 
 | Formulas, roll-ups, saved filters, `.base`-driven workflows | — | ✅ |
 | Move Rules automation, CSV export, color rules | — | ✅ |
 | Board Analytics | — | ✅ |
+
+**Lite** is a fully usable Kanban board you can live in for free. **Premium** adds the planning, analytics, and database-style workflows for people running real projects out of their vault.
+
+Purchase: [Buy Me a Coffee — Bases Power Pack Premium](https://buymeacoffee.com/vaultspotlight/e/560211). License keys are verified **offline** (Ed25519) — no account, server, or subscription.
+
+### Activate Premium
+
+1. Purchase via [Buy Me a Coffee](https://buymeacoffee.com/vaultspotlight/e/560211) ($29 one-time).
+2. Your license key arrives by email.
+3. Paste it into **Settings → Bases Power Pack → License** — it unlocks instantly, offline.
 
 ## Views at a glance
 
