@@ -8171,6 +8171,19 @@ var BasesPowerPackSettingTab = class extends import_obsidian8.PluginSettingTab {
       this.renderSavedFilters(containerEl);
       this.renderColorRules(containerEl);
     }
+    this.renderFeedback(containerEl);
+  }
+  renderFeedback(containerEl) {
+    new import_obsidian8.Setting(containerEl).setName("Feedback").setHeading();
+    new import_obsidian8.Setting(containerEl).setName("Bugs and feature requests").setDesc("Issues and ideas are tracked on GitHub. Opens in your browser.").addButton(
+      (button) => button.setButtonText("Report a bug").onClick(() => {
+        window.open("https://github.com/israerusan/bases-power-pack/issues/new?labels=bug");
+      })
+    ).addButton(
+      (button) => button.setButtonText("Request a feature").onClick(() => {
+        window.open("https://github.com/israerusan/bases-power-pack/issues/new?labels=enhancement");
+      })
+    );
   }
   /** Autocomplete a property-name text box from the vault's actual frontmatter keys. */
   keySuggest(text) {
