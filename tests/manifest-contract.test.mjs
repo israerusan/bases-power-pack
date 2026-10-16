@@ -24,6 +24,18 @@ assert.ok(!/plugin/i.test(manifest.id), 'manifest.id must not contain "plugin"')
 assert.ok(/^[a-z0-9-]+$/.test(manifest.id), "manifest.id must be lowercase letters/digits/hyphens");
 assert.ok(manifest.minAppVersion && /^\d+\.\d+\.\d+$/.test(manifest.minAppVersion), "manifest.minAppVersion must be set (x.y.z)");
 assert.ok(manifest.author, "manifest.author must be set");
+
+// --- Portfolio identity: one author string across every plugin, so the community
+// --- directory shows a single developer instead of several. Change CANONICAL_AUTHOR
+// --- in every repo at once if it ever needs to change.
+const CANONICAL_AUTHOR = "Israel Avila";
+assert.equal(manifest.author, CANONICAL_AUTHOR, `manifest.author must be "${CANONICAL_AUTHOR}" across the whole portfolio`);
+
+// --- Description policy (Obsidian community directory submission requirements).
+// --- The directory card truncates long descriptions, so keep them short and benefit-first.
+assert.ok(manifest.description.length <= 250, `manifest.description must be <= 250 chars (is ${manifest.description.length})`);
+assert.ok(manifest.description.trim().endsWith("."), "manifest.description must end with a period");
+assert.ok([...manifest.description].every((ch) => ch.codePointAt(0) < 128), "manifest.description must be ascii only (no emoji)");
 assert.equal(typeof manifest.isDesktopOnly, "boolean", "manifest.isDesktopOnly must be a boolean");
 
 // --- Release consistency (tag == manifest version, listed in versions.json) --

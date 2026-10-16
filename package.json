@@ -23,7 +23,7 @@
 		"calendar",
 		"database"
 	],
-	"author": "iavil",
+	"author": "Israel Avila",
 	"license": "MIT",
 	"devDependencies": {
 		"@types/node": "^24.0.0",
