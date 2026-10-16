@@ -11,6 +11,8 @@ import {
 } from "./query/dashboard";
 import { type PivotSort } from "./query/pivot";
 import { type FeedGranularity } from "./query/feed";
+import { type RowSource } from "./bases/resolveRows";
+import { DqlConvertModal } from "./views/dqlModal";
 
 const ACTION_LABELS: Record<AutomationActionType, string> = {
 	set: "Set to value",
@@ -182,6 +184,27 @@ export interface BasesPowerPackSettings {
 	/** Bases integration (premium) */
 	activeBasePath: string;
 
+	/** ---- Beyond Bases (premium): the data Bases itself cannot see ---- */
+	/** Read Dataview-style `key:: value` fields out of note BODIES and expose
+	 * them to every view, filter and formula exactly like frontmatter. Requires
+	 * reading note text, so it is opt-in. */
+	inlineFields: boolean;
+	/** Build rows from `- [ ]` checkbox LINES instead of whole notes. */
+	rowSource: RowSource;
+	/** Include completed tasks in the task row set. */
+	taskIncludeDone: boolean;
+	/** Include tasks nested under another task. */
+	taskIncludeSubtasks: boolean;
+	/** Allow `project.status` to read a property off the note a link points at,
+	 * and expose `file.inlinks` / `file.outlinks`. */
+	linkTraversal: boolean;
+	/** FLATTEN: an expression whose list value expands into one row per item. */
+	flattenExpression: string;
+	/** The identifier the flattened value binds to ("" = infer from the expression). */
+	flattenAs: string;
+	/** Keep rows whose flattened value is empty (the "unassigned" bucket). */
+	flattenKeepEmpty: boolean;
+
 	/** Saved filters (premium) */
 	savedFilters: SavedFilter[];
 	activeFilterId: string;
@@ -262,6 +285,14 @@ export const DEFAULT_SETTINGS: BasesPowerPackSettings = {
 	dashboardTopN: 12,
 	galleryImageProp: "cover",
 	activeBasePath: "",
+	inlineFields: false,
+	rowSource: "notes",
+	taskIncludeDone: false,
+	taskIncludeSubtasks: true,
+	linkTraversal: false,
+	flattenExpression: "",
+	flattenAs: "",
+	flattenKeepEmpty: false,
 	savedFilters: [],
 	activeFilterId: "",
 	rollups: [],
@@ -673,6 +704,150 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 						void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
 					});
 				});
+			}
+		);
+
+		// ---- Beyond Bases: the data Bases itself cannot see -------------------
+		viewSection(
+			"Beyond Bases — inline fields, tasks, links, FLATTEN",
+			"Reads Dataview-style `key:: value` fields from note bodies, turns `- [ ]` lines into rows, follows wikilinks to another note's properties, and expands list properties into one row per value. Premium.",
+			(parent) => {
+				parent.createDiv({ cls: "bpp-premium-summary" }).setText(
+					"Bases only sees frontmatter and only counts whole files. These four switches are what a Dataview vault needs in order to move across. Reading note bodies costs one pass over the vault, so each is off until you ask for it."
+				);
+
+				premiumIn(
+					parent,
+					"Inline fields",
+					"Read `key:: value` written in note BODIES and expose them to every view, filter, and formula exactly like frontmatter. Frontmatter wins when both define the same key.",
+					(setting) => {
+						setting.addToggle((toggle) =>
+							toggle.setValue(this.plugin.settings.inlineFields).onChange((value) => {
+								this.plugin.settings.inlineFields = value;
+								if (!value && this.plugin.settings.rowSource !== "tasks") this.plugin.bodyIndex.clear();
+								void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+							})
+						);
+					}
+				);
+
+				premiumIn(
+					parent,
+					"Row source",
+					"Build rows from whole notes (the Bases model) or from each `- [ ]` checkbox line. Task rows inherit their note's properties, and dragging one writes back to the line itself.",
+					(setting) => {
+						setting.addDropdown((dd) => {
+							dd.addOption("notes", "Notes");
+							dd.addOption("tasks", "Tasks (checkbox lines)");
+							dd.setValue(this.plugin.settings.rowSource);
+							dd.onChange((value) => {
+								this.plugin.settings.rowSource = value === "tasks" ? "tasks" : "notes";
+								if (this.plugin.settings.rowSource === "notes" && !this.plugin.settings.inlineFields) {
+									this.plugin.bodyIndex.clear();
+								}
+								void this.plugin.saveSettings().then(() => {
+									this.plugin.refreshViews();
+									this.display();
+								});
+							});
+						});
+					}
+				);
+
+				if (this.plugin.settings.rowSource === "tasks") {
+					premiumIn(parent, "Include completed tasks", "Show `[x]` tasks as rows.", (setting) => {
+						setting.addToggle((toggle) =>
+							toggle.setValue(this.plugin.settings.taskIncludeDone).onChange((value) => {
+								this.plugin.settings.taskIncludeDone = value;
+								void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+							})
+						);
+					});
+
+					premiumIn(parent, "Include subtasks", "Show tasks nested under another task.", (setting) => {
+						setting.addToggle((toggle) =>
+							toggle.setValue(this.plugin.settings.taskIncludeSubtasks).onChange((value) => {
+								this.plugin.settings.taskIncludeSubtasks = value;
+								void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+							})
+						);
+					});
+				}
+
+				premiumIn(
+					parent,
+					"Link traversal",
+					"Let `project.status` read a property off the note `project` links to, and expose `file.inlinks` / `file.outlinks` / `file.inlinkCount` / `file.outlinkCount`.",
+					(setting) => {
+						setting.addToggle((toggle) =>
+							toggle.setValue(this.plugin.settings.linkTraversal).onChange((value) => {
+								this.plugin.settings.linkTraversal = value;
+								void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+							})
+						);
+					}
+				);
+
+				premiumIn(
+					parent,
+					"Flatten property",
+					"Expand a list property into one row per value, so a note with three assignees becomes three cards. Leave blank to keep one row per note.",
+					(setting) => {
+						setting.addText((text) =>
+							this.keySuggest(text)
+								.setPlaceholder("assignees")
+								.setValue(this.plugin.settings.flattenExpression)
+								.onChange((value) => {
+									this.plugin.settings.flattenExpression = value.trim();
+									void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+								})
+						);
+					}
+				);
+
+				premiumIn(
+					parent,
+					"Flatten binds to",
+					"Name the per-row value is available under. Leave blank to reuse the property's own name.",
+					(setting) => {
+						setting.addText((text) =>
+							text
+								.setPlaceholder("assignee")
+								.setValue(this.plugin.settings.flattenAs)
+								.onChange((value) => {
+									this.plugin.settings.flattenAs = value.trim();
+									void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+								})
+						);
+					}
+				);
+
+				premiumIn(
+					parent,
+					"Keep rows with no value",
+					"Keep a row whose flattened property is empty, so unassigned work still appears.",
+					(setting) => {
+						setting.addToggle((toggle) =>
+							toggle.setValue(this.plugin.settings.flattenKeepEmpty).onChange((value) => {
+								this.plugin.settings.flattenKeepEmpty = value;
+								void this.plugin.saveSettings().then(() => this.plugin.refreshViews());
+							})
+						);
+					}
+				);
+
+				premiumIn(
+					parent,
+					"Convert a Dataview query",
+					"Paste a DQL query and get a .base file plus the matching view. Anything that can't be converted is reported, not guessed.",
+					(setting) => {
+						setting.addButton((btn) =>
+							btn.setButtonText("Open converter").onClick(() => {
+								new DqlConvertModal(this.app, this.plugin).open();
+							})
+						);
+					}
+				);
 			}
 		);
 

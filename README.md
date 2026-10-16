@@ -32,6 +32,11 @@ Most Bases boards only display. This one writes your changes back, stays offline
 | Formulas, roll-ups, saved filters, `.base`-driven workflows | — | ✅ |
 | Move Rules automation, CSV export, color rules | — | ✅ |
 | Board Analytics | — | ✅ |
+| **Inline `key:: value` fields from note bodies** | — | ✅ |
+| **Task rows: every `- [ ]` line, with writeback** | — | ✅ |
+| **Link traversal + `file.inlinks` / `file.outlinks`** | — | ✅ |
+| **FLATTEN: one row per list value** | — | ✅ |
+| **Dataview query → `.base` converter** | — | ✅ |
 
 [**Get Premium — $29 one-time →**](https://buymeacoffee.com/vaultspotlight/e/560211) · Paste the key → unlocks instantly, offline.
 
@@ -85,6 +90,48 @@ _Move work cleanly from Review to Done without opening a note or babysitting fro
 - **Feed** — reverse-chronological stream grouped by day, week, or month.
 - **Analytics** — a premium board analytics modal for throughput, workload, bottlenecks, and aging work.
 
+## Beyond Bases: the Dataview data Bases can't see (Premium)
+
+Bases reads **frontmatter** and counts **whole files**. That is the wall every
+Dataview vault hits when it tries to move: years of `due:: 2026-01-01` live in note
+*bodies*, and most people's real unit of work is a `- [ ]` line, not a note.
+
+Power Pack is a standalone plugin, not a registered Bases view, so it can read the
+vault directly. Four switches close the gap — each off until you turn it on, because
+each costs one pass over your notes:
+
+| Switch | What it unlocks |
+| --- | --- |
+| **Inline fields** | `key:: value` written anywhere in a note body becomes a real property — queryable by every view, filter, formula, roll-up, and colour rule. Frontmatter wins when both define the same key. |
+| **Row source → Tasks** | Every `- [ ]` checkbox becomes its own row, with its own due date, priority, and assignee. Tasks inherit their note's properties, so you can group every task in the vault by its project. **Dragging a task card writes back to the checkbox line**, not the note's frontmatter — including the Tasks-plugin emoji shorthand (📅 🛫 ⏳ ✅ ⏫), updated in place. |
+| **Link traversal** | `project.status` reads the property off the note `project` links to. Adds `file.inlinks`, `file.outlinks`, `file.inlinkCount`, `file.outlinkCount`. |
+| **Flatten property** | One row per value of a list property — a note with three assignees becomes three cards. Makes per-person boards and tag matrices possible at all. |
+
+Task rows also expose `task.status`, `task.done`, `task.checked`, `task.text`,
+`task.section`, `task.line`, and `task.tags`; note rows gain `file.taskCount`,
+`file.openTaskCount`, and `file.doneTaskCount`. The expression engine gains
+`hastag(file.tags, "project")`, which matches nested `#project/alpha` the way
+Dataview's `FROM #project` does.
+
+### Import a Dataview query
+
+**Convert a Dataview query to a base (Premium)** takes a DQL query and writes a
+`.base` file plus the matching view:
+
+```
+TABLE status, due AS "Deadline"
+FROM #project AND -"Archive"
+WHERE status != "done"
+GROUP BY status
+```
+
+TABLE / LIST / TASK / CALENDAR, `FROM`, `WHERE`, `SORT`, `GROUP BY`, `FLATTEN`, and
+`LIMIT` are all read. **Anything that can't be converted is reported and left out —
+never guessed at.** A `WHERE` clause using a function with no equivalent is dropped
+with a warning, and the warning is written into the generated `.base` as a comment,
+because a filter that silently went missing is far worse than one that is visibly
+absent.
+
 ## 2-minute quick start
 
 1. Run **Open Kanban view (Lite)** from the command palette or click the ribbon icon.
@@ -106,6 +153,7 @@ Available from the command palette:
 - **Open Dashboard view (Premium)**
 - **Open Gallery view (Premium)**
 - **Open Feed view (Premium)**
+- **Convert a Dataview query to a base (Premium)**
 - **Undo last change**
 - **Verify license key**
 

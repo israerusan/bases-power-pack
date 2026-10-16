@@ -514,6 +514,18 @@ const BUILTINS: Record<string, BuiltIn> = {
 		return toStr(hay).toLowerCase().includes(toStr(a[1]).toLowerCase());
 	},
 	startswith: (a) => toStr(a[0]).toLowerCase().startsWith(toStr(a[1]).toLowerCase()),
+	// `hastag(file.tags, "project")` — true for `#project` AND for any nested
+	// `#project/alpha`, which is what Dataview's `FROM #project` means. Plain
+	// `contains()` can't express that: it matches tags exactly.
+	hastag: (a) => {
+		const needle = toStr(a[1]).replace(/^#/, "").toLowerCase();
+		if (needle.length === 0) return false;
+		const tags = Array.isArray(a[0]) ? a[0] : [a[0]];
+		return tags.some((t) => {
+			const tag = toStr(t).replace(/^#/, "").toLowerCase();
+			return tag === needle || tag.startsWith(`${needle}/`);
+		});
+	},
 	endswith: (a) => toStr(a[0]).toLowerCase().endsWith(toStr(a[1]).toLowerCase()),
 	empty: (a) => isEmpty(a[0]),
 	notempty: (a) => !isEmpty(a[0]),

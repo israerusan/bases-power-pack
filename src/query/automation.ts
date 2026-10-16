@@ -78,11 +78,24 @@ function nowStamp(now: Date): string {
  * current (pre-write) frontmatter and the clock. `toggle` flips the current
  * truthiness; `copy` reads another key's current value.
  */
+/**
+ * How a rule reads the row's CURRENT values (for `toggle` and `copy`). A plain
+ * frontmatter object is accepted for convenience, but a row that isn't a whole
+ * note — a task line, or a note with inline `key:: value` fields — must pass a
+ * reader over its scope, or the rule would toggle a value it can't actually see.
+ */
+export type PropertyReader = Record<string, unknown> | ((key: string) => unknown);
+
+function readerFor(source: PropertyReader): (key: string) => unknown {
+	return typeof source === "function" ? source : (key: string) => source[key];
+}
+
 export function computeRuleWrites(
 	rules: AutomationRule[],
-	frontmatter: Record<string, unknown>,
+	source: PropertyReader,
 	now: Date
 ): RuleWrite[] {
+	const read = readerFor(source);
 	const writes: RuleWrite[] = [];
 	for (const rule of rules) {
 		for (const action of rule.actions) {
@@ -102,14 +115,14 @@ export function computeRuleWrites(
 					writes.push({ key, remove: true });
 					break;
 				case "toggle":
-					writes.push({ key, value: !toBool(frontmatter[key]) });
+					writes.push({ key, value: !toBool(read(key)) });
 					break;
 				case "copy": {
 					const src = action.value.trim();
 					// Deep-clone: handing the note's own array/object reference to the
 					// write would alias it — a later mutation of one key would silently
 					// change the other. (Undo already clones on the inverse path.)
-					writes.push({ key, value: src ? cloneValue(frontmatter[src] ?? null) : null });
+					writes.push({ key, value: src ? cloneValue(read(src) ?? null) : null });
 					break;
 				}
 			}

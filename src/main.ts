@@ -35,6 +35,9 @@ import { DASHBOARD_CHART_TYPES, DISTRIBUTION_SORTS } from "./query/dashboard";
 import { PIVOT_SORTS } from "./query/pivot";
 import { FEED_GRANULARITIES } from "./query/feed";
 import type { RawNote } from "./model/row";
+import { BodyIndex } from "./bases/bodyIndex";
+import { buildLinkGraph, type LinkGraph } from "./query/linkIndex";
+import { DqlConvertModal } from "./views/dqlModal";
 
 const PREMIUM_VIEW_TYPES = [
 	VIEW_TYPE_CALENDAR,
@@ -92,6 +95,9 @@ export default class BasesPowerPackPlugin extends Plugin {
 	licenseError = "";
 	/** In-memory undo stack for the frontmatter writes every view makes. */
 	readonly undo = new UndoManager();
+	/** Note-body cache behind inline fields and task rows. Built lazily, and
+	 * only when a setting that needs the note text is on. */
+	bodyIndex!: BodyIndex;
 	private api: BasesPowerPackApi | null = null;
 	/** Cached vault snapshot shared by every view, PATCHED per-file as notes change
 	 * (a full rebuild only on first read, or when a change can't be safely
@@ -104,8 +110,17 @@ export default class BasesPowerPackPlugin extends Plugin {
 	/** Memoized resolved view (rows + parsed base) so a re-render doesn't re-read the
 	 * .base file and rebuild every Row when nothing changed. */
 	private resolvedCache: { key: string; view: ResolvedView } | null = null;
+	/** Bumped only by changes that can actually move the LINK graph (a markdown
+	 * note changing, appearing, or disappearing). Keying the graph to dataVersion
+	 * instead would re-invert every link after a .base edit or a settings change,
+	 * neither of which can touch metadataCache.resolvedLinks. */
+	private linkVersion = 0;
+	/** Memoized link graph. Inverting resolvedLinks is O(total links) -- cheap
+	 * once, wasteful on every unrelated resolve. */
+	private linkGraphCache: { version: number; graph: LinkGraph } | null = null;
 
 	async onload(): Promise<void> {
+		this.bodyIndex = new BodyIndex(this.app);
 		await this.loadSettings();
 		await this.refreshLicense();
 
@@ -244,6 +259,16 @@ export default class BasesPowerPackPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: "convert-dataview-query",
+			name: "Convert a Dataview query to a base (Premium)",
+			checkCallback: (checking) => {
+				if (!this.settings.isPro) return false;
+				if (!checking) new DqlConvertModal(this.app, this).open();
+				return true;
+			},
+		});
+
+		this.addCommand({
 			id: "undo-last-change",
 			name: "Undo last change",
 			checkCallback: (checking) => {
@@ -313,6 +338,7 @@ export default class BasesPowerPackPlugin extends Plugin {
 	invalidateSnapshot(): void {
 		this.notesByPath = null;
 		this.notesArray = null;
+		this.linkVersion++;
 		this.invalidateResolved();
 	}
 
@@ -320,6 +346,8 @@ export default class BasesPowerPackPlugin extends Plugin {
 	 * files aren't in the snapshot, but still invalidate the resolved view (a .base
 	 * rename, say, can change what resolves). */
 	patchNote(file: TFile): void {
+		this.bodyIndex.invalidate(file.path);
+		if (file.extension === "md") this.linkVersion++;
 		if (this.notesByPath && file.extension === "md") {
 			this.notesByPath.set(file.path, buildRawNote(this.app, file));
 			this.notesArray = null;
@@ -329,6 +357,8 @@ export default class BasesPowerPackPlugin extends Plugin {
 
 	/** Drop one note from the snapshot (delete, or the old path of a rename). */
 	removeNote(path: string): void {
+		this.bodyIndex.invalidate(path);
+		this.linkVersion++;
 		if (this.notesByPath) {
 			this.notesByPath.delete(path);
 			this.notesArray = null;
@@ -353,11 +383,46 @@ export default class BasesPowerPackPlugin extends Plugin {
 		this.invalidateResolved();
 	}
 
+	/**
+	 * The vault's link graph (forward + reverse), rebuilt only when the data
+	 * version moves. Powers `file.inlinks` / `file.outlinks` and the
+	 * `project.status` traversal.
+	 */
+	getLinkGraph(): LinkGraph {
+		if (this.linkGraphCache && this.linkGraphCache.version === this.linkVersion) {
+			return this.linkGraphCache.graph;
+		}
+		const graph = buildLinkGraph(this.app.metadataCache.resolvedLinks);
+		this.linkGraphCache = { version: this.linkVersion, graph };
+		return graph;
+	}
+
 	/** Drop the resolved-view cache (rows + parsed base) without rebuilding the note
 	 * snapshot — used when only the .base file changed. */
 	invalidateResolved(): void {
 		this.dataVersion++;
 		this.resolvedCache = null;
+	}
+
+	/** Every input that changes the resolved rows, as one cache key — the body
+	 * index version included, or turning on inline fields would serve stale rows. */
+	private resolvedKey(): string {
+		const s = this.settings;
+		return [
+			this.dataVersion,
+			s.isPro ? 1 : 0,
+			s.activeBasePath,
+			s.activeFilterId,
+			this.bodyIndex.getVersion(),
+			s.inlineFields ? 1 : 0,
+			s.rowSource,
+			s.taskIncludeDone ? 1 : 0,
+			s.taskIncludeSubtasks ? 1 : 0,
+			s.linkTraversal ? 1 : 0,
+			s.flattenExpression,
+			s.flattenAs,
+			s.flattenKeepEmpty ? 1 : 0,
+		].join("|");
 	}
 
 	/**
@@ -367,11 +432,13 @@ export default class BasesPowerPackPlugin extends Plugin {
 	 * changes whenever the vault, base path, saved filter, or license state changes.
 	 */
 	async getResolvedView(): Promise<ResolvedView> {
-		const s = this.settings;
-		const key = `${this.dataVersion}|${s.isPro ? 1 : 0}|${s.activeBasePath}|${s.activeFilterId}`;
+		const key = this.resolvedKey();
 		if (this.resolvedCache && this.resolvedCache.key === key) return this.resolvedCache.view;
 		const view = await resolveViewRows(this.app, this);
-		this.resolvedCache = { key, view };
+		// Re-derive the key AFTER resolving: building the body index for the first
+		// time bumps its version mid-resolve, and storing the pre-resolve key would
+		// miss on the very next call and re-walk the vault for nothing.
+		this.resolvedCache = { key: this.resolvedKey(), view };
 		return view;
 	}
 

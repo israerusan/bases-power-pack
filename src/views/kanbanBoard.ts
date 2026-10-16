@@ -1,6 +1,7 @@
 import { Menu, Notice, normalizePath, type HoverParent, type HoverPopover } from "obsidian";
 import type BasesPowerPackPlugin from "../main";
 import { COMPUTED_FILE_PROPS, type RawNote, type Row } from "../model/row";
+import { notePathOf } from "../model/rowId";
 import {
 	buildBoardModel,
 	columnHue,
@@ -696,8 +697,8 @@ export class KanbanBoard implements HoverParent {
 				source: this.input.hoverSource,
 				hoverParent: this,
 				targetEl: card,
-				linktext: row.id,
-				sourcePath: row.id,
+				linktext: notePathOf(row.id),
+				sourcePath: notePathOf(row.id),
 			});
 		});
 		// Touch: long-press to pick up and drag (mouse keeps the HTML5 path above).
@@ -926,7 +927,7 @@ export class KanbanBoard implements HoverParent {
 
 	/** Swap a metadata line for an input, committing the parsed value on Enter/blur. */
 	private beginInlineEdit(card: HTMLElement, line: HTMLElement, row: Row, field: string): void {
-		const previous = row.note.frontmatter[field];
+		const previous = row.scope.get(field);
 		card.draggable = false;
 		line.empty();
 		line.removeClass("bpp-card-meta-editable");
@@ -1261,7 +1262,7 @@ export class KanbanBoard implements HoverParent {
 				op === "clear"
 					? { key: prop, remove: true }
 					: op === "toggle"
-						? { key: prop, value: !toBool(row.note.frontmatter[prop]) }
+						? { key: prop, value: !toBool(row.scope.get(prop)) }
 						: { key: prop, value: coerceLiteral(value) };
 			if (await writeRowProperties(this.plugin, row.id, [write], { batch })) ok++;
 		}
@@ -1490,7 +1491,7 @@ export class KanbanBoard implements HoverParent {
 			writes.push({ key, value: columnName });
 			if (this.plugin.settings.isPro) {
 				const matched = rulesForTransition(this.plugin.settings.automations, key, columnName);
-				writes.push(...computeRuleWrites(matched, row.note.frontmatter, new Date()));
+				writes.push(...computeRuleWrites(matched, (k) => row.scope.get(k), new Date()));
 			}
 		}
 		if (crossLane && laneProp !== null) writes.push(laneWrite(laneProp, laneKey));
@@ -1648,7 +1649,7 @@ export class KanbanBoard implements HoverParent {
 			movedWrites.push({ key: group, value: columnName });
 			if (this.plugin.settings.isPro) {
 				const matched = rulesForTransition(this.plugin.settings.automations, group, columnName);
-				movedWrites.push(...computeRuleWrites(matched, movedRow.note.frontmatter, new Date()));
+				movedWrites.push(...computeRuleWrites(matched, (k) => movedRow.scope.get(k), new Date()));
 			}
 		}
 		if (crossLane && laneProp !== null) movedWrites.push(laneWrite(laneProp, laneKey));
@@ -2052,7 +2053,7 @@ export class KanbanBoard implements HoverParent {
 				writes.push({ key: group, value: columnName });
 				if (this.plugin.settings.isPro) {
 					const matched = rulesForTransition(this.plugin.settings.automations, group, columnName);
-					writes.push(...computeRuleWrites(matched, r.note.frontmatter, new Date()));
+					writes.push(...computeRuleWrites(matched, (k) => r.scope.get(k), new Date()));
 				}
 			}
 			if (crossLane && laneProp !== null) writes.push(laneWrite(laneProp, laneKey));

@@ -1,6 +1,7 @@
 import { App, Notice, TFile, normalizePath, getAllTags, parseYaml } from "obsidian";
 import type BasesPowerPackPlugin from "../main";
 import type { RawNote, Row } from "../model/row";
+import { notePathOf, taskRefOf } from "../model/rowId";
 import { resolveRows } from "../bases/resolveRows";
 import {
 	emptyBaseDefinition,
@@ -8,6 +9,8 @@ import {
 	type BaseDefinition,
 } from "../bases/baseDefinition";
 import type { FilterNode } from "../query/filter";
+import { linkProps } from "../query/linkIndex";
+import { spliceTaskLine, type TaskRef } from "../query/tasks";
 import { invertWrites, type UndoBatch } from "../query/undo";
 
 /** Snapshot ONE markdown file as a RawNote — the unit the incremental snapshot
@@ -105,8 +108,14 @@ export async function writeRowProperties(
 	opts?: WriteOptions
 ): Promise<boolean> {
 	const app = plugin.app;
-	const file = app.vault.getAbstractFileByPath(path);
-	if (!(file instanceof TFile) || writes.length === 0) return false;
+	if (writes.length === 0) return false;
+	// A task row addresses one checkbox LINE, not the note's frontmatter. Routing
+	// here — on the row id — is what gives every view (kanban drag, calendar
+	// reschedule, Gantt resize, bulk edit, undo) task writeback for free.
+	const taskRef = taskRefOf(path);
+	if (taskRef) return writeTaskLine(plugin, path, taskRef, writes, opts);
+	const file = app.vault.getAbstractFileByPath(notePathOf(path));
+	if (!(file instanceof TFile)) return false;
 	let inverse: PropertyWrite[] = [];
 	try {
 		await app.fileManager.processFrontMatter(file, (frontmatter) => {
@@ -128,6 +137,60 @@ export async function writeRowProperties(
 		new Notice(`Bases Power Pack: couldn't update "${file.basename}" (${String(error)}).`);
 		return false;
 	}
+}
+
+/**
+ * Apply writes to the single checkbox LINE a task row points at.
+ *
+ * The file is rewritten through `vault.process` with the line split on a
+ * separator-preserving regex, so every other byte of the note — including a
+ * mixed CRLF/LF file — comes back untouched. The task is re-located by its text
+ * hash first, so an edit higher up the note can't make the write land on a
+ * different task; when it can't be found at all the write is REFUSED rather
+ * than guessed, because a wrong guess silently corrupts someone's note.
+ */
+async function writeTaskLine(
+	plugin: BasesPowerPackPlugin,
+	rowId: string,
+	ref: TaskRef,
+	writes: PropertyWrite[],
+	opts?: WriteOptions
+): Promise<boolean> {
+	const app = plugin.app;
+	const file = app.vault.getAbstractFileByPath(ref.path);
+	if (!(file instanceof TFile)) return false;
+	let inverse: PropertyWrite[] = [];
+	let applied = false;
+	let missing = false;
+	try {
+		await app.vault.process(file, (data) => {
+			// The splice itself is pure and unit-tested (see query/tasks.ts); this
+			// path only handles the Obsidian side and the user-facing outcome.
+			const result = spliceTaskLine(data, ref, writes);
+			if (result.status === "notfound") missing = true;
+			// "unchanged" (the same value written twice) deliberately records no
+			// undo entry — reversing it would restore an identical line.
+			if (result.status !== "written") return data;
+			inverse = result.inverse;
+			applied = true;
+			return result.text;
+		});
+	} catch (error) {
+		new Notice(`Bases Power Pack: couldn't update the task in "${file.basename}" (${String(error)}).`);
+		return false;
+	}
+	if (missing) {
+		// Refusing is deliberate (see relocateTask), but it must not look like the
+		// drag just didn't register.
+		new Notice(
+			`Bases Power Pack: couldn't find that task in "${file.basename}" any more — it was moved, edited, or has an identical twin. Nothing was changed.`
+		);
+		return false;
+	}
+	if (!applied) return false;
+	if (opts?.record !== false) plugin.undo.record(opts?.label ?? "Edit", rowId, inverse, opts?.batch);
+	plugin.patchNote(file);
+	return true;
 }
 
 /** Ensure every folder in `path`'s parent chain exists. */
@@ -205,24 +268,67 @@ export interface ResolvedView {
 	def: BaseDefinition;
 	baseLabel: string | null;
 	filterLabel: string | null;
+	/** True when the rows are checkbox lines rather than whole notes — views use
+	 * it to label themselves and to skip note-only affordances. */
+	taskRows: boolean;
+}
+
+/**
+ * Attach the body-derived and graph-derived data a note can carry: inline
+ * `key:: value` fields, its task lines, and its links. Each is opt-in, and a
+ * disabled feature leaves the field `undefined` so nothing downstream pays for
+ * it — the note snapshot itself is untouched, so the shared cache stays valid.
+ */
+function enrichNotes(app: App, plugin: BasesPowerPackPlugin, notes: RawNote[]): RawNote[] {
+	const s = plugin.settings;
+	const wantsBody = s.inlineFields || s.rowSource === "tasks";
+	const wantsLinks = s.linkTraversal;
+	if (!wantsBody && !wantsLinks) return notes;
+
+	const graph = wantsLinks ? plugin.getLinkGraph() : null;
+	return notes.map((note) => {
+		const entry = wantsBody ? plugin.bodyIndex.get(note.path) : undefined;
+		const next: RawNote = { ...note };
+		if (entry) {
+			if (s.inlineFields) next.inline = entry.inline;
+			// Tasks are attached for BOTH row sources on purpose: with task rows
+			// they become the rows, and on a note board they power the computed
+			// `file.taskCount` / `file.openTaskCount` properties. It costs a
+			// reference, not a copy — the arrays already live in the body index.
+			next.tasks = entry.tasks;
+		}
+		if (graph) next.links = linkProps(note.path, graph);
+		return next;
+	});
 }
 
 /**
  * Resolve the rows a view should render, honoring premium state:
  *   - Free: every markdown note, no base/filter/formulas.
  *   - Premium: the selected `.base` (filters + formulas) narrowed by the active
- *     saved filter.
+ *     saved filter, optionally over task lines, with inline fields, link
+ *     traversal and FLATTEN applied.
  */
 export async function resolveViewRows(
 	app: App,
 	plugin: BasesPowerPackPlugin
 ): Promise<ResolvedView> {
 	const s = plugin.settings;
-	const notes = plugin.getNotesSnapshot();
 
 	if (!s.isPro) {
-		return { rows: resolveRows(notes, emptyBaseDefinition()), def: emptyBaseDefinition(), baseLabel: null, filterLabel: null };
+		const empty = emptyBaseDefinition();
+		return {
+			rows: resolveRows(plugin.getNotesSnapshot(), empty),
+			def: empty,
+			baseLabel: null,
+			filterLabel: null,
+			taskRows: false,
+		};
 	}
+
+	// The body index is only built when a feature actually needs the note text.
+	if (s.inlineFields || s.rowSource === "tasks") await plugin.bodyIndex.ensure();
+	const notes = enrichNotes(app, plugin, plugin.getNotesSnapshot());
 
 	const def = (await loadBaseDefinition(app, s.activeBasePath)) ?? emptyBaseDefinition();
 
@@ -236,7 +342,14 @@ export async function resolveViewRows(
 		}
 	}
 
-	const rows = resolveRows(notes, def, extra);
+	const rows = resolveRows(notes, def, extra, {
+		source: s.rowSource,
+		taskOptions: { includeDone: s.taskIncludeDone, includeSubtasks: s.taskIncludeSubtasks },
+		linkTraversal: s.linkTraversal,
+		flatten: s.flattenExpression.trim()
+			? { expression: s.flattenExpression, as: s.flattenAs, keepEmpty: s.flattenKeepEmpty }
+			: null,
+	});
 	const baseLabel = s.activeBasePath ? s.activeBasePath.split("/").pop()!.replace(/\.base$/, "") : null;
-	return { rows, def, baseLabel, filterLabel };
+	return { rows, def, baseLabel, filterLabel, taskRows: s.rowSource === "tasks" };
 }

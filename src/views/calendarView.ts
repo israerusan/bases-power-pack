@@ -1,4 +1,4 @@
-import { Menu, Notice, TFile } from "obsidian";
+import { Menu, Notice } from "obsidian";
 import type { Row } from "../model/row";
 import type { CalendarViewMode } from "../settings";
 import { PowerPackView } from "./abstractView";
@@ -31,6 +31,10 @@ import { DND_ROW } from "./dnd";
 export class CalendarView extends PowerPackView {
 	/** Anchor day the visible period is derived from (month/week/agenda all use it). */
 	private anchor: string = todayIso();
+	/** The rows the current paint was built from. A drag hands over only a row id,
+	 * and the original value has to be read from the ROW — a task row keeps its
+	 * date on the checkbox line, where the file's frontmatter cache can't see it. */
+	private rows: Row[] = [];
 
 	getViewType(): string {
 		return VIEW_TYPE_CALENDAR;
@@ -87,6 +91,7 @@ export class CalendarView extends PowerPackView {
 		renderRollupBar(container, this.plugin, resolved.rows);
 
 		const rows = filterRowsByText(resolved.rows, this.searchQuery);
+		this.rows = rows;
 		const byDay = this.collectByDay(rows, dateProp);
 		if (this.mode === "agenda") this.renderAgenda(container, byDay, dateProp);
 		else if (this.mode === "week") this.renderWeek(container, byDay, dateProp);
@@ -421,10 +426,12 @@ export class CalendarView extends PowerPackView {
 	// ---- mutations ------------------------------------------------------------
 
 	private async reschedule(rowId: string, dateProp: string, targetKey: string): Promise<void> {
-		const file = this.app.vault.getAbstractFileByPath(rowId);
-		if (!(file instanceof TFile)) return;
-		const cache = this.app.metadataCache.getFileCache(file);
-		const original: unknown = cache?.frontmatter?.[dateProp];
+		// Read the current value off the ROW, not the note's frontmatter: a task row
+		// carries its date on the checkbox line, where the file cache can't see it.
+		// (A drag hands over an id, so re-find the row rather than passing it down.)
+		const row = this.rows.find((r) => r.id === rowId);
+		if (!row) return;
+		const original: unknown = row.scope.get(dateProp);
 		await writeRowProperty(this.plugin, rowId, dateProp, rescheduleDateValue(original, targetKey), false, {
 			label: `Reschedule to ${targetKey}`,
 		});

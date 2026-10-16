@@ -38,6 +38,13 @@ await build({
 			export * as base from "./src/bases/baseDefinition.ts";
 			export * as resolve from "./src/bases/resolveRows.ts";
 			export * as rowmod from "./src/model/row.ts";
+			export * as inlineFields from "./src/query/inlineFields.ts";
+			export * as tasks from "./src/query/tasks.ts";
+			export * as flatten from "./src/query/flatten.ts";
+			export * as linkIndex from "./src/query/linkIndex.ts";
+			export * as dql from "./src/query/dql.ts";
+			export * as taskRow from "./src/model/taskRow.ts";
+			export * as rowId from "./src/model/rowId.ts";
 		`,
 		resolveDir: root,
 		loader: "ts",
@@ -50,7 +57,7 @@ await build({
 });
 
 const m = await import(`file://${outfile.replace(/\\/g, "/")}`);
-const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, hierarchy, kanban, swimlane, cardLayout, relations, analytics, autoscroll, colorRules, pivot, dashboard, gallery, ranking, exporter, feed, kanbanActions, base, resolve, rowmod } = m;
+const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, hierarchy, kanban, swimlane, cardLayout, relations, analytics, autoscroll, colorRules, pivot, dashboard, gallery, ranking, exporter, feed, kanbanActions, base, resolve, rowmod, inlineFields, tasks, flatten, linkIndex, dql, taskRow, rowId } = m;
 
 /** Build a Row-like object with the given frontmatter/name for the pure engines. */
 function makeTestRow(name, fm) {
@@ -1579,6 +1586,897 @@ assert.equal(urlRef.ref, "https://ex.com/a%20b.png", "a URL is NOT percent-decod
 assert.equal(gallery.parseImageRef("![](bad%ZZ.png)").ref, "bad%ZZ.png", "a malformed % sequence falls back to the literal");
 assert.equal(gallery.parseImageRef(""), null, "an empty value is not an image ref");
 assert.equal(gallery.parseImageRef("data:image/png;base64,AAAA"), null, "a data: URI is rejected");
+
+// ---------------------------------------------------------------------------
+// Beyond Bases: inline fields, task rows, FLATTEN, link traversal, DQL import.
+// ---------------------------------------------------------------------------
+
+// ---- inline fields --------------------------------------------------------
+
+assert.deepEqual(
+	inlineFields.parseInlineFields("due:: 2026-01-01"),
+	{ due: "2026-01-01" },
+	"a full-line inline field is read"
+);
+assert.deepEqual(
+	inlineFields.parseInlineFields("- [ ] ship it [due:: 2026-02-03] [priority:: high]"),
+	{ due: "2026-02-03", priority: "high" },
+	"bracketed fields on a task line are read"
+);
+assert.deepEqual(
+	inlineFields.parseInlineFields("(effort:: 3)"),
+	{ effort: 3 },
+	"a round-bracket field is read and a whole number coerces"
+);
+assert.deepEqual(
+	inlineFields.parseInlineFields("> blocked:: true"),
+	{ blocked: true },
+	"a blockquote prefix doesn't hide the field"
+);
+assert.deepEqual(
+	inlineFields.parseInlineFields("- **owner**:: Ana"),
+	{ owner: "Ana" },
+	"a bolded key is cleaned and the list marker stripped"
+);
+assert.deepEqual(
+	inlineFields.parseInlineFields("people:: Ana, Ben, Cy"),
+	{ people: ["Ana", "Ben", "Cy"] },
+	"comma-separated values become a list, as in Dataview"
+);
+assert.deepEqual(
+	inlineFields.parseInlineFields("project:: [[Alpha|The Alpha, revised]], [[Beta]]"),
+	{ project: ["[[Alpha|The Alpha, revised]]", "[[Beta]]"] },
+	"a comma inside a wikilink alias does NOT split the list"
+);
+assert.deepEqual(
+	inlineFields.parseInlineFields("[project:: [[Alpha]]]"),
+	{ project: "[[Alpha]]" },
+	"a bracketed value keeps the whole wikilink, not just its first ]"
+);
+assert.deepEqual(
+	inlineFields.parseInlineFields("---\ndue: 2020-01-01\n---\nstatus:: doing"),
+	{ status: "doing" },
+	"YAML frontmatter is skipped — Bases already owns it"
+);
+assert.deepEqual(
+	inlineFields.parseInlineFields("```\nfake:: value\n```\nreal:: value"),
+	{ real: "value" },
+	"fields inside a fenced code block are ignored"
+);
+assert.deepEqual(
+	inlineFields.parseInlineFields("`code:: nope` and %%hidden:: nope%%"),
+	{},
+	"inline code spans and comments produce no fields"
+);
+assert.deepEqual(
+	inlineFields.parseInlineFields("| name :: role | x |"),
+	{},
+	"a markdown table row is never read as a field"
+);
+assert.deepEqual(
+	inlineFields.parseInlineFields("tag:: a\ntag:: b"),
+	{ tag: ["a", "b"] },
+	"a repeated key collects into a list in document order"
+);
+assert.deepEqual(
+	inlineFields.parseInlineFields("note:: see http://example.com/x"),
+	{ note: "see http://example.com/x" },
+	"a URL in the value survives intact"
+);
+assert.deepEqual(inlineFields.parseInlineFields("just some prose about x:y"), {}, "prose with a colon is not a field");
+assert.deepEqual(
+	inlineFields.parseInlineFields("---\nunterminated: true\nstatus:: doing"),
+	{ status: "doing" },
+	"an unterminated frontmatter fence still parses the body"
+);
+
+// ---- task parsing ---------------------------------------------------------
+
+const taskBody = [
+	"# Sprint",
+	"- [ ] Write the spec [due:: 2026-03-01] [owner:: Ana] #work",
+	"    - [x] Draft outline",
+	"- [/] Ship it 📅 2026-03-05 ⏫",
+	"```",
+	"- [ ] not a task (in a fence)",
+	"```",
+].join("\n");
+const parsedTasks = tasks.parseTasks(taskBody, "Notes/Sprint.md", "Sprint");
+
+assert.equal(parsedTasks.length, 3, "three real tasks, the fenced one excluded");
+assert.equal(parsedTasks[0].text, "Write the spec #work", "metadata is stripped from the display text, tags kept");
+assert.deepEqual(parsedTasks[0].tags, ["work"], "the task's own tag is collected");
+assert.equal(parsedTasks[0].fields.due, "2026-03-01", "a bracketed due date is read");
+assert.equal(parsedTasks[0].fields.owner, "Ana", "a second bracketed field is read");
+assert.equal(parsedTasks[0].section, "Sprint", "the nearest heading becomes the section");
+assert.equal(parsedTasks[0].parent, null, "a top-level task has no parent");
+assert.equal(parsedTasks[1].parent, 1, "an indented task points at its parent's line");
+assert.equal(parsedTasks[1].done, true, "[x] is done");
+assert.equal(parsedTasks[2].status, "/", "a custom status character is preserved");
+assert.equal(parsedTasks[2].done, false, "[/] is NOT done");
+assert.equal(parsedTasks[2].checked, true, "[/] IS checked (someone has touched it)");
+assert.equal(parsedTasks[2].fields.due, "2026-03-05", "the 📅 emoji shorthand becomes `due`");
+assert.equal(parsedTasks[2].fields.priority, "high", "the ⏫ emoji becomes priority high");
+assert.equal(parsedTasks[2].text, "Ship it", "emoji metadata and its date are stripped from the text");
+
+assert.equal(
+	tasks.parseTasks("---\nfoo: 1\n- [ ] in frontmatter\n---\n- [ ] real", "a.md", "a").length,
+	1,
+	"a checkbox line inside frontmatter is not a task"
+);
+
+// An explicit inline field beats the emoji shorthand for the same key.
+assert.equal(
+	tasks.readTaskFields("x 📅 2026-01-01 [due:: 2026-09-09]").due,
+	"2026-09-09",
+	"an explicit [due:: …] wins over the 📅 shorthand"
+);
+
+// ---- task ids -------------------------------------------------------------
+
+const tid = parsedTasks[0].id;
+assert.ok(tasks.isTaskId(tid), "a task id is recognized");
+assert.equal(tasks.parseTaskId(tid).path, "Notes/Sprint.md", "the note path round-trips out of a task id");
+assert.equal(tasks.parseTaskId("Notes/Sprint.md"), null, "a plain note path is not a task id");
+assert.equal(rowId.notePathOf(tid), "Notes/Sprint.md", "notePathOf unwraps a task id");
+assert.equal(rowId.notePathOf(`${tid}#3`), "Notes/Sprint.md", "notePathOf unwraps a flattened task id");
+assert.equal(rowId.notePathOf("Notes/Sprint.md#2"), "Notes/Sprint.md", "notePathOf strips a flatten suffix");
+assert.equal(rowId.notePathOf("Notes/C# notes.md"), "Notes/C# notes.md", "a # in a filename is NOT a flatten suffix");
+assert.equal(rowId.isTaskRow("Notes/Sprint.md"), false, "a note row is not a task row");
+
+// Relocation: the line moved, but the hash still finds it.
+const movedLines = ["", "", "", "- [ ] Write the spec [due:: 2026-03-01] [owner:: Ana] #work"];
+assert.equal(
+	tasks.relocateTask(movedLines, tasks.parseTaskId(tid)),
+	3,
+	"a task shifted down the file is re-found by its text hash"
+);
+assert.equal(
+	tasks.relocateTask(["- [ ] something else"], tasks.parseTaskId(tid)),
+	-1,
+	"a deleted task reports -1 so the caller can refuse the write"
+);
+const twinLine = "- [ ] Write the spec [due:: 2026-03-01] [owner:: Ana] #work";
+assert.equal(
+	tasks.relocateTask(["", twinLine, "", twinLine], tasks.parseTaskId(tid)),
+	1,
+	"when the recorded line still holds the task, a twin elsewhere is irrelevant"
+);
+assert.equal(
+	tasks.relocateTask(["", "", twinLine, twinLine], tasks.parseTaskId(tid)),
+	-1,
+	"a MOVED task with an identical twin is ambiguous and the write is refused, not guessed"
+);
+
+// ---- task writeback -------------------------------------------------------
+
+const line0 = "- [ ] Write the spec [due:: 2026-03-01] [owner:: Ana] #work";
+const w1 = tasks.applyTaskWrites(line0, [{ key: "due", value: "2026-04-02" }]);
+assert.equal(
+	w1.raw,
+	"- [ ] Write the spec [due:: 2026-04-02] [owner:: Ana] #work",
+	"an existing bracketed field is rewritten in place"
+);
+assert.deepEqual(w1.inverse, [{ key: "due", value: "2026-03-01" }], "the inverse restores the previous value");
+assert.equal(
+	tasks.applyTaskWrites(w1.raw, w1.inverse).raw,
+	line0,
+	"applying the inverse round-trips the line exactly"
+);
+
+const w2 = tasks.applyTaskWrites(line0, [{ key: "status", value: "doing" }]);
+assert.equal(
+	w2.raw,
+	"- [ ] Write the spec [due:: 2026-03-01] [owner:: Ana] #work [status:: doing]",
+	"a new field is appended as a bracketed inline field"
+);
+assert.deepEqual(w2.inverse, [{ key: "status", remove: true }], "the inverse of a new field is its removal");
+assert.equal(tasks.applyTaskWrites(w2.raw, w2.inverse).raw, line0, "removing the appended field restores the line");
+
+const emojiLine = "- [ ] Ship it 📅 2026-03-05 ⏫";
+assert.equal(
+	tasks.applyTaskWrites(emojiLine, [{ key: "due", value: "2026-03-09" }]).raw,
+	"- [ ] Ship it 📅 2026-03-09 ⏫",
+	"a Tasks-plugin emoji date is updated IN PLACE, not duplicated as [due:: …]"
+);
+assert.equal(
+	tasks.applyTaskWrites(emojiLine, [{ key: "priority", value: "low" }]).raw,
+	"- [ ] Ship it 📅 2026-03-05 🔽",
+	"a priority write swaps the priority emoji"
+);
+
+assert.equal(
+	tasks.applyTaskWrites("- [ ] Do it", [{ key: "task.done", value: true }]).raw,
+	"- [x] Do it",
+	"writing task.done ticks the checkbox"
+);
+assert.equal(
+	tasks.applyTaskWrites("- [x] Do it", [{ key: "task.status", value: "/" }]).raw,
+	"- [/] Do it",
+	"writing task.status sets an arbitrary status character"
+);
+assert.deepEqual(
+	tasks.applyTaskWrites("- [x] Do it", [{ key: "task.done", value: false }]).inverse,
+	[{ key: "task.status", value: "x" }],
+	"the inverse of a checkbox change restores the exact previous character"
+);
+assert.equal(
+	tasks.applyTaskWrites("  1. [ ] Nested", [{ key: "task.done", value: true }]).raw,
+	"  1. [x] Nested",
+	"an ordered-list task keeps its indent and marker"
+);
+assert.equal(
+	tasks.applyTaskWrites("- [ ] Do it ^block-7", [{ key: "due", value: "2026-01-01" }]).raw,
+	"- [ ] Do it [due:: 2026-01-01] ^block-7",
+	"a new field is inserted BEFORE a trailing block id"
+);
+assert.equal(
+	tasks.applyTaskWrites("- [ ] Do it", [{ key: "note", value: "a [bracket] here\nand a newline" }]).raw,
+	"- [ ] Do it [note:: a {bracket} here and a newline]",
+	"a value that could break the wrapper is neutralised"
+);
+assert.equal(
+	tasks.applyTaskWrites("- [ ] Do it (note:: old)", [{ key: "note", value: "a (paren) here" }]).raw,
+	"- [ ] Do it (note:: a {paren} here)",
+	"a round-wrapped field neutralises PARENS, which are what could close it"
+);
+assert.equal(
+	tasks.applyTaskWrites("- [ ] Do it [Due:: 2026-01-01]", [{ key: "due", value: "2026-02-02" }]).raw,
+	"- [ ] Do it [Due:: 2026-02-02]",
+	"the user's own key spelling is preserved when the value is replaced"
+);
+assert.equal(
+	tasks.applyTaskWrites("not a task at all", [{ key: "due", value: "x" }]).raw,
+	"not a task at all",
+	"a non-task line is returned untouched"
+);
+
+// The row id must survive our own writes, or the second edit lands nowhere.
+const beforeHash = tasks.hashTaskText(tasks.stripTaskMetadata("Write the spec [due:: 2026-03-01] #work"));
+const afterWrite = tasks.applyTaskWrites("- [ ] Write the spec [due:: 2026-03-01] #work", [
+	{ key: "due", value: "2026-12-31" },
+	{ key: "owner", value: "Ana" },
+]).raw;
+assert.equal(
+	tasks.hashTaskText(tasks.stripTaskMetadata(/\[.\]\s?(.*)$/.exec(afterWrite)[1])),
+	beforeHash,
+	"writing fields does not change the task's identity hash"
+);
+
+// ---- task rows ------------------------------------------------------------
+
+const taskNote = {
+	path: "Notes/Sprint.md",
+	name: "Sprint",
+	folder: "Notes",
+	ext: "md",
+	tags: ["project"],
+	ctime: 0,
+	mtime: 0,
+	size: 0,
+	frontmatter: { project: "Alpha", status: "active" },
+	tasks: parsedTasks,
+};
+const taskRows = taskRow.buildTaskRows([taskNote]);
+assert.equal(taskRows.length, 2, "completed tasks are excluded by default");
+assert.equal(taskRows[0].scope.get("project"), "Alpha", "a task inherits its note's frontmatter");
+assert.equal(taskRows[0].scope.get("owner"), "Ana", "the task's own field wins where it has one");
+assert.equal(taskRows[0].scope.get("file.name"), "Sprint", "file.* still describes the host note");
+assert.deepEqual(
+	taskRows[0].scope.get("file.tags"),
+	["project", "work"],
+	"file.tags is the union of the note's tags and the task line's"
+);
+assert.equal(taskRows[0].scope.get("task.done"), false, "task.done is exposed");
+assert.equal(taskRows[0].id, parsedTasks[0].id, "the row id is the task id");
+assert.equal(
+	taskRow.buildTaskRows([taskNote], {}, undefined, { includeDone: true }).length,
+	3,
+	"includeDone brings completed tasks back"
+);
+assert.equal(
+	taskRow.buildTaskRows([taskNote], {}, undefined, { includeSubtasks: false }).length,
+	2,
+	"excluding subtasks drops the nested one"
+);
+assert.equal(
+	taskRow.makeTaskRow(taskNote, { ...parsedTasks[0], text: "" }).name,
+	"Sprint",
+	"a task with no text left falls back to the note name"
+);
+
+// ---- link graph + traversal ----------------------------------------------
+
+const graph = linkIndex.buildLinkGraph({
+	"Tasks/A.md": { "Projects/Alpha.md": 1 },
+	"Tasks/B.md": { "Projects/Alpha.md": 2 },
+});
+assert.deepEqual(graph.outlinks.get("Tasks/A.md"), ["Projects/Alpha.md"], "outlinks come straight from the adjacency");
+assert.deepEqual(
+	graph.inlinks.get("Projects/Alpha.md"),
+	["Tasks/A.md", "Tasks/B.md"],
+	"inlinks are the inverted adjacency"
+);
+const props = linkIndex.linkProps("Projects/Alpha.md", graph);
+assert.equal(props["file.inlinkCount"], 2, "inlinkCount counts the real backlinks");
+assert.ok(props["file.inlinks"].includes("A"), "basenames are queryable alongside paths");
+assert.deepEqual(linkIndex.linkProps("Nowhere.md", graph)["file.inlinks"], [], "an unlinked note has empty link props");
+
+const alphaScope = { get: (k) => ({ status: "shipping", owner: "[[Ana]]" })[k] };
+const anaScope = { get: (k) => ({ email: "ana@example.com" })[k] };
+const lookup = (name) => ({ alpha: alphaScope, ana: anaScope })[name.toLowerCase()];
+const hostScope = { get: (k) => ({ project: "[[Alpha]]" })[k] };
+assert.equal(
+	linkIndex.traverseLink(hostScope, "project.status", lookup),
+	"shipping",
+	"project.status reads the LINKED note's property"
+);
+assert.equal(
+	linkIndex.traverseLink(hostScope, "project.owner.email", lookup),
+	"ana@example.com",
+	"traversal hops more than once"
+);
+assert.equal(linkIndex.traverseLink(hostScope, "project.nope", lookup), undefined, "a missing target property is undefined");
+assert.equal(linkIndex.traverseLink(hostScope, "missing.status", lookup), undefined, "a non-link head is undefined");
+const cyclicA = { get: (k) => (k === "next" ? "[[B]]" : undefined) };
+const cyclicB = { get: (k) => (k === "next" ? "[[A]]" : undefined) };
+const cyclicLookup = (n) => ({ a: cyclicA, b: cyclicB })[n.toLowerCase()];
+assert.equal(
+	linkIndex.traverseLink(cyclicA, "next.next.next.next.next.next", cyclicLookup),
+	undefined,
+	"a link cycle terminates on the hop budget instead of recursing forever"
+);
+
+// A real row resolves link traversal end to end.
+const noteAlpha = {
+	path: "Projects/Alpha.md",
+	name: "Alpha",
+	folder: "Projects",
+	ext: "md",
+	tags: [],
+	ctime: 0,
+	mtime: 0,
+	size: 0,
+	frontmatter: { phase: "build" },
+};
+const noteTask = {
+	path: "Tasks/T1.md",
+	name: "T1",
+	folder: "Tasks",
+	ext: "md",
+	tags: [],
+	ctime: 0,
+	mtime: 0,
+	size: 0,
+	frontmatter: { project: "[[Alpha]]" },
+};
+const traversed = resolve.resolveRows([noteAlpha, noteTask], { filters: null, formulas: {} }, null, {
+	linkTraversal: true,
+});
+const t1 = traversed.find((r) => r.name === "T1");
+assert.equal(t1.scope.get("project.phase"), "build", "resolveRows wires link traversal across the row set");
+const untraversed = resolve.resolveRows([noteAlpha, noteTask], { filters: null, formulas: {} });
+assert.equal(
+	untraversed.find((r) => r.name === "T1").scope.get("project.phase"),
+	undefined,
+	"traversal stays off unless asked for — no behaviour change for existing users"
+);
+
+// A flat frontmatter key containing a dot must not be hijacked by traversal.
+const dotted = resolve.resolveRows(
+	[{ ...noteTask, frontmatter: { project: "[[Alpha]]", "project.phase": "override" } }],
+	{ filters: null, formulas: {} },
+	null,
+	{ linkTraversal: true }
+);
+assert.equal(dotted[0].scope.get("project.phase"), "override", "a real flat key beats a link traversal of the same name");
+
+// ---- inline fields in a row scope ----------------------------------------
+
+const inlineNote = {
+	path: "n.md",
+	name: "n",
+	folder: "",
+	ext: "md",
+	tags: [],
+	ctime: 0,
+	mtime: 0,
+	size: 0,
+	frontmatter: { status: "fm" },
+	inline: { status: "inline", effort: 5 },
+};
+const inlineRow = rowmod.makeRow(inlineNote);
+assert.equal(inlineRow.scope.get("effort"), 5, "an inline field resolves like a frontmatter key");
+assert.equal(inlineRow.scope.get("status"), "fm", "frontmatter wins when both define the same key");
+
+// ---- FLATTEN --------------------------------------------------------------
+
+function flatNote(name, assignees) {
+	return {
+		path: `${name}.md`,
+		name,
+		folder: "",
+		ext: "md",
+		tags: [],
+		ctime: 0,
+		mtime: 0,
+		size: 0,
+		frontmatter: { assignees },
+	};
+}
+const flatRows = resolve.resolveRows(
+	[flatNote("A", ["Ana", "Ben"]), flatNote("B", "Cy"), flatNote("C", [])],
+	{ filters: null, formulas: {} },
+	null,
+	{ flatten: { expression: "assignees" } }
+);
+assert.equal(flatRows.length, 3, "two assignees expand to two rows; an empty list drops out");
+assert.deepEqual(
+	flatRows.map((r) => r.scope.get("assignees")),
+	["Ana", "Ben", "Cy"],
+	"each expanded row sees a single scalar"
+);
+assert.equal(flatRows[0].id, "A.md#0", "a split row gets a unique id");
+assert.equal(flatRows[2].id, "B.md", "an unsplit row keeps its plain note id");
+assert.equal(rowId.notePathOf(flatRows[0].id), "A.md", "the write path is recoverable from a split id");
+
+const keptEmpty = resolve.resolveRows([flatNote("C", [])], { filters: null, formulas: {} }, null, {
+	flatten: { expression: "assignees", keepEmpty: true },
+});
+assert.equal(keptEmpty.length, 1, "keepEmpty keeps the unassigned row");
+assert.equal(keptEmpty[0].scope.get("assignees"), null, "the unassigned row binds null");
+
+const bound = resolve.resolveRows([flatNote("A", ["Ana", "Ben"])], { filters: null, formulas: {} }, null, {
+	flatten: { expression: "assignees", as: "person" },
+});
+assert.equal(bound[0].scope.get("person"), "Ana", "an explicit binding name is honoured");
+assert.deepEqual(bound[0].scope.get("assignees"), ["Ana", "Ben"], "the original list is untouched under its own name");
+
+// The saved filter runs AFTER the flatten, so it can see the binding.
+const postFiltered = resolve.resolveRows(
+	[flatNote("A", ["Ana", "Ben"])],
+	{ filters: null, formulas: {} },
+	'assignees == "Ben"',
+	{ flatten: { expression: "assignees" } }
+);
+assert.equal(postFiltered.length, 1, "the extra filter narrows the FLATTENED rows");
+assert.equal(postFiltered[0].scope.get("assignees"), "Ben", "and keeps the right one");
+
+assert.equal(flatten.defaultBinding("assignees"), "assignees", "a bare identifier binds to itself");
+assert.equal(flatten.defaultBinding("split(x, 1)"), "value", "a computed expression binds to `value`");
+assert.equal(flatten.sourceRowId("a.md#12"), "a.md", "sourceRowId strips a numeric suffix");
+assert.equal(flatten.sourceRowId("a#b.md"), "a#b.md", "sourceRowId leaves a non-numeric # alone");
+
+// ---- hastag ---------------------------------------------------------------
+
+const tagScope = { get: (k) => (k === "file.tags" ? ["project/alpha", "work"] : undefined) };
+assert.equal(expr.evaluateSafe('hastag(file.tags, "project")', tagScope), true, "hastag matches a parent tag");
+assert.equal(expr.evaluateSafe('hastag(file.tags, "#work")', tagScope), true, "hastag tolerates a leading #");
+assert.equal(expr.evaluateSafe('hastag(file.tags, "proj")', tagScope), false, "hastag does not match a tag prefix");
+assert.equal(expr.evaluateSafe('hastag(file.tags, "")', tagScope), false, "an empty needle matches nothing");
+
+// ---- DQL converter --------------------------------------------------------
+
+const c1 = dql.convertDql('TABLE status, due AS "Deadline"\nFROM #project AND -"Archive"\nWHERE status != "done"');
+assert.equal(c1.query.kind, "table", "TABLE is recognised");
+assert.deepEqual(
+	c1.filters,
+	{
+		and: [
+			'hastag(file.tags, "project") && !((startswith(file.path, "Archive/") || file.path == "Archive.md"))',
+			'status != "done"',
+		],
+	},
+	"FROM and WHERE become one AND filter"
+);
+assert.deepEqual(c1.order, ["status", "due"], "bare properties become column order, not formulas");
+assert.deepEqual(c1.formulas, {}, "no formulas are invented for plain properties");
+
+const c2 = dql.convertDql('TABLE round(done / total * 100) AS "Pct" FROM "Projects" WHERE done > 0 AND total > 0');
+assert.deepEqual(
+	c2.formulas,
+	{ Pct: "round(done / total * 100)" },
+	"a computed column becomes a named formula"
+);
+assert.deepEqual(c2.order, ["formula.Pct"], "the formula is referenced in the column order");
+assert.ok(
+	String(c2.filters.and[1]).includes("&&"),
+	"the DQL keyword `AND` becomes `&&`"
+);
+
+const c3 = dql.convertDql('LIST FROM [[Alpha]] WHERE contains(tags, "x")');
+assert.equal(
+	c3.filters.and[0],
+	'contains(file.outlinks, "Alpha")',
+	"FROM [[A]] means pages that link TO A, i.e. A is in their outlinks"
+);
+assert.equal(
+	dql.convertDql("LIST FROM outgoing([[Alpha]])").filters,
+	'contains(file.inlinks, "Alpha")',
+	"outgoing([[A]]) means the pages A links to - A is in THEIR inlinks, not their outlinks"
+);
+assert.equal(
+	dql.convertDql("LIST FROM incoming([[Alpha]])").filters,
+	'contains(file.outlinks, "Alpha")',
+	"incoming([[A]]) is the same direction as the bare link form"
+);
+
+const c4 = dql.convertDql('TABLE file.name WHERE file.name = "Alpha"');
+assert.equal(c4.filters, 'file.name == "Alpha"', "a lone `=` becomes `==`");
+
+const c5 = dql.convertDql('TABLE x WHERE regexmatch("^a", file.name)');
+assert.equal(c5.filters, null, "an unconvertible WHERE clause is dropped, not mistranslated");
+assert.equal(c5.errors.length, 1, "and the drop is reported");
+assert.ok(c5.errors[0].includes("regexmatch()"), "the report names the construct that failed");
+
+const c6 = dql.convertDql('TABLE x WHERE due < date(today) AND status != "done"');
+assert.equal(c6.filters, 'due < today() && status != "done"', "date(today) becomes today()");
+
+const c7 = dql.convertDql("TASK WHERE !completed");
+assert.equal(c7.query.kind, "task", "TASK is recognised");
+assert.equal(c7.suggestedView, "kanban", "a task query suggests the board");
+assert.ok(
+	c7.warnings.some((w) => w.includes("Tasks")),
+	"and tells the user to switch the row source"
+);
+
+const c8 = dql.convertDql('TABLE x FROM #a GROUP BY status SORT due DESC LIMIT 10');
+assert.equal(c8.suggestedSettings.kanbanGroupBy, "status", "GROUP BY drives the board columns");
+assert.ok(c8.warnings.some((w) => w.startsWith("SORT")), "SORT is reported as a view control");
+assert.ok(c8.warnings.some((w) => w.includes("LIMIT 10")), "LIMIT is reported as unsupported");
+
+const c9 = dql.convertDql('TABLE x FLATTEN assignees AS person FROM "Work"');
+assert.deepEqual(c9.query.flatten, { expr: "assignees", as: "person" }, "FLATTEN … AS … is parsed");
+assert.equal(c9.suggestedSettings.flattenAs, "person", "and is surfaced as a setting");
+
+const c10 = dql.convertDql('TABLE x WHERE text = "FROM the start AND onwards"');
+assert.equal(
+	c10.filters,
+	'text == "FROM the start AND onwards"',
+	"clause keywords inside a string literal are not clause boundaries"
+);
+
+const c11 = dql.convertDql("```dataview\nLIST FROM #inbox\n```");
+assert.equal(c11.filters, 'hastag(file.tags, "inbox")', "a pasted fenced block is unwrapped");
+
+assert.ok(dql.convertDql("SELECT * FROM notes").errors.length > 0, "a non-DQL paste reports an error");
+
+const yaml = dql.conversionToBaseYaml(c1);
+assert.ok(yaml.includes("filters:"), "the emitted base has a filters block");
+assert.ok(yaml.includes("views:"), "and a views block");
+assert.ok(yaml.includes("# Generated by Bases Power Pack"), "and says where it came from");
+assert.ok(
+	dql.conversionToBaseYaml(c5).includes("# DROPPED:"),
+	"a dropped clause is recorded as a comment in the file itself"
+);
+assert.ok(
+	dql.conversionToBaseYaml(dql.convertDql(`TABLE x WHERE a == "it's"`)).includes("it''s"),
+	"a single quote in an expression is escaped for YAML"
+);
+assert.equal(dql.formulaName("Due date", new Set()), "Due_date", "an alias becomes a safe formula name");
+assert.equal(dql.formulaName("x", new Set(["x"])), "x_2", "a colliding formula name is suffixed");
+assert.equal(dql.formulaName("2026", new Set()), "c_2026", "a leading digit is prefixed");
+
+// ---- Round-2 hardening: the defects adversarial review surfaced -----------
+
+// Emoji prose must never be mistaken for metadata, and must never be rewritten.
+const proseLine = "- [ ] Discuss \u{1F4C5} design with Ana";
+assert.equal(
+	tasks.readTaskFields("Discuss \u{1F4C5} design with Ana").due,
+	undefined,
+	"an emoji followed by a WORD is prose, not a due date"
+);
+assert.equal(
+	tasks.stripTaskMetadata("Discuss \u{1F4C5} design with Ana"),
+	"Discuss \u{1F4C5} design with Ana",
+	"unvalidated emoji prose survives the display-text strip intact"
+);
+assert.equal(
+	tasks.applyTaskWrites(proseLine, [{ key: "due", value: "2026-05-05" }]).raw,
+	"- [ ] Discuss \u{1F4C5} design with Ana [due:: 2026-05-05]",
+	"writing a due date must NOT overwrite the word after a prose emoji"
+);
+assert.deepEqual(
+	tasks.emojiSpans("x \u{1F4C5} 2026-01-02 y"),
+	[{ key: "due", value: "2026-01-02", start: 2, end: 15 }],
+	"a validated emoji span reports the exact source range it owns"
+);
+
+// The blanket date strip used to eat real prose, and collapse task identities.
+assert.equal(
+	tasks.stripTaskMetadata("Compare 2025-01-01 with 2026-01-01"),
+	"Compare 2025-01-01 with 2026-01-01",
+	"bare ISO dates in prose are part of the task text, not metadata"
+);
+assert.notEqual(
+	tasks.hashTaskText(tasks.stripTaskMetadata("Review 2025-01-01")),
+	tasks.hashTaskText(tasks.stripTaskMetadata("Review 2026-01-01")),
+	"two tasks differing only by a prose date keep DIFFERENT identities"
+);
+
+// A value that cannot live in the emoji slot falls back to a field that wins.
+const custom = tasks.applyTaskWrites("- [ ] Ship \u{1F4C5} 2026-03-05", [{ key: "due", value: "next tuesday" }]);
+assert.equal(
+	custom.raw,
+	"- [ ] Ship \u{1F4C5} 2026-03-05 [due:: next tuesday]",
+	"a non-date value is stored as a field rather than written into the emoji slot"
+);
+assert.equal(
+	tasks.readTaskFields("Ship \u{1F4C5} 2026-03-05 [due:: next tuesday]").due,
+	"next tuesday",
+	"and the field wins over the stale emoji when read back"
+);
+assert.equal(
+	tasks.applyTaskWrites("- [ ] Ship \u{23EB}", [{ key: "priority", value: "urgent" }]).raw,
+	"- [ ] Ship \u{23EB} [priority:: urgent]",
+	"a priority outside the five Tasks levels is stored as a field, not silently dropped"
+);
+
+// Case-insensitive writeback must record a RESTORING inverse, not a delete.
+const mixedCase = "- [ ] Do it [Due:: 2026-01-01]";
+const mc = tasks.applyTaskWrites(mixedCase, [{ key: "due", value: "2026-02-02" }]);
+assert.equal(
+	mc.raw,
+	"- [ ] Do it [Due:: 2026-02-02]",
+	"a differently-cased field is the one overwritten, keeping the user's own key spelling"
+);
+assert.deepEqual(
+	mc.inverse,
+	[{ key: "due", value: "2026-01-01" }],
+	"the inverse RESTORES the old value instead of deleting the field"
+);
+assert.equal(
+	tasks.readTaskFields(tasks.applyTaskWrites(mc.raw, mc.inverse).raw).due,
+	"2026-01-01",
+	"so undo really puts the value back"
+);
+
+// A markdown link is not a task.
+assert.equal(
+	tasks.parseTasks("- [x](https://example.com) see this", "a.md", "a").length,
+	0,
+	"`- [x](url)` is a markdown link, not a completed task"
+);
+assert.equal(
+	tasks.parseTasks("- [ ]", "a.md", "a").length,
+	1,
+	"an empty checkbox at end of line is still a task"
+);
+
+// Fences must match on delimiter character AND run length.
+assert.deepEqual(
+	inlineFields.parseInlineFields("```\n~~~\nfake:: value\n```\nreal:: value"),
+	{ real: "value" },
+	"a ~~~ line does not close a ``` fence"
+);
+assert.deepEqual(
+	inlineFields.parseInlineFields("````\n```\nfake:: value\n```\n````\nreal:: value"),
+	{ real: "value" },
+	"a ```-fenced example inside a ````-fence stays inert"
+);
+assert.equal(
+	tasks.parseTasks("```\n- [ ] example\n```\n- [ ] real", "a.md", "a").length,
+	1,
+	"a checkbox inside a fence is not a task row"
+);
+
+// Multi-line %% comments hide their contents from both parsers.
+assert.deepEqual(
+	inlineFields.parseInlineFields("%%\nhidden:: value\n%%\nreal:: value"),
+	{ real: "value" },
+	"a field inside a multi-line comment is not read"
+);
+assert.equal(
+	tasks.parseTasks("%%\n- [ ] hidden\n%%\n- [ ] real", "a.md", "a").length,
+	1,
+	"a checkbox inside a multi-line comment is not a writable row"
+);
+assert.deepEqual(
+	inlineFields.parseInlineFields("[a:: 1] %% [b:: 2] %% [c:: 3]"),
+	{ a: 1, c: 3 },
+	"a bracketed field inside an inline comment is dropped; the ones outside survive"
+);
+
+// A URL inside a markdown link's parens must not invent a property.
+assert.deepEqual(
+	inlineFields.parseInlineFields("see [docs](https://ex.com/a::b)"),
+	{},
+	"a `::` inside a URL is not an inline field"
+);
+
+// FLATTEN must rebuild the row so FORMULAS see the bound scalar.
+const flatFormula = resolve.resolveRows(
+	[
+		{
+			path: "F.md",
+			name: "F",
+			folder: "",
+			ext: "md",
+			tags: [],
+			ctime: 0,
+			mtime: 0,
+			size: 0,
+			frontmatter: { assignees: ["Ana", "Ben"] },
+		},
+	],
+	{ filters: null, formulas: { label: 'upper(assignees)' } },
+	null,
+	{ flatten: { expression: "assignees" } }
+);
+assert.deepEqual(
+	flatFormula.map((r) => r.scope.get("label")),
+	["ANA", "BEN"],
+	"a base formula computes against the FLATTENED value, not the original list"
+);
+
+// Link traversal terminates even when every hop re-enters a live scope.
+const cycleA = {
+	path: "A.md",
+	name: "A",
+	folder: "",
+	ext: "md",
+	tags: [],
+	ctime: 0,
+	mtime: 0,
+	size: 0,
+	frontmatter: { next: "[[B]]" },
+};
+const cycleB = { ...cycleA, path: "B.md", name: "B", frontmatter: { next: "[[A]]" } };
+const cycled = resolve.resolveRows([cycleA, cycleB], { filters: null, formulas: {} }, null, { linkTraversal: true });
+assert.equal(cycled[0].scope.get("next.next.next"), "[[B]]", "a 3-hop cycle resolves instead of recursing forever");
+assert.equal(
+	cycled[0].scope.get("next.next.next.next.next.next.next.next"),
+	undefined,
+	"a path past the hop budget gives up quietly"
+);
+
+// A lower-case word that happens to be a DQL keyword is not a clause boundary.
+assert.equal(
+	dql.convertDql('TABLE x WHERE list = 1').filters,
+	"list == 1",
+	"`list` in a WHERE clause is a property, not a LIST clause"
+);
+assert.equal(
+	dql.convertDql('TABLE x\nwhere sort = 2').filters,
+	"sort == 2",
+	"a lower-case clause keyword IS honoured when it starts its own line"
+);
+
+// ---- spliceTaskLine: the one operation that rewrites a user's note ---------
+
+function refFor(body, path = "n.md") {
+	const t = tasks.parseTasks(body, path, "n");
+	return tasks.parseTaskId(t[0].id);
+}
+
+const lfDoc = "# Notes\n\n- [ ] Ship it\n- [ ] Other\n";
+const lfRef = refFor(lfDoc);
+const lfOut = tasks.spliceTaskLine(lfDoc, lfRef, [{ key: "due", value: "2026-01-02" }]);
+assert.equal(lfOut.status, "written", "a locatable task is written");
+assert.equal(
+	lfOut.text,
+	"# Notes\n\n- [ ] Ship it [due:: 2026-01-02]\n- [ ] Other\n",
+	"only the target line changes; the trailing newline survives"
+);
+assert.equal(
+	tasks.spliceTaskLine(lfOut.text, lfRef, lfOut.inverse).text,
+	lfDoc,
+	"applying the inverse restores the document byte for byte"
+);
+
+const crlfDoc = "# Notes\r\n\r\n- [ ] Ship it\r\n- [ ] Other\r\n";
+const crlfOut = tasks.spliceTaskLine(crlfDoc, refFor(crlfDoc), [{ key: "due", value: "2026-01-02" }]);
+assert.equal(
+	crlfOut.text,
+	"# Notes\r\n\r\n- [ ] Ship it [due:: 2026-01-02]\r\n- [ ] Other\r\n",
+	"CRLF line endings are preserved exactly"
+);
+assert.ok(!crlfOut.text.includes("\r\n\n"), "and no LF-only separator is introduced");
+
+const mixedDoc = "a\r\n- [ ] Ship it\nb";
+const mixedOut = tasks.spliceTaskLine(mixedDoc, refFor(mixedDoc), [{ key: "x", value: "1" }]);
+assert.equal(mixedOut.text, "a\r\n- [ ] Ship it [x:: 1]\nb", "a mixed-ending file keeps each separator as it was");
+
+const noTrailing = "- [ ] Ship it";
+assert.equal(
+	tasks.spliceTaskLine(noTrailing, refFor(noTrailing), [{ key: "x", value: "1" }]).text,
+	"- [ ] Ship it [x:: 1]",
+	"a file with no trailing newline does not gain one"
+);
+
+assert.equal(
+	tasks.spliceTaskLine("- [ ] Ship it", refFor("- [ ] Ship it"), [{ key: "due", remove: true }]).status,
+	"unchanged",
+	"removing a field that was never there is a no-op, not a phantom undo entry"
+);
+assert.equal(
+	tasks.spliceTaskLine("- [ ] Something else entirely", lfRef, [{ key: "x", value: "1" }]).status,
+	"notfound",
+	"a vanished task reports notfound so the caller can refuse"
+);
+assert.equal(
+	tasks.spliceTaskLine("- [ ] Ship it\n- [ ] Ship it", lfRef, [{ key: "x", value: "1" }]).status,
+	"notfound",
+	"an ambiguous twin after the line moved is refused rather than guessed"
+);
+assert.equal(
+	tasks.spliceTaskLine("- [ ] Something else entirely", lfRef, [{ key: "x", value: "1" }]).text,
+	"- [ ] Something else entirely",
+	"a refused write leaves the document untouched"
+);
+
+// A second write must still land after the first — the id survives our own edits.
+const once = tasks.spliceTaskLine(lfDoc, lfRef, [{ key: "due", value: "2026-01-02" }]);
+const twice = tasks.spliceTaskLine(once.text, lfRef, [{ key: "owner", value: "Ana" }]);
+assert.equal(twice.status, "written", "the row id still resolves after the plugin's own write");
+assert.equal(
+	twice.text,
+	"# Notes\n\n- [ ] Ship it [due:: 2026-01-02] [owner:: Ana]\n- [ ] Other\n",
+	"and the second field is appended alongside the first"
+);
+
+// ---- Round-3 hardening ----------------------------------------------------
+
+// Emoji values need a trailing boundary, or a prefix gets claimed and mangled.
+assert.deepEqual(tasks.emojiSpans("x \u{1F4C5} 2026-10-20abc"), [], "a date-shaped PREFIX of a longer token is not metadata");
+assert.equal(
+	tasks.applyTaskWrites("- [ ] Do \u{1F4C5} 2026-10-20abc", [{ key: "due", value: "2026-01-01" }]).raw,
+	"- [ ] Do \u{1F4C5} 2026-10-20abc [due:: 2026-01-01]",
+	"so a write appends a field instead of leaving `abc` stranded"
+);
+
+// Display text is stripped only where a PARSER claimed a span.
+assert.equal(
+	tasks.stripTaskMetadata("Fix [http://a::b] link"),
+	"Fix [http://a::b] link",
+	"a bracketed URL the field parser rejects is NOT removed from the display text"
+);
+assert.equal(
+	tasks.stripTaskMetadata("note [due:: \u{1F4C5} 2026-01-01] end"),
+	"note end",
+	"an emoji span nested inside a field span is removed once, not twice"
+);
+
+// Batch dedup uses the same casing rule as the lookup and the writer.
+const dedup = tasks.applyTaskWrites("- [ ] Do it [due:: 2026-01-01]", [
+	{ key: "due", value: "2026-02-02" },
+	{ key: "Due", value: "2026-03-03" },
+]);
+assert.equal(dedup.raw, "- [ ] Do it [due:: 2026-02-02]", "the second, differently-cased write to the same field is dropped");
+assert.deepEqual(dedup.inverse, [{ key: "due", value: "2026-01-01" }], "and only one inverse is recorded");
+
+// Field keys are queryable in either case.
+assert.equal(tasks.readTaskFields("x [Due:: 2026-01-01]").due, "2026-01-01", "a capitalised field is reachable in lower case");
+assert.equal(tasks.readTaskFields("x [Due:: 2026-01-01]").Due, "2026-01-01", "and under its own spelling");
+assert.equal(
+	inlineFields.parseInlineFields("Status:: doing").status,
+	"doing",
+	"an inline field key is aliased to lower case, as Dataview does"
+);
+assert.equal(
+	inlineFields.parseInlineFields("Due:: a\ndue:: b").due,
+	"b",
+	"an explicitly lower-case key wins over the alias"
+);
+
+// Fence closers carry no info string.
+assert.deepEqual(
+	inlineFields.parseInlineFields("```\n```ts\nfake:: value\n```\nreal:: value"),
+	{ real: "value" },
+	"a ```ts line inside a fence is content, not a closing delimiter"
+);
+
+// A keyword used as an operand is an identifier, not a clause.
+assert.equal(
+	dql.convertDql('TABLE x WHERE SORT = "manual"').filters,
+	'SORT == "manual"',
+	"`WHERE SORT = ...` stays one WHERE clause"
+);
+assert.deepEqual(
+	dql.convertDql("TABLE x SORT due DESC").query.sort,
+	[{ expr: "due", dir: "desc" }],
+	"a genuine SORT clause is still recognised"
+);
 
 fs.unlinkSync(outfile);
 console.log("engine tests passed");

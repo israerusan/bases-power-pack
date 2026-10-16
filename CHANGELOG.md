@@ -3,6 +3,62 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.29.0] - 2026-10-16
+
+**Beyond Bases.** Bases reads frontmatter and counts whole files. This release adds
+the four things it structurally cannot do — the four that keep a Dataview vault from
+moving across — plus a one-paste importer for the queries you already have.
+
+### Added
+- **Inline fields (premium, opt-in).** Dataview-style `key:: value` written in a note
+  BODY is now a real property, available to every view, filter, formula, roll-up, and
+  colour rule. Handles the full-line form, `[key:: value]`, `(key:: value)`, repeated
+  keys (collected into a list), and comma lists. Frontmatter wins on a key collision.
+  Fenced code, inline code spans, `%%comments%%`, markdown tables, and YAML
+  frontmatter are all excluded, so documentation examples never become live data.
+- **Task rows (premium, opt-in).** Set **Row source** to *Tasks* and every `- [ ]`
+  checkbox becomes its own row — with its own due date, priority, and assignee, and
+  inheriting its note's properties so the whole vault's tasks can be grouped by
+  project. **Every view gets this at once**: kanban drag, calendar reschedule, Gantt
+  resize, pivot, dashboard, bulk edit, and undo. Writes land on the checkbox LINE,
+  and the Tasks-plugin emoji shorthand (📅 🛫 ⏳ ✅ ➕ ❌ 🆔 ⛔, and the five priority
+  levels) is updated in place rather than duplicated as a competing field. Exposes
+  `task.status`, `task.done`, `task.checked`, `task.text`, `task.section`,
+  `task.line`, `task.level`, `task.tags`, and `task.parent`.
+- **Link traversal (premium, opt-in).** `project.status` reads the property off the
+  note that `project` links to, up to four hops. Adds `file.inlinks`,
+  `file.outlinks`, `file.inlinkCount`, and `file.outlinkCount`.
+- **FLATTEN (premium).** A list property expands into one row per value, so a note
+  with three assignees becomes three cards — per-person boards and tag matrices are
+  now expressible. The base's formulas are recomputed against the flattened value,
+  not the original list. Optionally keeps an "unassigned" row.
+- **Dataview query converter (premium).** *Convert a Dataview query to a base* takes
+  a DQL query and writes a `.base` file plus the matching view. Reads TABLE / LIST /
+  TASK / CALENDAR with `FROM`, `WHERE`, `SORT`, `GROUP BY`, `FLATTEN`, and `LIMIT`;
+  translates `=`→`==`, `and`/`or`/`not`, `date(today)`, `choice()`, and tag / folder
+  / link sources. **Anything it cannot convert is reported and left out, never
+  guessed at** — and the reason is written into the generated `.base` as a comment,
+  because a filter that silently went missing is worse than one that is visibly
+  absent.
+- `file.taskCount`, `file.openTaskCount`, and `file.doneTaskCount` on note rows.
+- `hastag(file.tags, "project")` in the expression engine — matches nested
+  `#project/alpha`, which plain `contains()` cannot express.
+
+### Changed
+- Inline editing, bulk toggle, and Move Rules now read a row's current value through
+  its **scope** rather than the note's frontmatter, so they see inline fields and
+  task-line values instead of silently treating them as empty.
+- The link graph is memoized against the data version instead of being rebuilt on
+  every resolve.
+
+### Notes
+- All four switches are **off by default**. The note-body index is built only when a
+  feature needs it, is keyed on (mtime, size) so a steady state re-reads nothing, and
+  yields to the UI between batches.
+- A task write is **refused** — with a notice — when the task can no longer be located
+  unambiguously (it was deleted, or an identical twin exists after the line moved).
+  A visible no-op is better than confidently editing the wrong line.
+
 ## [1.23.0] - 2026-07-24
 
 Bases Power Pack is now a **native Bases view** — a **"Kanban"** option inside

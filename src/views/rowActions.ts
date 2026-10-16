@@ -5,6 +5,7 @@ import { parseImageRef } from "../query/gallery";
 import { coerceFieldInput, formatFieldForEdit } from "../query/inlineEdit";
 import { resolveRowColor } from "../query/colorRules";
 import { writeRowProperty } from "./viewData";
+import { notePathOf } from "../model/rowId";
 import { PromptModal, ConfirmModal } from "./modals";
 
 /**
@@ -21,8 +22,10 @@ export interface RowActionEnv {
 	plugin: BasesPowerPackPlugin;
 }
 
+/** The note a row lives in. A row id can also address a task line or a
+ * FLATTEN-expanded copy, so it is always read through `notePathOf`. */
 export function fileFor(env: RowActionEnv, row: Row): TFile | null {
-	const file = env.app.vault.getAbstractFileByPath(row.id);
+	const file = env.app.vault.getAbstractFileByPath(notePathOf(row.id));
 	return file instanceof TFile ? file : null;
 }
 
@@ -45,12 +48,15 @@ export function coverImageSrc(env: RowActionEnv, row: Row, prop: string): string
 	const ref = parseImageRef(row.scope.get(prop));
 	if (!ref) return null;
 	if (ref.kind === "url") return ref.ref;
-	const file = env.app.metadataCache.getFirstLinkpathDest(ref.ref, row.id);
+	const file = env.app.metadataCache.getFirstLinkpathDest(ref.ref, notePathOf(row.id));
 	return file ? env.app.vault.getResourcePath(file) : null;
 }
 
 export function editFieldViaModal(env: RowActionEnv, row: Row, field: string, after: () => void): void {
-	const previous = row.note.frontmatter[field];
+	// Read through the SCOPE, not the note's frontmatter: a task row's value lives
+	// on its checkbox line and an inline field lives in the body — neither is in
+	// `note.frontmatter`, and seeding the prompt blank would silently wipe them.
+	const previous = row.scope.get(field);
 	new PromptModal(env.app, {
 		title: `Edit "${field}"`,
 		value: formatFieldForEdit(previous),
