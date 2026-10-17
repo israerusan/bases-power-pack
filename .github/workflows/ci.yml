@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Lint, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint (tsc + eslint, zero warnings)
+        run: npm run lint
+
+      - name: Tests
+        run: npm run test:ci
+        # test:ci, not `npm test`: the full script also runs sync-shared --check,
+        # which needs ../obsidian-plugin-core (absent here). license.test.mjs
+        # self-skips without the gitignored signing key.
+
+      - name: Build
+        run: npm run build
+
+      - name: Committed build output is current
+        run: git diff --exit-code -- main.js styles.css
