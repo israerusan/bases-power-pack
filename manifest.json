@@ -1,7 +1,7 @@
 {
 	"id": "bases-power-pack",
 	"name": "Bases Power Pack",
-	"version": "1.29.0",
+	"version": "1.29.1",
 	"minAppVersion": "1.10.0",
 	"description": "Trello-style kanban plus calendar, Gantt and outline boards over your notes. Drag a card and the note's frontmatter updates, offline, in Markdown.",
 	"author": "Israel Avila",

@@ -3,6 +3,50 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.29.1] - 2026-10-16
+
+**Writeback safety.** Two independent code reviews of 1.29.0's task and FLATTEN
+writeback found ways an edit could change a note in ways you didn't ask for. This
+release fixes all of them. If you use task rows or FLATTEN, please update.
+
+### Fixed
+- **Wikilinks are kept.** Writing a link-valued task field (`[project:: [[Beta]]]`),
+  for example by dragging a task card between project columns, wrote `{{Beta}}`
+  instead. Undoing any edit to a link field did the same.
+- **Undo restores exactly what was there.** Undoing a task edit now puts back the
+  original line byte for byte. It used to write back the parsed value, so `007`
+  came back as `7`, `TRUE` as `true`, and a value in `code` came back empty. If
+  you have edited the task again since, undo now leaves your newer edit alone and
+  says so. Multi-card undo also reverses in the right order.
+- **Identical tasks stay separate.** With two tasks that read the same
+  (`- [ ] Review`), inserting a line above them could make the next write land on
+  the other one. That write is now refused instead.
+- **FLATTEN edits one value, not the whole list.** Dragging Bob's card to Carol on
+  a board flattened by `assignees` replaced `[Ana, Bob]` with just `Carol`. Now only
+  Bob changes. This applies to drags, multi-select moves, bulk edit, inline
+  editing, the edit dialog, the calendar and Gantt. A FLATTEN binding that is an
+  alias or an expression, where there is no property to edit, is refused with a
+  message. An "empty" card (with *keep empty*) can now be dragged into a column.
+- **Writes never land in code or comments.** A stale write could edit a fenced or
+  `%%commented%%` copy of a task, and code fenced inside a list item was read as
+  live tasks.
+- **Values can't break the note.** A value containing a backtick, `%%`, or a line
+  break could turn the rest of the line into code, hide every later task in the
+  note, or split the task. Field names are checked, and the built-in `task.*`
+  values (section, text, line, …) can no longer be "set" into junk fields.
+- **Edits only touch what they change.** Rescheduling no longer collapses spacing
+  elsewhere on the line (including inside inline code), keeps the scheduled emoji
+  you typed (⌛ or ⏳), and removing a field removes it everywhere it is set.
+
+### Changed
+- Every task edit is now re-read before it is saved. If the result isn't exactly
+  what was asked (the task's own text would change, another field would change, or
+  the new value wouldn't read back), nothing is written and a notice explains why.
+- On a task line, a whole-line `due:: 2026-01-01` (with no brackets) is treated as
+  the task's text, not as a field, matching how it was always displayed.
+- When one change writes the same task field twice, the last write wins, as it
+  already did for frontmatter.
+
 ## [1.29.0] - 2026-10-16
 
 **Beyond Bases.** Bases reads frontmatter and counts whole files. This release adds
