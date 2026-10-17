@@ -21,11 +21,14 @@
 
 import {
 	addLowercaseAliases,
-	makeFenceScanner,
-	parseLineFields,
+	isValidKey,
+	fencedLines,
 	scanLineFieldSpans,
 	stripBlockComment,
+	type LineFieldSpan,
 } from "./inlineFields";
+import { TASK_ROW_PROPS } from "../model/taskRow";
+import { listElementWrite } from "./flatten";
 
 export interface TaskItem {
 	/** Stable row id — `<path>::L<line>::<hash>`; see {@link makeTaskId}. */
@@ -108,6 +111,9 @@ const EMOJI_VALUE_EXACT: Record<"date" | "token", RegExp> = {
  * a neighbouring word. */
 export interface EmojiSpan {
 	key: string;
+	/** The emoji as written — `⌛` and `⏳` both mean `scheduled`, and a rewrite
+	 * keeps whichever one the user typed. */
+	emoji: string;
 	value: string;
 	/** Index of the emoji character in the source text. */
 	start: number;
@@ -129,7 +135,7 @@ export function emojiSpans(text: string): EmojiSpan[] {
 			from = idx + emoji.length;
 			const m = EMOJI_VALUE_RE[kind].exec(text.slice(from));
 			if (!m) continue;
-			spans.push({ key, value: m[1], start: idx, end: from + m[0].length });
+			spans.push({ key, emoji, value: m[1], start: idx, end: from + m[0].length });
 			break; // first valid occurrence of each emoji wins
 		}
 	}
@@ -153,21 +159,35 @@ export const TASK_STATUS_KEYS: ReadonlySet<string> = new Set(["task.status", "ta
  * re-find a task whose line number shifted without carrying the whole text in
  * the row id. */
 export function hashTaskText(text: string): string {
-	const norm = text.trim().toLowerCase().replace(/\s+/g, " ");
+	return fnv6(text.trim().toLowerCase().replace(/\s+/g, " "));
+}
+
+function fnv6(s: string): string {
 	let h = 0x811c9dc5;
-	for (let i = 0; i < norm.length; i++) {
-		h ^= norm.charCodeAt(i);
+	for (let i = 0; i < s.length; i++) {
+		h ^= s.charCodeAt(i);
 		h = Math.imul(h, 0x01000193) >>> 0;
 	}
 	return h.toString(36).padStart(6, "0").slice(-6);
 }
 
 /**
+ * The id hash of the `ordinal`-th task (0-based, in file order) whose text
+ * hashes to `base`. The first occurrence keeps the plain text hash; each later
+ * twin gets its own. Without this, two `- [ ] Review` lines share one id hash,
+ * and once a line is inserted above them the recorded line number points at
+ * the OTHER twin, whose hash matches. The write then lands on the wrong task.
+ */
+export function occurrenceHash(base: string, ordinal: number): string {
+	return ordinal === 0 ? base : fnv6(`${base}#${ordinal}`);
+}
+
+/**
  * A task row id. `::` is the separator because Obsidian forbids `:` in vault
  * paths, so the note path is always recoverable unambiguously.
  */
-export function makeTaskId(path: string, line: number, text: string): string {
-	return `${path}::L${line}::${hashTaskText(text)}`;
+export function makeTaskId(path: string, line: number, text: string, ordinal = 0): string {
+	return `${path}::L${line}::${occurrenceHash(hashTaskText(text), ordinal)}`;
 }
 
 export interface TaskRef {
@@ -189,29 +209,66 @@ export function isTaskId(id: string): boolean {
 }
 
 /**
+ * Walk the lines that are live markdown: past the frontmatter, outside fenced
+ * code and `%%comments%%`. This is the one definition of where a task can be.
+ * The parser and the writer's relocation both use it, so a write can never land
+ * on a fenced or commented-out copy that the reader doesn't show.
+ */
+function forEachLiveLine(lines: readonly string[], visit: (i: number, raw: string, visible: string) => void): void {
+	let i = 0;
+	if (lines[0] !== undefined && /^---\s*$/.test(lines[0])) {
+		let j = 1;
+		while (j < lines.length && !/^---\s*$/.test(lines[j])) j++;
+		if (j < lines.length) i = j + 1;
+	}
+	const fenced = fencedLines(lines, i);
+	let inComment = false;
+	for (; i < lines.length; i++) {
+		const raw = lines[i];
+		if (fenced[i]) continue;
+		// A checkbox inside a `%%comment%%` is content the user deliberately
+		// hid; turning it into a writable row would resurrect it.
+		const visible = stripBlockComment(raw, inComment);
+		inComment = visible.inComment;
+		visit(i, raw, visible.text);
+	}
+}
+
+/** Every live task line with its text hash and its occurrence-aware id hash. */
+function liveTaskHashes(lines: readonly string[]): Array<{ line: number; base: string; hash: string }> {
+	const out: Array<{ line: number; base: string; hash: string }> = [];
+	const seen = new Map<string, number>();
+	forEachLiveLine(lines, (i, raw, visible) => {
+		if (!TASK_RE.test(visible)) return;
+		const m = TASK_RE.exec(raw);
+		if (!m) return;
+		const base = hashTaskText(stripTaskMetadata(m[3]));
+		const ordinal = seen.get(base) ?? 0;
+		seen.set(base, ordinal + 1);
+		out.push({ line: i, base, hash: occurrenceHash(base, ordinal) });
+	});
+	return out;
+}
+
+/**
  * Find the task a ref points at in the CURRENT file lines. Prefers the recorded
  * line, then falls back to a hash scan, so an edit higher up the note can't make
  * a write land on the wrong task. Returns -1 when the task is gone — the caller
  * must then refuse the write rather than corrupt an unrelated line.
  */
 export function relocateTask(lines: readonly string[], ref: TaskRef): number {
-	const atLine = lines[ref.line];
-	if (atLine !== undefined) {
-		const m = TASK_RE.exec(atLine);
-		if (m && hashTaskText(stripTaskMetadata(m[3])) === ref.hash) return ref.line;
-	}
-	// The task moved. Two tasks can carry identical text ("- [ ] Review"), so a
-	// first-match — or even a nearest-match — scan can confidently edit the wrong
-	// twin. Only act when the answer is UNAMBIGUOUS: exactly one candidate. A
-	// refused write is a visible no-op; a wrong write silently corrupts a note.
-	let found = -1;
-	for (let i = 0; i < lines.length; i++) {
-		const m = TASK_RE.exec(lines[i]);
-		if (!m || hashTaskText(stripTaskMetadata(m[3])) !== ref.hash) continue;
-		if (found >= 0) return -1; // ambiguous
-		found = i;
-	}
-	return found;
+	const live = liveTaskHashes(lines);
+	const atLine = live.find((t) => t.line === ref.line);
+	if (atLine && atLine.hash === ref.hash) return ref.line;
+	// The task moved. Only act when the answer is UNAMBIGUOUS. A task with an
+	// identical twin is refused outright once it has moved: adding or deleting
+	// a twin above it shifts which occurrence is which, so its ordinal can no
+	// longer be trusted. A refused write is a visible no-op; a wrong write
+	// silently corrupts a note.
+	const hits = live.filter((t) => t.hash === ref.hash);
+	if (hits.length !== 1) return -1;
+	if (live.filter((t) => t.base === hits[0].base).length > 1) return -1;
+	return hits[0].line;
 }
 
 /** Remove inline fields, emoji metadata, and a trailing block id from a task's
@@ -260,8 +317,11 @@ function mergeSpans(spans: Array<{ start: number; end: number }>): Array<{ start
 export function readTaskFields(text: string): Record<string, unknown> {
 	const fields: Record<string, unknown> = {};
 	// Inline fields first — an explicit `[due:: …]` beats the emoji shorthand.
-	for (const f of parseLineFields(text)) {
-		if (!(f.key in fields)) fields[f.key] = f.value;
+	// The whole-line `key:: value` form is skipped: on a task line it IS the
+	// task's text (stripTaskMetadata keeps it and the writer never edits it), so
+	// reading it as a field would show a value no write could ever change.
+	for (const f of scanLineFieldSpans(text)) {
+		if (f.wrapper !== "line" && !(f.key in fields)) fields[f.key] = f.value;
 	}
 	for (const span of emojiSpans(text)) {
 		if (!(span.key in fields)) fields[span.key] = span.value;
@@ -302,38 +362,24 @@ function indentWidth(indent: string): number {
 export function parseTasks(body: string, path: string, noteName: string): TaskItem[] {
 	const lines = body.split(/\r?\n/);
 	const out: TaskItem[] = [];
-	let i = 0;
-
-	if (lines[0] !== undefined && /^---\s*$/.test(lines[0])) {
-		let j = 1;
-		while (j < lines.length && !/^---\s*$/.test(lines[j])) j++;
-		if (j < lines.length) i = j + 1;
-	}
-
-	const inFence = makeFenceScanner();
-	let inComment = false;
 	let section = "";
 	/** Open ancestors as {indent width, line} so a child can find its parent. */
 	const stack: Array<{ width: number; line: number }> = [];
+	/** How many tasks with each text hash came earlier — see {@link occurrenceHash}. */
+	const seen = new Map<string, number>();
 
-	for (; i < lines.length; i++) {
-		const raw = lines[i];
-		if (inFence(raw)) continue;
-		// A checkbox inside a `%%comment%%` is content the user deliberately
-		// hid; turning it into a writable row would resurrect it.
-		const visible = stripBlockComment(raw, inComment);
-		inComment = visible.inComment;
-		if (!TASK_RE.test(visible.text) && !HEADING_RE.test(visible.text)) continue;
+	forEachLiveLine(lines, (i, raw, visible) => {
+		if (!TASK_RE.test(visible) && !HEADING_RE.test(visible)) return;
 
 		const h = HEADING_RE.exec(raw);
 		if (h) {
 			section = h[2].trim();
 			stack.length = 0;
-			continue;
+			return;
 		}
 
 		const m = TASK_RE.exec(raw);
-		if (!m) continue;
+		if (!m) return;
 
 		const width = indentWidth(m[1]);
 		while (stack.length > 0 && stack[stack.length - 1].width >= width) stack.pop();
@@ -347,8 +393,11 @@ export function parseTasks(body: string, path: string, noteName: string): TaskIt
 		// find and overwrite it — and the recorded inverse would be wrong.)
 		const rawText = m[3];
 		const text = stripTaskMetadata(rawText);
+		const base = hashTaskText(text);
+		const ordinal = seen.get(base) ?? 0;
+		seen.set(base, ordinal + 1);
 		out.push({
-			id: makeTaskId(path, i, text),
+			id: `${path}::L${i}::${occurrenceHash(base, ordinal)}`,
 			path,
 			note: noteName,
 			line: i,
@@ -363,7 +412,7 @@ export function parseTasks(body: string, path: string, noteName: string): TaskIt
 			tags: collectTags(rawText),
 			fields: readTaskFields(rawText),
 		});
-	}
+	});
 	return out;
 }
 
@@ -375,6 +424,9 @@ export interface TaskWrite {
 	key: string;
 	value?: unknown;
 	remove?: boolean;
+	/** Edit ONE element of the list at `key` (a FLATTEN row's element), resolved
+	 * against the line as it is when the write lands. */
+	listElement?: { value: unknown };
 }
 
 function valueToText(value: unknown): string {
@@ -388,14 +440,25 @@ function valueToText(value: unknown): string {
 	return JSON.stringify(value) ?? "";
 }
 
-/** Neutralise a value so it cannot terminate its wrapper or spill onto another
- * line. The substitutes are braces rather than the other bracket type, so a
- * value written into a `(…)` field can't close it either. */
+/**
+ * Make a value safe to write inside a field. A value must not be able to close
+ * its wrapper, spill onto another line, open an inline-code span, or open a
+ * `%%comment%%`. The last two would not just break this field: a stray
+ * backtick turns the rest of the line into code, and a `%%` hides every task
+ * after it in the note.
+ *
+ * Inside `[…]`, a balanced `[[wikilink]]` is kept as it is. The reader's
+ * pattern accepts exactly that shape, and link-valued fields
+ * (`project:: [[Alpha]]`) are the most common kind. Any other bracket becomes
+ * a brace, which can't close either wrapper.
+ */
 function safeFieldValue(value: unknown, wrapper: "square" | "round"): string {
-	const pair = wrapper === "square" ? /[[\]]/g : /[()]/g;
-	return valueToText(value)
-		.replace(/\r?\n/g, " ")
-		.replace(pair, (c) => (c === "[" || c === "(" ? "{" : "}"));
+	const text = valueToText(value)
+		.replace(/\r\n|[\r\n\u2028\u2029]/g, " ")
+		.replace(/`/g, "'")
+		.replace(/%(?=%)/g, "% ");
+	if (wrapper === "round") return text.replace(/[()]/g, (c) => (c === "(" ? "{" : "}"));
+	return text.replace(/\[\[[^\]\n]*\]\]|[[\]]/g, (m) => (m.length > 1 ? m : m === "[" ? "{" : "}"));
 }
 
 /** Replace the checkbox character of a task line. */
@@ -408,12 +471,19 @@ export function setTaskStatusChar(raw: string, char: string): string {
 	return `${raw.slice(0, open)}[${c}]${raw.slice(open + 3)}`;
 }
 
-/** The checkbox character a write to a reserved `task.*` key should produce. */
-export function statusCharFor(key: string, value: unknown, remove?: boolean): string {
+/**
+ * The checkbox character a write to a reserved `task.*` key should produce,
+ * or null when the value can't be one. A checkbox holds a single UTF-16 unit
+ * (that is what the task pattern reads), so an emoji status has no safe form.
+ * Taking its first unit would write half a surrogate pair.
+ */
+export function statusCharFor(key: string, value: unknown, remove?: boolean): string | null {
 	if (remove) return " ";
 	if (key === "task.status") {
 		const s = valueToText(value);
-		return s.length >= 1 ? s[0] : " ";
+		if (s.length === 0) return " ";
+		const first = String.fromCodePoint(s.codePointAt(0) ?? 32);
+		return first.length === 1 && first !== "\n" && first !== "\r" ? first : null;
 	}
 	const s = valueToText(value).trim().toLowerCase();
 	const truthy = s === "true" || s === "yes" || s === "1" || s === "done" || s === "x";
@@ -421,47 +491,181 @@ export function statusCharFor(key: string, value: unknown, remove?: boolean): st
 }
 
 /**
- * Apply field writes to a single task line and report the inverse writes that
- * would undo them. Update order is deliberate: an existing `[key:: …]` is
- * rewritten in place, else a matching emoji's value is replaced, else the field
- * is appended — always before a trailing `^block-id`.
+ * The reserved write that undoes a task edit. Undo puts back the exact line
+ * that was there, not a re-written field. Re-writing would go through the
+ * parser, which normalises: `007` becomes `7`, `TRUE` becomes `true`, a
+ * code-span value reads as empty. Undoing a single edit would then still change
+ * the note. The swap is compare-and-swap: it applies only while the line is
+ * exactly what the plugin wrote, so it never overwrites a later edit.
  */
-export function applyTaskWrites(raw: string, writes: readonly TaskWrite[]): { raw: string; inverse: TaskWrite[] } {
-	if (!TASK_RE.test(raw)) return { raw, inverse: [] };
+export const TASK_LINE_SWAP = "task.$swap";
 
-	let line = raw;
-	const inverse: TaskWrite[] = [];
-	const seen = new Set<string>();
-
-	for (const write of writes) {
-		// Dedupe case-INSENSITIVELY, matching the lookup and the writer. Writing
-		// `Due` and `due` in one batch targets the same field; letting both
-		// through would record two inverses and undo to the intermediate value.
-		const dedupe = TASK_STATUS_KEYS.has(write.key) ? write.key : write.key.toLowerCase();
-		if (seen.has(dedupe)) continue;
-		seen.add(dedupe);
-
-		if (TASK_STATUS_KEYS.has(write.key)) {
-			const before = TASK_RE.exec(line)?.[2] ?? " ";
-			inverse.push({ key: "task.status", value: before });
-			line = setTaskStatusChar(line, statusCharFor(write.key, write.value, write.remove));
-			continue;
-		}
-
-		const text = TASK_RE.exec(line)?.[3] ?? "";
-		// The lookup has to be case-INSENSITIVE because the writer below is: a line
-		// carrying `[Due:: x]` is what a write to `due` overwrites, so a
-		// case-sensitive miss here would record "remove" and undo would DELETE the
-		// user's original value instead of restoring it.
-		const existing = lookupField(readTaskFields(text), write.key);
-		if (existing.found) inverse.push({ key: write.key, value: existing.value });
-		else inverse.push({ key: write.key, remove: true });
-		line = writeOneField(line, write);
-	}
-	return { raw: line, inverse };
+export interface TaskLineSwap {
+	expect: string;
+	restore: string;
 }
 
-export type SpliceStatus = "written" | "unchanged" | "notfound";
+/** What {@link applyTaskWrites} produced. `refused` explains a write that was
+ * not made because it could not be made safely. */
+export interface TaskWriteResult {
+	raw: string;
+	inverse: TaskWrite[];
+	refused?: string;
+}
+
+/**
+ * Apply field writes to a single task line and report the inverse that would
+ * undo them. Update order is deliberate: an existing `[key:: …]` is rewritten
+ * in place, else a matching emoji's value is replaced, else the field is
+ * appended — always before a trailing `^block-id`.
+ *
+ * The writes are all-or-nothing. Each result is checked against the reader
+ * before it is accepted (see {@link checkTaskWrite}). A write that would change
+ * the task's identity, disturb another field, or not read back is refused, and
+ * the line is left exactly as it was.
+ */
+export function applyTaskWrites(raw: string, writes: readonly TaskWrite[]): TaskWriteResult {
+	if (!TASK_RE.test(raw)) return { raw, inverse: [] };
+
+	const swap = writes.find((w) => w.key === TASK_LINE_SWAP);
+	if (swap) return applyLineSwap(raw, swap, writes.length);
+
+	let line = raw;
+	const batch = lastWritePerField(writes).map(({ listElement, ...plain }) => {
+		if (!listElement) return plain;
+		// A field that isn't on the line is inherited from the note; writing it
+		// here is a plain task-level value, and the note's list is untouched.
+		const current = lookupField(readTaskFields(TASK_RE.exec(raw)?.[3] ?? ""), plain.key);
+		return current.found ? listElementWrite(current.value, listElement.value, plain) : plain;
+	});
+	if (batch.some((w) => w === null)) return { raw, inverse: [], refused: "that value is no longer in its list" };
+	for (const write of batch as TaskWrite[]) {
+		const refused = refuseKey(write.key);
+		if (refused) return { raw, inverse: [], refused };
+
+		if (TASK_STATUS_KEYS.has(write.key)) {
+			const char = statusCharFor(write.key, write.value, write.remove);
+			if (char === null) return { raw, inverse: [], refused: "a checkbox holds a single character" };
+			line = setTaskStatusChar(line, char);
+			continue;
+		}
+		line = writeOneField(line, write);
+	}
+	if (line === raw) return { raw, inverse: [] };
+
+	const problem = checkTaskWrite(raw, line, batch as TaskWrite[]);
+	if (problem) return { raw, inverse: [], refused: problem };
+	const undo: TaskLineSwap = { expect: line, restore: raw };
+	return { raw: line, inverse: [{ key: TASK_LINE_SWAP, value: undo }] };
+}
+
+function applyLineSwap(raw: string, swap: TaskWrite, count: number): TaskWriteResult {
+	const v = swap.value as Partial<TaskLineSwap> | undefined;
+	if (count !== 1 || typeof v?.expect !== "string" || typeof v.restore !== "string") {
+		return { raw, inverse: [], refused: "the undo record is malformed" };
+	}
+	if (raw !== v.expect) {
+		return {
+			raw,
+			inverse: [],
+			refused: "the task was edited after that change, and undoing it would overwrite the newer edit",
+		};
+	}
+	if (v.restore === raw) return { raw, inverse: [] };
+	const redo: TaskLineSwap = { expect: v.restore, restore: raw };
+	return { raw: v.restore, inverse: [{ key: TASK_LINE_SWAP, value: redo }] };
+}
+
+/**
+ * Collapse a batch to one write per field, keeping the LAST write, as the
+ * frontmatter writer does (a later key assignment wins there). Without this, a
+ * Move Rule that sets the group-by key would win on note rows and lose on task
+ * rows. Field keys compare case-insensitively, like the lookup and the writer.
+ * The three checkbox keys all write one character, so they count as one field.
+ */
+function lastWritePerField(writes: readonly TaskWrite[]): TaskWrite[] {
+	const out: TaskWrite[] = [];
+	const seen = new Set<string>();
+	for (let i = writes.length - 1; i >= 0; i--) {
+		const w = writes[i];
+		const id = TASK_STATUS_KEYS.has(w.key) ? "task.status" : w.key.toLowerCase();
+		if (seen.has(id)) continue;
+		seen.add(id);
+		out.unshift(w);
+	}
+	return out;
+}
+
+/** Why `key` can't be written to a task line, or null when it can. */
+function refuseKey(key: string): string | null {
+	if (TASK_STATUS_KEYS.has(key)) return null;
+	// task.text, task.section, task.line, … are read off the line's position
+	// and shape. A "write" would append a [task.section:: …] field that the
+	// built-in value hides, so the card snaps back and the junk stays.
+	if (TASK_ROW_PROPS.has(key) || key === TASK_LINE_SWAP) return `"${key}" is computed from the task line and can't be set`;
+	// The key goes into the source verbatim, so it has to survive the reader's
+	// own key pattern and not be able to open a wrapper, code span or comment.
+	if (
+		key.trim() !== key ||
+		!isValidKey(key) ||
+		/[[\]()`\n\r]/.test(key) ||
+		key.includes("::") ||
+		key.includes("%%") ||
+		/^[*_~]|[*_~]$/.test(key)
+	) {
+		return `"${key}" can't be written as an inline field name`;
+	}
+	return null;
+}
+
+/**
+ * Re-read a rewritten line and confirm the edit did exactly what was asked:
+ * the line is still a task, the task's own text (its identity hash) is
+ * unchanged, every field not written reads back as before, every written field
+ * reads back present, and every removed one reads back absent. This is the
+ * backstop behind every rule above. Anything the writer gets wrong turns into a
+ * refused write instead of a changed note.
+ */
+function checkTaskWrite(before: string, after: string, writes: readonly TaskWrite[]): string | null {
+	const a = TASK_RE.exec(after);
+	const b = TASK_RE.exec(before);
+	if (!a || !b) return "the result would no longer be a task line";
+	if (hashTaskText(stripTaskMetadata(a[3])) !== hashTaskText(stripTaskMetadata(b[3]))) {
+		return "the value would change the task's own text";
+	}
+	// Overwriting a field may remove a balanced `code` pair; it must never add a
+	// delimiter or leave one unpaired, which would re-scope the rest of the line
+	// (a backtick) or the rest of the note (a `%%`).
+	for (const delim of ["%%", "`"]) {
+		const was = count(before, delim);
+		const now = count(after, delim);
+		if (now > was || now % 2 !== was % 2) return "the value would open a comment or code span";
+	}
+	const written = new Set(writes.map((w) => w.key.toLowerCase()));
+	const fieldsBefore = readTaskFields(b[3]);
+	const fieldsAfter = readTaskFields(a[3]);
+	// Both directions: a value can also SMUGGLE IN a field (`[due:: …]` inside a
+	// round field, or a priority emoji), not only disturb an existing one.
+	for (const key of new Set([...Object.keys(fieldsBefore), ...Object.keys(fieldsAfter)])) {
+		if (written.has(key.toLowerCase())) continue;
+		if (JSON.stringify(fieldsAfter[key]) !== JSON.stringify(fieldsBefore[key])) {
+			return `the value would disturb another field ("${key}")`;
+		}
+	}
+	for (const w of writes) {
+		if (TASK_STATUS_KEYS.has(w.key)) continue;
+		const found = lookupField(fieldsAfter, w.key).found;
+		if (w.remove && found) return `"${w.key}" is set in a way that can't be removed from here`;
+		if (!w.remove && !found) return `the new "${w.key}" value wouldn't read back`;
+	}
+	return null;
+}
+
+function count(s: string, needle: string): number {
+	return s.split(needle).length - 1;
+}
+
+export type SpliceStatus = "written" | "unchanged" | "notfound" | "refused";
 
 /**
  * Apply writes to one task inside a whole file's text, returning the new text.
@@ -473,13 +677,14 @@ export type SpliceStatus = "written" | "unchanged" | "notfound";
  * The file is split on a separator-PRESERVING pattern and only the one target
  * element is replaced, so every other byte (mixed CRLF/LF, a trailing newline
  * or its absence) comes back identical. `notfound` means the task could not be
- * located unambiguously; the caller must refuse the write, not guess.
+ * located unambiguously and `refused` that the write could not be made safely;
+ * either way the text comes back untouched.
  */
 export function spliceTaskLine(
 	data: string,
 	ref: TaskRef,
 	writes: readonly TaskWrite[]
-): { text: string; inverse: TaskWrite[]; status: SpliceStatus } {
+): { text: string; inverse: TaskWrite[]; status: SpliceStatus; reason?: string } {
 	// Odd indices are the line separators.
 	const parts = data.split(/(\r?\n)/);
 	const lines: string[] = [];
@@ -489,6 +694,7 @@ export function spliceTaskLine(
 	if (idx < 0) return { text: data, inverse: [], status: "notfound" };
 
 	const result = applyTaskWrites(lines[idx], writes);
+	if (result.refused) return { text: data, inverse: [], status: "refused", reason: result.refused };
 	if (result.raw === lines[idx]) return { text: data, inverse: [], status: "unchanged" };
 
 	parts[idx * 2] = result.raw;
@@ -504,25 +710,38 @@ function lookupField(fields: Record<string, unknown>, key: string): { found: boo
 	return { found: false };
 }
 
+/** The bracketed field `key`, found through the SAME parser the reader uses.
+ * Matching is case-insensitive (people write `Due::` and `due::`). The
+ * whole-line form is never a field on a task line — it is the task text. */
+function fieldSpan(line: string, key: string): LineFieldSpan | undefined {
+	const target = key.toLowerCase();
+	return scanLineFieldSpans(line).find((s) => s.wrapper !== "line" && s.key.toLowerCase() === target);
+}
+
 function writeOneField(line: string, write: TaskWrite): string {
 	const key = write.key;
-	// Find the existing field through the SAME parser the reader uses, so the
-	// recorded inverse and the edit can never disagree. Matching is
-	// case-insensitive (people write `Due::` and `due::`), but the replacement
-	// reuses the user's own key spelling rather than rewriting it.
-	const span = scanLineFieldSpans(line).find(
-		(s) => s.wrapper !== "line" && s.key.toLowerCase() === key.toLowerCase()
-	);
 
 	if (write.remove) {
-		if (span) return tidy(`${line.slice(0, span.start)} ${line.slice(span.end)}`);
-		const stripped = rewriteEmoji(line, key, null);
-		return stripped === null ? line : tidy(stripped);
+		// A field can be set two ways at once (`[due:: …]` and `📅 …`). The reader
+		// prefers the bracket, so removing only that would expose the emoji's
+		// date as the "removed" field's value. Remove every source.
+		let next = line;
+		for (let guard = 0; guard < 16; guard++) {
+			const span = fieldSpan(next, key);
+			if (span) {
+				next = cutSpan(next, span.start, span.end);
+				continue;
+			}
+			const stripped = removeEmoji(next, key);
+			if (stripped === null) break;
+			next = stripped;
+		}
+		return next;
 	}
 
+	const span = fieldSpan(line, key);
 	if (span) {
-		// `wrapper` is narrowed by the filter above — the whole-line form is never
-		// rewritten in place (on a task line it is the task text, not a field).
+		// The replacement reuses the user's own key spelling and wrapper.
 		const round = span.wrapper === "round";
 		const text = safeFieldValue(write.value, round ? "round" : "square");
 		const open = round ? "(" : "[";
@@ -532,7 +751,7 @@ function writeOneField(line: string, write: TaskWrite): string {
 
 	const text = safeFieldValue(write.value, "square");
 	const replaced = rewriteEmoji(line, key, text);
-	if (replaced !== null) return tidy(replaced);
+	if (replaced !== null) return replaced;
 
 	const blockId = BLOCK_ID_RE.exec(line);
 	if (blockId) {
@@ -543,15 +762,14 @@ function writeOneField(line: string, write: TaskWrite): string {
 }
 
 /**
- * Rewrite (or, with `value === null`, delete) the emoji shorthand for `key`.
- * Returns null when the line carries no such emoji, so the caller falls through
- * to the bracketed form.
+ * Rewrite the emoji shorthand for `key` with a new value. Returns null when
+ * the line carries no such emoji, so the caller falls through to the
+ * bracketed form.
  */
-function rewriteEmoji(line: string, key: string, value: string | null): string | null {
+function rewriteEmoji(line: string, key: string, value: string): string | null {
 	if (key.toLowerCase() === "priority") {
 		for (const { emoji } of TASK_PRIORITY) {
 			if (!line.includes(emoji)) continue;
-			if (value === null) return line.split(emoji).join(" ");
 			const next = priorityEmojiFor(value);
 			// A value outside the five Tasks priorities has no emoji to carry it.
 			// Fall through so it lands as `[priority:: …]` — which also WINS over
@@ -566,15 +784,25 @@ function rewriteEmoji(line: string, key: string, value: string | null): string |
 	// instead of overwriting the user's words.
 	const span = emojiSpans(line).find((s) => s.key.toLowerCase() === key.toLowerCase());
 	if (!span) return null;
-	const head = line.slice(0, span.start);
-	const tail = line.slice(span.end);
-	if (value === null) return `${head}${tail}`;
-	const entry = TASK_EMOJI.find((e) => e.key === span.key);
+	const entry = TASK_EMOJI.find((e) => e.emoji === span.emoji);
 	// A replacement value of the wrong shape can't live in the emoji slot — fall
 	// through so it is stored as `[key:: …]` (which then WINS, since fields are
 	// read before emoji) rather than written back malformed.
 	if (!entry || !EMOJI_VALUE_EXACT[entry.kind].test(value)) return null;
-	return `${head}${entry.emoji} ${value}${tail}`;
+	return `${line.slice(0, span.start)}${span.emoji} ${value}${line.slice(span.end)}`;
+}
+
+/** Delete one emoji occurrence for `key`, or null when there is none. */
+function removeEmoji(line: string, key: string): string | null {
+	if (key.toLowerCase() === "priority") {
+		for (const { emoji } of TASK_PRIORITY) {
+			const at = line.indexOf(emoji);
+			if (at >= 0) return cutSpan(line, at, at + emoji.length);
+		}
+		return null;
+	}
+	const span = emojiSpans(line).find((s) => s.key.toLowerCase() === key.toLowerCase());
+	return span ? cutSpan(line, span.start, span.end) : null;
 }
 
 function priorityEmojiFor(value: string): string {
@@ -582,10 +810,11 @@ function priorityEmojiFor(value: string): string {
 	return hit ? hit.emoji : "";
 }
 
-/** Collapse the double spaces a removal leaves behind, without touching the
- * line's leading indentation. */
-function tidy(line: string): string {
-	const m = /^([ \t]*)([\s\S]*)$/.exec(line);
-	if (!m) return line;
-	return `${m[1]}${m[2].replace(/[ \t]{2,}/g, " ").replace(/\s+$/, "")}`;
+/** Delete `[start, end)` and close the gap with a single space. Only the
+ * whitespace touching the cut is collapsed. Spacing elsewhere on the line,
+ * including inside inline code, is left as the user wrote it. */
+function cutSpan(line: string, start: number, end: number): string {
+	const head = line.slice(0, start).replace(/[ \t]+$/, "");
+	const tail = line.slice(end).replace(/^[ \t]+/, "");
+	return tail.length > 0 ? `${head} ${tail}` : head;
 }

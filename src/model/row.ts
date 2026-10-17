@@ -35,6 +35,9 @@ export interface Row {
 	name: string;
 	note: RawNote;
 	scope: EvalScope;
+	/** Set on a row FLATTEN produced: it carries ONE element of a list, bound to
+	 * `binding`. A write to the binding must edit that element, not the list. */
+	flatten?: { binding: string; expression: string };
 }
 
 /** The exact set of implicit computed `file.*` accessors. A guard must test

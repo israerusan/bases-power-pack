@@ -14,7 +14,7 @@ import {
 	weekKeys,
 } from "../query/dates";
 import { shiftIso } from "../query/gantt";
-import { createSeededNote, writeRowProperty } from "./viewData";
+import { createSeededNote, writeRowFields } from "./viewData";
 import { PromptModal } from "./modals";
 import { renderContextControls, renderPropertySelect, renderRollupBar } from "./viewChrome";
 
@@ -432,7 +432,7 @@ export class CalendarView extends PowerPackView {
 		const row = this.rows.find((r) => r.id === rowId);
 		if (!row) return;
 		const original: unknown = row.scope.get(dateProp);
-		await writeRowProperty(this.plugin, rowId, dateProp, rescheduleDateValue(original, targetKey), false, {
+		await writeRowFields(this.plugin, row, [{ key: dateProp, value: rescheduleDateValue(original, targetKey) }], {
 			label: `Reschedule to ${targetKey}`,
 		});
 		await this.render();

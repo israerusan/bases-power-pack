@@ -3058,9 +3058,9 @@ function rankBetween(before, after) {
   if (after - before < MIN_GAP) return null;
   return before + (after - before) / 2;
 }
-function renormalizedRanks(count, step = RANK_STEP) {
+function renormalizedRanks(count2, step = RANK_STEP) {
   const out = [];
-  for (let i = 0; i < count; i++) out.push(i * step);
+  for (let i = 0; i < count2; i++) out.push(i * step);
   return out;
 }
 function planReorder(ordered, movedId, targetIndex) {
@@ -3941,19 +3941,21 @@ function flattenRows(rows, options, rebind = defaultRebind) {
   const expression = options.expression.trim();
   if (expression.length === 0) return [...rows];
   const binding = ((_a = options.as) != null ? _a : "").trim() || defaultBinding(expression);
+  const meta = { binding, expression };
+  const tag = (r) => ({ ...r, flatten: meta });
   const out = [];
   for (const row of rows) {
     const values = flattenValues(evaluateSafe(expression, row.scope));
     const kept = options.keepEmpty ? values : values.filter((v) => !isEmptyValue(v));
     if (kept.length === 0) {
-      if (options.keepEmpty) out.push(rebind(row, row.id, binding, null));
+      if (options.keepEmpty) out.push(tag(rebind(row, row.id, binding, null)));
       continue;
     }
     if (kept.length === 1) {
-      out.push(rebind(row, row.id, binding, kept[0]));
+      out.push(tag(rebind(row, row.id, binding, kept[0])));
       continue;
     }
-    kept.forEach((v, i) => out.push(rebind(row, `${row.id}#${i}`, binding, v)));
+    kept.forEach((v, i) => out.push(tag(rebind(row, `${row.id}#${i}`, binding, v))));
   }
   return out;
 }
@@ -3963,25 +3965,82 @@ function isEmptyValue(v) {
   if (Array.isArray(v)) return v.length === 0;
   return false;
 }
+function listElementWrite(source, element, write) {
+  if (!Array.isArray(source)) return write;
+  if (Array.isArray(element)) return write;
+  const same = (a, b) => elementKey(a) === elementKey(b);
+  const at = source.findIndex((v) => same(v, element));
+  if (at < 0) {
+    if (source.length === 0 && (element === null || element === void 0)) {
+      return write.remove ? write : { ...write, value: [write.value], remove: false };
+    }
+    return null;
+  }
+  const next = [...source];
+  if (write.remove || next.some((v, i) => i !== at && same(v, write.value))) next.splice(at, 1);
+  else next[at] = write.value;
+  return { ...write, value: next, remove: false };
+}
+function elementKey(v) {
+  var _a;
+  if (v instanceof Date) return v.toISOString();
+  return (_a = JSON.stringify(v)) != null ? _a : "";
+}
+function flattenElementWrites(row, writes) {
+  const flat = row.flatten;
+  if (!flat) return writes;
+  const out = [];
+  for (const write of writes) {
+    if (write.key !== flat.binding) {
+      out.push(write);
+      continue;
+    }
+    if (flat.binding !== flat.expression) return null;
+    if (flat.binding.includes(".") && !Object.prototype.hasOwnProperty.call(row.note.frontmatter, flat.binding)) return null;
+    out.push({ ...write, listElement: { value: row.scope.get(flat.binding) } });
+  }
+  return out;
+}
+function resolveListElement(current, write) {
+  if (!write.listElement) return write;
+  const { listElement, ...plain } = write;
+  return listElementWrite(current, listElement.value, plain);
+}
 
 // src/query/inlineFields.ts
-var FENCE_RE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
-function makeFenceScanner() {
-  let open = null;
-  return (line) => {
-    const m = FENCE_RE.exec(line);
-    if (!m) return open !== null;
-    const char = m[1][0];
-    const len = m[1].length;
-    const info = m[2];
-    if (!open) {
-      if (char === "`" && info.includes("`")) return false;
-      open = { char, len };
-      return true;
+var FENCE_RE = /^([ \t]*)(`{3,}|~{3,})(.*)$/;
+function indentColumns(indent) {
+  let w = 0;
+  for (const ch of indent) w += ch === "	" ? 4 : 1;
+  return w;
+}
+function fencedLines(lines, from = 0) {
+  const mask = new Array(lines.length).fill(false);
+  let i = from;
+  while (i < lines.length) {
+    const open = FENCE_RE.exec(lines[i]);
+    if (!open || open[2][0] === "`" && open[3].includes("`")) {
+      i++;
+      continue;
     }
-    if (char === open.char && len >= open.len && info.trim().length === 0) open = null;
-    return true;
-  };
+    const indent = indentColumns(open[1]);
+    let close = -1;
+    for (let j = i + 1; j < lines.length; j++) {
+      const m = FENCE_RE.exec(lines[j]);
+      if (m && m[2][0] === open[2][0] && m[2].length >= open[2].length && m[3].trim().length === 0 && indentColumns(m[1]) <= indent + 3) {
+        close = j;
+        break;
+      }
+    }
+    if (close < 0 && indent > 3) {
+      i++;
+      continue;
+    }
+    const end = close < 0 ? lines.length - 1 : close;
+    for (let k = i; k <= end; k++) mask[k] = true;
+    i = end + 1;
+  }
+  return mask;
 }
 function stripBlockComment(line, inComment) {
   let out = "";
@@ -4114,10 +4173,10 @@ function scanInlineFields(body) {
     while (j < lines.length && !/^---\s*$/.test(lines[j])) j++;
     if (j < lines.length) i = j + 1;
   }
-  const inFence = makeFenceScanner();
+  const fenced = fencedLines(lines, i);
   let inComment = false;
   for (; i < lines.length; i++) {
-    if (inFence(lines[i])) continue;
+    if (fenced[i]) continue;
     const stripped = stripBlockComment(lines[i], inComment);
     inComment = stripped.inComment;
     if (stripped.text.trim().length === 0) continue;
@@ -4150,333 +4209,6 @@ function addLowercaseAliases(fields) {
 }
 function parseInlineFields(body) {
   return collectInlineFields(scanInlineFields(body));
-}
-
-// src/query/tasks.ts
-var TASK_RE = /^([ \t]*)(?:[-*+]|\d+[.)])[ \t]+\[(.)\](?=[ \t]|$)[ \t]*(.*)$/;
-var HEADING_RE = /^(#{1,6})\s+(.*)$/;
-var BLOCK_ID_RE = /\s\^[\w-]+\s*$/;
-var TASK_EMOJI = [
-  { emoji: "\u{1F4C5}", key: "due", kind: "date" },
-  { emoji: "\u{1F6EB}", key: "start", kind: "date" },
-  { emoji: "\u23F3", key: "scheduled", kind: "date" },
-  { emoji: "\u231B", key: "scheduled", kind: "date" },
-  { emoji: "\u2705", key: "completion", kind: "date" },
-  { emoji: "\u2795", key: "created", kind: "date" },
-  { emoji: "\u274C", key: "cancelled", kind: "date" },
-  { emoji: "\u{1F194}", key: "id", kind: "token" },
-  { emoji: "\u26D4", key: "blockedBy", kind: "token" }
-];
-var EMOJI_VALUE_RE = {
-  date: /^[ \t]*(\d{4}-\d{2}-\d{2})(?=[ \t]|$)/,
-  token: /^[ \t]*([A-Za-z0-9_,]{1,64})(?=[ \t]|$)/
-};
-var EMOJI_VALUE_EXACT = {
-  date: /^\d{4}-\d{2}-\d{2}$/,
-  token: /^[A-Za-z0-9_,]{1,64}$/
-};
-function emojiSpans(text) {
-  const spans = [];
-  for (const { emoji, key, kind } of TASK_EMOJI) {
-    let from = 0;
-    for (; ; ) {
-      const idx = text.indexOf(emoji, from);
-      if (idx < 0) break;
-      from = idx + emoji.length;
-      const m = EMOJI_VALUE_RE[kind].exec(text.slice(from));
-      if (!m) continue;
-      spans.push({ key, value: m[1], start: idx, end: from + m[0].length });
-      break;
-    }
-  }
-  return spans.sort((a, b) => a.start - b.start);
-}
-var TASK_PRIORITY = [
-  { emoji: "\u{1F53A}", value: "highest" },
-  { emoji: "\u23EB", value: "high" },
-  { emoji: "\u{1F53C}", value: "medium" },
-  { emoji: "\u{1F53D}", value: "low" },
-  { emoji: "\u23EC", value: "lowest" }
-];
-var TASK_STATUS_KEYS = /* @__PURE__ */ new Set(["task.status", "task.checked", "task.done"]);
-function hashTaskText(text) {
-  const norm = text.trim().toLowerCase().replace(/\s+/g, " ");
-  let h = 2166136261;
-  for (let i = 0; i < norm.length; i++) {
-    h ^= norm.charCodeAt(i);
-    h = Math.imul(h, 16777619) >>> 0;
-  }
-  return h.toString(36).padStart(6, "0").slice(-6);
-}
-function makeTaskId(path, line, text) {
-  return `${path}::L${line}::${hashTaskText(text)}`;
-}
-function parseTaskId(id) {
-  const m = /^(.*)::L(\d+)::([0-9a-z]{6})$/.exec(id);
-  if (!m) return null;
-  return { path: m[1], line: Number(m[2]), hash: m[3] };
-}
-function relocateTask(lines, ref) {
-  const atLine = lines[ref.line];
-  if (atLine !== void 0) {
-    const m = TASK_RE.exec(atLine);
-    if (m && hashTaskText(stripTaskMetadata(m[3])) === ref.hash) return ref.line;
-  }
-  let found = -1;
-  for (let i = 0; i < lines.length; i++) {
-    const m = TASK_RE.exec(lines[i]);
-    if (!m || hashTaskText(stripTaskMetadata(m[3])) !== ref.hash) continue;
-    if (found >= 0) return -1;
-    found = i;
-  }
-  return found;
-}
-function stripTaskMetadata(text) {
-  const spans = mergeSpans([
-    ...emojiSpans(text).map((s) => ({ start: s.start, end: s.end })),
-    ...scanLineFieldSpans(text).filter((s) => s.wrapper !== "line").map((s) => ({ start: s.start, end: s.end }))
-  ]);
-  let out = text;
-  for (let i = spans.length - 1; i >= 0; i--) {
-    out = `${out.slice(0, spans[i].start)} ${out.slice(spans[i].end)}`;
-  }
-  for (const { emoji } of TASK_PRIORITY) out = out.split(emoji).join(" ");
-  out = out.replace(BLOCK_ID_RE, "");
-  return out.replace(/\s+/g, " ").trim();
-}
-function mergeSpans(spans) {
-  const sorted = [...spans].sort((a, b) => a.start - b.start);
-  const out = [];
-  for (const span of sorted) {
-    const last = out[out.length - 1];
-    if (last && span.start <= last.end) last.end = Math.max(last.end, span.end);
-    else out.push({ ...span });
-  }
-  return out;
-}
-function readTaskFields(text) {
-  const fields = {};
-  for (const f of parseLineFields(text)) {
-    if (!(f.key in fields)) fields[f.key] = f.value;
-  }
-  for (const span of emojiSpans(text)) {
-    if (!(span.key in fields)) fields[span.key] = span.value;
-  }
-  if (!("priority" in fields)) {
-    for (const { emoji, value } of TASK_PRIORITY) {
-      if (text.includes(emoji)) {
-        fields.priority = value;
-        break;
-      }
-    }
-  }
-  return addLowercaseAliases(fields);
-}
-function collectTags(text) {
-  const out = [];
-  const re = /(^|\s)#([\p{L}\p{N}_/-]+)/gu;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    if (!out.includes(m[2])) out.push(m[2]);
-  }
-  return out;
-}
-function indentWidth(indent) {
-  let w = 0;
-  for (const ch of indent) w += ch === "	" ? 4 : 1;
-  return w;
-}
-function parseTasks(body, path, noteName) {
-  const lines = body.split(/\r?\n/);
-  const out = [];
-  let i = 0;
-  if (lines[0] !== void 0 && /^---\s*$/.test(lines[0])) {
-    let j = 1;
-    while (j < lines.length && !/^---\s*$/.test(lines[j])) j++;
-    if (j < lines.length) i = j + 1;
-  }
-  const inFence = makeFenceScanner();
-  let inComment = false;
-  let section = "";
-  const stack = [];
-  for (; i < lines.length; i++) {
-    const raw = lines[i];
-    if (inFence(raw)) continue;
-    const visible = stripBlockComment(raw, inComment);
-    inComment = visible.inComment;
-    if (!TASK_RE.test(visible.text) && !HEADING_RE.test(visible.text)) continue;
-    const h = HEADING_RE.exec(raw);
-    if (h) {
-      section = h[2].trim();
-      stack.length = 0;
-      continue;
-    }
-    const m = TASK_RE.exec(raw);
-    if (!m) continue;
-    const width = indentWidth(m[1]);
-    while (stack.length > 0 && stack[stack.length - 1].width >= width) stack.pop();
-    const parent = stack.length > 0 ? stack[stack.length - 1].line : null;
-    stack.push({ width, line: i });
-    const status = m[2];
-    const rawText = m[3];
-    const text = stripTaskMetadata(rawText);
-    out.push({
-      id: makeTaskId(path, i, text),
-      path,
-      note: noteName,
-      line: i,
-      level: stack.length - 1,
-      status,
-      checked: status.trim().length > 0,
-      done: status === "x" || status === "X",
-      text,
-      raw,
-      section,
-      parent,
-      tags: collectTags(rawText),
-      fields: readTaskFields(rawText)
-    });
-  }
-  return out;
-}
-function valueToText(value) {
-  var _a;
-  if (value === null || value === void 0) return "";
-  if (Array.isArray(value)) return value.map((v) => valueToText(v)).join(", ");
-  if (value instanceof Date) return value.toISOString().slice(0, 10);
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return (_a = JSON.stringify(value)) != null ? _a : "";
-}
-function safeFieldValue(value, wrapper) {
-  const pair = wrapper === "square" ? /[[\]]/g : /[()]/g;
-  return valueToText(value).replace(/\r?\n/g, " ").replace(pair, (c) => c === "[" || c === "(" ? "{" : "}");
-}
-function setTaskStatusChar(raw, char) {
-  const m = TASK_RE.exec(raw);
-  if (!m) return raw;
-  const c = char.length === 1 ? char : " ";
-  const open = raw.indexOf("[", m[1].length);
-  if (open < 0) return raw;
-  return `${raw.slice(0, open)}[${c}]${raw.slice(open + 3)}`;
-}
-function statusCharFor(key, value, remove) {
-  if (remove) return " ";
-  if (key === "task.status") {
-    const s2 = valueToText(value);
-    return s2.length >= 1 ? s2[0] : " ";
-  }
-  const s = valueToText(value).trim().toLowerCase();
-  const truthy = s === "true" || s === "yes" || s === "1" || s === "done" || s === "x";
-  return truthy ? "x" : " ";
-}
-function applyTaskWrites(raw, writes) {
-  var _a, _b, _c, _d;
-  if (!TASK_RE.test(raw)) return { raw, inverse: [] };
-  let line = raw;
-  const inverse = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const write of writes) {
-    const dedupe = TASK_STATUS_KEYS.has(write.key) ? write.key : write.key.toLowerCase();
-    if (seen.has(dedupe)) continue;
-    seen.add(dedupe);
-    if (TASK_STATUS_KEYS.has(write.key)) {
-      const before = (_b = (_a = TASK_RE.exec(line)) == null ? void 0 : _a[2]) != null ? _b : " ";
-      inverse.push({ key: "task.status", value: before });
-      line = setTaskStatusChar(line, statusCharFor(write.key, write.value, write.remove));
-      continue;
-    }
-    const text = (_d = (_c = TASK_RE.exec(line)) == null ? void 0 : _c[3]) != null ? _d : "";
-    const existing = lookupField(readTaskFields(text), write.key);
-    if (existing.found) inverse.push({ key: write.key, value: existing.value });
-    else inverse.push({ key: write.key, remove: true });
-    line = writeOneField(line, write);
-  }
-  return { raw: line, inverse };
-}
-function spliceTaskLine(data, ref, writes) {
-  const parts = data.split(/(\r?\n)/);
-  const lines = [];
-  for (let i = 0; i < parts.length; i += 2) lines.push(parts[i]);
-  const idx = relocateTask(lines, ref);
-  if (idx < 0) return { text: data, inverse: [], status: "notfound" };
-  const result = applyTaskWrites(lines[idx], writes);
-  if (result.raw === lines[idx]) return { text: data, inverse: [], status: "unchanged" };
-  parts[idx * 2] = result.raw;
-  return { text: parts.join(""), inverse: result.inverse, status: "written" };
-}
-function lookupField(fields, key) {
-  const target = key.toLowerCase();
-  for (const [k, v] of Object.entries(fields)) {
-    if (k.toLowerCase() === target) return { found: true, value: v };
-  }
-  return { found: false };
-}
-function writeOneField(line, write) {
-  const key = write.key;
-  const span = scanLineFieldSpans(line).find(
-    (s) => s.wrapper !== "line" && s.key.toLowerCase() === key.toLowerCase()
-  );
-  if (write.remove) {
-    if (span) return tidy(`${line.slice(0, span.start)} ${line.slice(span.end)}`);
-    const stripped = rewriteEmoji(line, key, null);
-    return stripped === null ? line : tidy(stripped);
-  }
-  if (span) {
-    const round2 = span.wrapper === "round";
-    const text2 = safeFieldValue(write.value, round2 ? "round" : "square");
-    const open = round2 ? "(" : "[";
-    const close = round2 ? ")" : "]";
-    return `${line.slice(0, span.start)}${open}${span.rawKey}:: ${text2}${close}${line.slice(span.end)}`;
-  }
-  const text = safeFieldValue(write.value, "square");
-  const replaced = rewriteEmoji(line, key, text);
-  if (replaced !== null) return tidy(replaced);
-  const blockId = BLOCK_ID_RE.exec(line);
-  if (blockId) {
-    const head = line.slice(0, blockId.index).replace(/\s+$/, "");
-    return `${head} [${key}:: ${text}]${blockId[0].replace(/\s+$/, "")}`;
-  }
-  return `${line.replace(/\s+$/, "")} [${key}:: ${text}]`;
-}
-function rewriteEmoji(line, key, value) {
-  if (key.toLowerCase() === "priority") {
-    for (const { emoji } of TASK_PRIORITY) {
-      if (!line.includes(emoji)) continue;
-      if (value === null) return line.split(emoji).join(" ");
-      const next = priorityEmojiFor(value);
-      if (!next) return null;
-      return line.split(emoji).join(next);
-    }
-    return null;
-  }
-  const span = emojiSpans(line).find((s) => s.key.toLowerCase() === key.toLowerCase());
-  if (!span) return null;
-  const head = line.slice(0, span.start);
-  const tail = line.slice(span.end);
-  if (value === null) return `${head}${tail}`;
-  const entry = TASK_EMOJI.find((e) => e.key === span.key);
-  if (!entry || !EMOJI_VALUE_EXACT[entry.kind].test(value)) return null;
-  return `${head}${entry.emoji} ${value}${tail}`;
-}
-function priorityEmojiFor(value) {
-  const hit = TASK_PRIORITY.find((p) => p.value === value.trim().toLowerCase());
-  return hit ? hit.emoji : "";
-}
-function tidy(line) {
-  const m = /^([ \t]*)([\s\S]*)$/.exec(line);
-  if (!m) return line;
-  return `${m[1]}${m[2].replace(/[ \t]{2,}/g, " ").replace(/\s+$/, "")}`;
-}
-
-// src/model/rowId.ts
-function notePathOf(id) {
-  var _a, _b;
-  const base = sourceRowId(id);
-  return (_b = (_a = parseTaskId(base)) == null ? void 0 : _a.path) != null ? _b : base;
-}
-function taskRefOf(id) {
-  return parseTaskId(sourceRowId(id));
 }
 
 // src/query/relations.ts
@@ -4590,79 +4322,19 @@ function traverseLink(scope, dotted, lookup, hops = MAX_LINK_HOPS) {
   }
 }
 
-// src/model/row.ts
-var COMPUTED_FILE_PROPS = /* @__PURE__ */ new Set([
-  "file.name",
-  "file.path",
-  "file.folder",
-  "file.ext",
-  "file.tags",
-  "file.ctime",
-  "file.mtime",
-  "file.size",
-  "file.inlinks",
-  "file.outlinks",
-  "file.inlinkCount",
-  "file.outlinkCount",
-  "file.taskCount",
-  "file.doneTaskCount",
-  "file.openTaskCount"
-]);
-function fileProps(note) {
-  const props = {
-    "file.name": note.name,
-    "file.path": note.path,
-    "file.folder": note.folder,
-    "file.ext": note.ext,
-    "file.tags": note.tags,
-    "file.ctime": note.ctime,
-    "file.mtime": note.mtime,
-    "file.size": note.size
-  };
-  if (note.links) Object.assign(props, note.links);
-  if (note.tasks) {
-    const done = note.tasks.filter((t) => t.done).length;
-    props["file.taskCount"] = note.tasks.length;
-    props["file.doneTaskCount"] = done;
-    props["file.openTaskCount"] = note.tasks.length - done;
-  }
-  return props;
-}
-function makeScope(note, formulas = {}, ctx, overlay) {
-  var _a;
-  const base = { ...(_a = note.inline) != null ? _a : {}, ...note.frontmatter, ...fileProps(note), ...overlay };
-  const memo = /* @__PURE__ */ new Map();
-  const inProgress = /* @__PURE__ */ new Set();
-  const scope = {
-    get(name) {
-      if (name in base) return base[name];
-      if (name in formulas) {
-        if (memo.has(name)) return memo.get(name);
-        if (inProgress.has(name)) return null;
-        inProgress.add(name);
-        let result = null;
-        try {
-          result = compileExpression(formulas[name]).eval(scope);
-        } catch (e) {
-          result = null;
-        }
-        inProgress.delete(name);
-        memo.set(name, result);
-        return result;
-      }
-      if ((ctx == null ? void 0 : ctx.lookup) && name.includes(".")) {
-        return traverseLink(scope, name, ctx.lookup);
-      }
-      return void 0;
-    }
-  };
-  return scope;
-}
-function makeRow(note, formulas = {}, ctx, overlay) {
-  return { id: note.path, name: note.name, note, scope: makeScope(note, formulas, ctx, overlay) };
-}
-
 // src/model/taskRow.ts
+var TASK_ROW_PROPS = /* @__PURE__ */ new Set([
+  "task.status",
+  "task.checked",
+  "task.done",
+  "task.text",
+  "task.line",
+  "task.level",
+  "task.section",
+  "task.note",
+  "task.tags",
+  "task.parent"
+]);
 function taskProps(task) {
   return {
     "task.status": task.status,
@@ -4752,6 +4424,523 @@ function buildTaskRows(notes, formulas = {}, ctx, options = {}) {
     }
   }
   return rows;
+}
+
+// src/query/tasks.ts
+var TASK_RE = /^([ \t]*)(?:[-*+]|\d+[.)])[ \t]+\[(.)\](?=[ \t]|$)[ \t]*(.*)$/;
+var HEADING_RE = /^(#{1,6})\s+(.*)$/;
+var BLOCK_ID_RE = /\s\^[\w-]+\s*$/;
+var TASK_EMOJI = [
+  { emoji: "\u{1F4C5}", key: "due", kind: "date" },
+  { emoji: "\u{1F6EB}", key: "start", kind: "date" },
+  { emoji: "\u23F3", key: "scheduled", kind: "date" },
+  { emoji: "\u231B", key: "scheduled", kind: "date" },
+  { emoji: "\u2705", key: "completion", kind: "date" },
+  { emoji: "\u2795", key: "created", kind: "date" },
+  { emoji: "\u274C", key: "cancelled", kind: "date" },
+  { emoji: "\u{1F194}", key: "id", kind: "token" },
+  { emoji: "\u26D4", key: "blockedBy", kind: "token" }
+];
+var EMOJI_VALUE_RE = {
+  date: /^[ \t]*(\d{4}-\d{2}-\d{2})(?=[ \t]|$)/,
+  token: /^[ \t]*([A-Za-z0-9_,]{1,64})(?=[ \t]|$)/
+};
+var EMOJI_VALUE_EXACT = {
+  date: /^\d{4}-\d{2}-\d{2}$/,
+  token: /^[A-Za-z0-9_,]{1,64}$/
+};
+function emojiSpans(text) {
+  const spans = [];
+  for (const { emoji, key, kind } of TASK_EMOJI) {
+    let from = 0;
+    for (; ; ) {
+      const idx = text.indexOf(emoji, from);
+      if (idx < 0) break;
+      from = idx + emoji.length;
+      const m = EMOJI_VALUE_RE[kind].exec(text.slice(from));
+      if (!m) continue;
+      spans.push({ key, emoji, value: m[1], start: idx, end: from + m[0].length });
+      break;
+    }
+  }
+  return spans.sort((a, b) => a.start - b.start);
+}
+var TASK_PRIORITY = [
+  { emoji: "\u{1F53A}", value: "highest" },
+  { emoji: "\u23EB", value: "high" },
+  { emoji: "\u{1F53C}", value: "medium" },
+  { emoji: "\u{1F53D}", value: "low" },
+  { emoji: "\u23EC", value: "lowest" }
+];
+var TASK_STATUS_KEYS = /* @__PURE__ */ new Set(["task.status", "task.checked", "task.done"]);
+function hashTaskText(text) {
+  return fnv6(text.trim().toLowerCase().replace(/\s+/g, " "));
+}
+function fnv6(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h.toString(36).padStart(6, "0").slice(-6);
+}
+function occurrenceHash(base, ordinal) {
+  return ordinal === 0 ? base : fnv6(`${base}#${ordinal}`);
+}
+function parseTaskId(id) {
+  const m = /^(.*)::L(\d+)::([0-9a-z]{6})$/.exec(id);
+  if (!m) return null;
+  return { path: m[1], line: Number(m[2]), hash: m[3] };
+}
+function forEachLiveLine(lines, visit) {
+  let i = 0;
+  if (lines[0] !== void 0 && /^---\s*$/.test(lines[0])) {
+    let j = 1;
+    while (j < lines.length && !/^---\s*$/.test(lines[j])) j++;
+    if (j < lines.length) i = j + 1;
+  }
+  const fenced = fencedLines(lines, i);
+  let inComment = false;
+  for (; i < lines.length; i++) {
+    const raw = lines[i];
+    if (fenced[i]) continue;
+    const visible = stripBlockComment(raw, inComment);
+    inComment = visible.inComment;
+    visit(i, raw, visible.text);
+  }
+}
+function liveTaskHashes(lines) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Map();
+  forEachLiveLine(lines, (i, raw, visible) => {
+    var _a;
+    if (!TASK_RE.test(visible)) return;
+    const m = TASK_RE.exec(raw);
+    if (!m) return;
+    const base = hashTaskText(stripTaskMetadata(m[3]));
+    const ordinal = (_a = seen.get(base)) != null ? _a : 0;
+    seen.set(base, ordinal + 1);
+    out.push({ line: i, base, hash: occurrenceHash(base, ordinal) });
+  });
+  return out;
+}
+function relocateTask(lines, ref) {
+  const live = liveTaskHashes(lines);
+  const atLine = live.find((t) => t.line === ref.line);
+  if (atLine && atLine.hash === ref.hash) return ref.line;
+  const hits = live.filter((t) => t.hash === ref.hash);
+  if (hits.length !== 1) return -1;
+  if (live.filter((t) => t.base === hits[0].base).length > 1) return -1;
+  return hits[0].line;
+}
+function stripTaskMetadata(text) {
+  const spans = mergeSpans([
+    ...emojiSpans(text).map((s) => ({ start: s.start, end: s.end })),
+    ...scanLineFieldSpans(text).filter((s) => s.wrapper !== "line").map((s) => ({ start: s.start, end: s.end }))
+  ]);
+  let out = text;
+  for (let i = spans.length - 1; i >= 0; i--) {
+    out = `${out.slice(0, spans[i].start)} ${out.slice(spans[i].end)}`;
+  }
+  for (const { emoji } of TASK_PRIORITY) out = out.split(emoji).join(" ");
+  out = out.replace(BLOCK_ID_RE, "");
+  return out.replace(/\s+/g, " ").trim();
+}
+function mergeSpans(spans) {
+  const sorted = [...spans].sort((a, b) => a.start - b.start);
+  const out = [];
+  for (const span of sorted) {
+    const last = out[out.length - 1];
+    if (last && span.start <= last.end) last.end = Math.max(last.end, span.end);
+    else out.push({ ...span });
+  }
+  return out;
+}
+function readTaskFields(text) {
+  const fields = {};
+  for (const f of scanLineFieldSpans(text)) {
+    if (f.wrapper !== "line" && !(f.key in fields)) fields[f.key] = f.value;
+  }
+  for (const span of emojiSpans(text)) {
+    if (!(span.key in fields)) fields[span.key] = span.value;
+  }
+  if (!("priority" in fields)) {
+    for (const { emoji, value } of TASK_PRIORITY) {
+      if (text.includes(emoji)) {
+        fields.priority = value;
+        break;
+      }
+    }
+  }
+  return addLowercaseAliases(fields);
+}
+function collectTags(text) {
+  const out = [];
+  const re = /(^|\s)#([\p{L}\p{N}_/-]+)/gu;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (!out.includes(m[2])) out.push(m[2]);
+  }
+  return out;
+}
+function indentWidth(indent) {
+  let w = 0;
+  for (const ch of indent) w += ch === "	" ? 4 : 1;
+  return w;
+}
+function parseTasks(body, path, noteName) {
+  const lines = body.split(/\r?\n/);
+  const out = [];
+  let section = "";
+  const stack = [];
+  const seen = /* @__PURE__ */ new Map();
+  forEachLiveLine(lines, (i, raw, visible) => {
+    var _a;
+    if (!TASK_RE.test(visible) && !HEADING_RE.test(visible)) return;
+    const h = HEADING_RE.exec(raw);
+    if (h) {
+      section = h[2].trim();
+      stack.length = 0;
+      return;
+    }
+    const m = TASK_RE.exec(raw);
+    if (!m) return;
+    const width = indentWidth(m[1]);
+    while (stack.length > 0 && stack[stack.length - 1].width >= width) stack.pop();
+    const parent = stack.length > 0 ? stack[stack.length - 1].line : null;
+    stack.push({ width, line: i });
+    const status = m[2];
+    const rawText = m[3];
+    const text = stripTaskMetadata(rawText);
+    const base = hashTaskText(text);
+    const ordinal = (_a = seen.get(base)) != null ? _a : 0;
+    seen.set(base, ordinal + 1);
+    out.push({
+      id: `${path}::L${i}::${occurrenceHash(base, ordinal)}`,
+      path,
+      note: noteName,
+      line: i,
+      level: stack.length - 1,
+      status,
+      checked: status.trim().length > 0,
+      done: status === "x" || status === "X",
+      text,
+      raw,
+      section,
+      parent,
+      tags: collectTags(rawText),
+      fields: readTaskFields(rawText)
+    });
+  });
+  return out;
+}
+function valueToText(value) {
+  var _a;
+  if (value === null || value === void 0) return "";
+  if (Array.isArray(value)) return value.map((v) => valueToText(v)).join(", ");
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return (_a = JSON.stringify(value)) != null ? _a : "";
+}
+function safeFieldValue(value, wrapper) {
+  const text = valueToText(value).replace(/\r\n|[\r\n\u2028\u2029]/g, " ").replace(/`/g, "'").replace(/%(?=%)/g, "% ");
+  if (wrapper === "round") return text.replace(/[()]/g, (c) => c === "(" ? "{" : "}");
+  return text.replace(/\[\[[^\]\n]*\]\]|[[\]]/g, (m) => m.length > 1 ? m : m === "[" ? "{" : "}");
+}
+function setTaskStatusChar(raw, char) {
+  const m = TASK_RE.exec(raw);
+  if (!m) return raw;
+  const c = char.length === 1 ? char : " ";
+  const open = raw.indexOf("[", m[1].length);
+  if (open < 0) return raw;
+  return `${raw.slice(0, open)}[${c}]${raw.slice(open + 3)}`;
+}
+function statusCharFor(key, value, remove) {
+  var _a;
+  if (remove) return " ";
+  if (key === "task.status") {
+    const s2 = valueToText(value);
+    if (s2.length === 0) return " ";
+    const first = String.fromCodePoint((_a = s2.codePointAt(0)) != null ? _a : 32);
+    return first.length === 1 && first !== "\n" && first !== "\r" ? first : null;
+  }
+  const s = valueToText(value).trim().toLowerCase();
+  const truthy = s === "true" || s === "yes" || s === "1" || s === "done" || s === "x";
+  return truthy ? "x" : " ";
+}
+var TASK_LINE_SWAP = "task.$swap";
+function applyTaskWrites(raw, writes) {
+  if (!TASK_RE.test(raw)) return { raw, inverse: [] };
+  const swap = writes.find((w) => w.key === TASK_LINE_SWAP);
+  if (swap) return applyLineSwap(raw, swap, writes.length);
+  let line = raw;
+  const batch = lastWritePerField(writes).map(({ listElement, ...plain }) => {
+    var _a, _b;
+    if (!listElement) return plain;
+    const current = lookupField(readTaskFields((_b = (_a = TASK_RE.exec(raw)) == null ? void 0 : _a[3]) != null ? _b : ""), plain.key);
+    return current.found ? listElementWrite(current.value, listElement.value, plain) : plain;
+  });
+  if (batch.some((w) => w === null)) return { raw, inverse: [], refused: "that value is no longer in its list" };
+  for (const write of batch) {
+    const refused = refuseKey(write.key);
+    if (refused) return { raw, inverse: [], refused };
+    if (TASK_STATUS_KEYS.has(write.key)) {
+      const char = statusCharFor(write.key, write.value, write.remove);
+      if (char === null) return { raw, inverse: [], refused: "a checkbox holds a single character" };
+      line = setTaskStatusChar(line, char);
+      continue;
+    }
+    line = writeOneField(line, write);
+  }
+  if (line === raw) return { raw, inverse: [] };
+  const problem = checkTaskWrite(raw, line, batch);
+  if (problem) return { raw, inverse: [], refused: problem };
+  const undo = { expect: line, restore: raw };
+  return { raw: line, inverse: [{ key: TASK_LINE_SWAP, value: undo }] };
+}
+function applyLineSwap(raw, swap, count2) {
+  const v = swap.value;
+  if (count2 !== 1 || typeof (v == null ? void 0 : v.expect) !== "string" || typeof v.restore !== "string") {
+    return { raw, inverse: [], refused: "the undo record is malformed" };
+  }
+  if (raw !== v.expect) {
+    return {
+      raw,
+      inverse: [],
+      refused: "the task was edited after that change, and undoing it would overwrite the newer edit"
+    };
+  }
+  if (v.restore === raw) return { raw, inverse: [] };
+  const redo = { expect: v.restore, restore: raw };
+  return { raw: v.restore, inverse: [{ key: TASK_LINE_SWAP, value: redo }] };
+}
+function lastWritePerField(writes) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (let i = writes.length - 1; i >= 0; i--) {
+    const w = writes[i];
+    const id = TASK_STATUS_KEYS.has(w.key) ? "task.status" : w.key.toLowerCase();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.unshift(w);
+  }
+  return out;
+}
+function refuseKey(key) {
+  if (TASK_STATUS_KEYS.has(key)) return null;
+  if (TASK_ROW_PROPS.has(key) || key === TASK_LINE_SWAP) return `"${key}" is computed from the task line and can't be set`;
+  if (key.trim() !== key || !isValidKey(key) || /[[\]()`\n\r]/.test(key) || key.includes("::") || key.includes("%%") || /^[*_~]|[*_~]$/.test(key)) {
+    return `"${key}" can't be written as an inline field name`;
+  }
+  return null;
+}
+function checkTaskWrite(before, after, writes) {
+  const a = TASK_RE.exec(after);
+  const b = TASK_RE.exec(before);
+  if (!a || !b) return "the result would no longer be a task line";
+  if (hashTaskText(stripTaskMetadata(a[3])) !== hashTaskText(stripTaskMetadata(b[3]))) {
+    return "the value would change the task's own text";
+  }
+  for (const delim of ["%%", "`"]) {
+    const was = count(before, delim);
+    const now = count(after, delim);
+    if (now > was || now % 2 !== was % 2) return "the value would open a comment or code span";
+  }
+  const written = new Set(writes.map((w) => w.key.toLowerCase()));
+  const fieldsBefore = readTaskFields(b[3]);
+  const fieldsAfter = readTaskFields(a[3]);
+  for (const key of /* @__PURE__ */ new Set([...Object.keys(fieldsBefore), ...Object.keys(fieldsAfter)])) {
+    if (written.has(key.toLowerCase())) continue;
+    if (JSON.stringify(fieldsAfter[key]) !== JSON.stringify(fieldsBefore[key])) {
+      return `the value would disturb another field ("${key}")`;
+    }
+  }
+  for (const w of writes) {
+    if (TASK_STATUS_KEYS.has(w.key)) continue;
+    const found = lookupField(fieldsAfter, w.key).found;
+    if (w.remove && found) return `"${w.key}" is set in a way that can't be removed from here`;
+    if (!w.remove && !found) return `the new "${w.key}" value wouldn't read back`;
+  }
+  return null;
+}
+function count(s, needle) {
+  return s.split(needle).length - 1;
+}
+function spliceTaskLine(data, ref, writes) {
+  const parts = data.split(/(\r?\n)/);
+  const lines = [];
+  for (let i = 0; i < parts.length; i += 2) lines.push(parts[i]);
+  const idx = relocateTask(lines, ref);
+  if (idx < 0) return { text: data, inverse: [], status: "notfound" };
+  const result = applyTaskWrites(lines[idx], writes);
+  if (result.refused) return { text: data, inverse: [], status: "refused", reason: result.refused };
+  if (result.raw === lines[idx]) return { text: data, inverse: [], status: "unchanged" };
+  parts[idx * 2] = result.raw;
+  return { text: parts.join(""), inverse: result.inverse, status: "written" };
+}
+function lookupField(fields, key) {
+  const target = key.toLowerCase();
+  for (const [k, v] of Object.entries(fields)) {
+    if (k.toLowerCase() === target) return { found: true, value: v };
+  }
+  return { found: false };
+}
+function fieldSpan(line, key) {
+  const target = key.toLowerCase();
+  return scanLineFieldSpans(line).find((s) => s.wrapper !== "line" && s.key.toLowerCase() === target);
+}
+function writeOneField(line, write) {
+  const key = write.key;
+  if (write.remove) {
+    let next = line;
+    for (let guard = 0; guard < 16; guard++) {
+      const span2 = fieldSpan(next, key);
+      if (span2) {
+        next = cutSpan(next, span2.start, span2.end);
+        continue;
+      }
+      const stripped = removeEmoji(next, key);
+      if (stripped === null) break;
+      next = stripped;
+    }
+    return next;
+  }
+  const span = fieldSpan(line, key);
+  if (span) {
+    const round2 = span.wrapper === "round";
+    const text2 = safeFieldValue(write.value, round2 ? "round" : "square");
+    const open = round2 ? "(" : "[";
+    const close = round2 ? ")" : "]";
+    return `${line.slice(0, span.start)}${open}${span.rawKey}:: ${text2}${close}${line.slice(span.end)}`;
+  }
+  const text = safeFieldValue(write.value, "square");
+  const replaced = rewriteEmoji(line, key, text);
+  if (replaced !== null) return replaced;
+  const blockId = BLOCK_ID_RE.exec(line);
+  if (blockId) {
+    const head = line.slice(0, blockId.index).replace(/\s+$/, "");
+    return `${head} [${key}:: ${text}]${blockId[0].replace(/\s+$/, "")}`;
+  }
+  return `${line.replace(/\s+$/, "")} [${key}:: ${text}]`;
+}
+function rewriteEmoji(line, key, value) {
+  if (key.toLowerCase() === "priority") {
+    for (const { emoji } of TASK_PRIORITY) {
+      if (!line.includes(emoji)) continue;
+      const next = priorityEmojiFor(value);
+      if (!next) return null;
+      return line.split(emoji).join(next);
+    }
+    return null;
+  }
+  const span = emojiSpans(line).find((s) => s.key.toLowerCase() === key.toLowerCase());
+  if (!span) return null;
+  const entry = TASK_EMOJI.find((e) => e.emoji === span.emoji);
+  if (!entry || !EMOJI_VALUE_EXACT[entry.kind].test(value)) return null;
+  return `${line.slice(0, span.start)}${span.emoji} ${value}${line.slice(span.end)}`;
+}
+function removeEmoji(line, key) {
+  if (key.toLowerCase() === "priority") {
+    for (const { emoji } of TASK_PRIORITY) {
+      const at = line.indexOf(emoji);
+      if (at >= 0) return cutSpan(line, at, at + emoji.length);
+    }
+    return null;
+  }
+  const span = emojiSpans(line).find((s) => s.key.toLowerCase() === key.toLowerCase());
+  return span ? cutSpan(line, span.start, span.end) : null;
+}
+function priorityEmojiFor(value) {
+  const hit = TASK_PRIORITY.find((p) => p.value === value.trim().toLowerCase());
+  return hit ? hit.emoji : "";
+}
+function cutSpan(line, start, end) {
+  const head = line.slice(0, start).replace(/[ \t]+$/, "");
+  const tail = line.slice(end).replace(/^[ \t]+/, "");
+  return tail.length > 0 ? `${head} ${tail}` : head;
+}
+
+// src/model/rowId.ts
+function notePathOf(id) {
+  var _a, _b;
+  const base = sourceRowId(id);
+  return (_b = (_a = parseTaskId(base)) == null ? void 0 : _a.path) != null ? _b : base;
+}
+function taskRefOf(id) {
+  return parseTaskId(sourceRowId(id));
+}
+
+// src/model/row.ts
+var COMPUTED_FILE_PROPS = /* @__PURE__ */ new Set([
+  "file.name",
+  "file.path",
+  "file.folder",
+  "file.ext",
+  "file.tags",
+  "file.ctime",
+  "file.mtime",
+  "file.size",
+  "file.inlinks",
+  "file.outlinks",
+  "file.inlinkCount",
+  "file.outlinkCount",
+  "file.taskCount",
+  "file.doneTaskCount",
+  "file.openTaskCount"
+]);
+function fileProps(note) {
+  const props = {
+    "file.name": note.name,
+    "file.path": note.path,
+    "file.folder": note.folder,
+    "file.ext": note.ext,
+    "file.tags": note.tags,
+    "file.ctime": note.ctime,
+    "file.mtime": note.mtime,
+    "file.size": note.size
+  };
+  if (note.links) Object.assign(props, note.links);
+  if (note.tasks) {
+    const done = note.tasks.filter((t) => t.done).length;
+    props["file.taskCount"] = note.tasks.length;
+    props["file.doneTaskCount"] = done;
+    props["file.openTaskCount"] = note.tasks.length - done;
+  }
+  return props;
+}
+function makeScope(note, formulas = {}, ctx, overlay) {
+  var _a;
+  const base = { ...(_a = note.inline) != null ? _a : {}, ...note.frontmatter, ...fileProps(note), ...overlay };
+  const memo = /* @__PURE__ */ new Map();
+  const inProgress = /* @__PURE__ */ new Set();
+  const scope = {
+    get(name) {
+      if (name in base) return base[name];
+      if (name in formulas) {
+        if (memo.has(name)) return memo.get(name);
+        if (inProgress.has(name)) return null;
+        inProgress.add(name);
+        let result = null;
+        try {
+          result = compileExpression(formulas[name]).eval(scope);
+        } catch (e) {
+          result = null;
+        }
+        inProgress.delete(name);
+        memo.set(name, result);
+        return result;
+      }
+      if ((ctx == null ? void 0 : ctx.lookup) && name.includes(".")) {
+        return traverseLink(scope, name, ctx.lookup);
+      }
+      return void 0;
+    }
+  };
+  return scope;
+}
+function makeRow(note, formulas = {}, ctx, overlay) {
+  return { id: note.path, name: note.name, note, scope: makeScope(note, formulas, ctx, overlay) };
 }
 
 // src/query/filter.ts
@@ -4995,15 +5184,29 @@ async function writeRowProperties(plugin, path, writes, opts) {
   const file = app.vault.getAbstractFileByPath(notePathOf(path));
   if (!(file instanceof import_obsidian2.TFile)) return false;
   let inverse = [];
+  let stale = false;
   try {
     await app.fileManager.processFrontMatter(file, (frontmatter) => {
       const target = frontmatter;
-      inverse = invertWrites(target, writes);
+      const resolved = [];
       for (const write of writes) {
+        const next = resolveListElement(target[write.key], write);
+        if (next === null) {
+          stale = true;
+          return;
+        }
+        resolved.push(next);
+      }
+      inverse = invertWrites(target, resolved);
+      for (const write of resolved) {
         if (write.remove) delete target[write.key];
         else target[write.key] = write.value;
       }
     });
+    if (stale) {
+      new import_obsidian2.Notice(`Bases Power Pack: didn't change "${file.basename}": that value is no longer in its list.`);
+      return false;
+    }
     if ((opts == null ? void 0 : opts.record) !== false) plugin.undo.record((_a = opts == null ? void 0 : opts.label) != null ? _a : "Edit", path, inverse, opts == null ? void 0 : opts.batch);
     plugin.patchNote(file);
     return true;
@@ -5020,10 +5223,13 @@ async function writeTaskLine(plugin, rowId, ref, writes, opts) {
   let inverse = [];
   let applied = false;
   let missing = false;
+  let refused = null;
   try {
     await app.vault.process(file, (data) => {
+      var _a2;
       const result = spliceTaskLine(data, ref, writes);
       if (result.status === "notfound") missing = true;
+      if (result.status === "refused") refused = (_a2 = result.reason) != null ? _a2 : "it couldn't be written safely";
       if (result.status !== "written") return data;
       inverse = result.inverse;
       applied = true;
@@ -5039,10 +5245,29 @@ async function writeTaskLine(plugin, rowId, ref, writes, opts) {
     );
     return false;
   }
+  if (refused !== null) {
+    new import_obsidian2.Notice(`Bases Power Pack: didn't change the task in "${file.basename}": ${refused}.`);
+    return false;
+  }
   if (!applied) return false;
   if ((opts == null ? void 0 : opts.record) !== false) plugin.undo.record((_a = opts == null ? void 0 : opts.label) != null ? _a : "Edit", rowId, inverse, opts == null ? void 0 : opts.batch);
   plugin.patchNote(file);
   return true;
+}
+async function writeRowFields(plugin, row, writes, opts) {
+  var _a, _b;
+  const marked = flattenElementWrites(row, writes);
+  if (!marked) {
+    noticeFlattenRefused((_b = (_a = row.flatten) == null ? void 0 : _a.binding) != null ? _b : "", 1);
+    return false;
+  }
+  return writeRowProperties(plugin, row.id, marked, opts);
+}
+function noticeFlattenRefused(binding, count2) {
+  const what = count2 === 1 ? "This card holds" : `${count2} cards hold`;
+  new import_obsidian2.Notice(
+    `${what} one value of the FLATTEN list "${binding}", which is an alias or a computed expression, so there is no property to edit. Nothing was written for ${count2 === 1 ? "it" : "them"}.`
+  );
 }
 async function ensureParentFolders(app, path) {
   const parts = path.split("/");
@@ -5248,12 +5473,12 @@ var ConfirmModal = class extends import_obsidian3.Modal {
   }
 };
 var BulkEditModal = class extends import_obsidian3.Modal {
-  constructor(app, count, onApply) {
+  constructor(app, count2, onApply) {
     super(app);
     this.prop = "";
     this.op = "set";
     this.value = "";
-    this.count = count;
+    this.count = count2;
     this.onApply = onApply;
   }
   onOpen() {
@@ -5370,7 +5595,7 @@ function editFieldViaModal(env, row, field, after) {
     placeholder: field,
     onSubmit: (v) => {
       const { value, remove } = coerceFieldInput(field, v, previous);
-      void writeRowProperty(env.plugin, row.id, field, value, remove, { label: `Edit "${field}"` }).then(after);
+      void writeRowFields(env.plugin, row, [{ key: field, value, remove }], { label: `Edit "${field}"` }).then(after);
     }
   }).open();
 }
@@ -5975,7 +6200,7 @@ function dateMs(value) {
   return Number.isFinite(t) ? t : null;
 }
 function toBuckets(counts) {
-  return [...counts.entries()].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count);
+  return [...counts.entries()].map(([label, count2]) => ({ label, count: count2 })).sort((a, b) => b.count - a.count);
 }
 function computeAnalytics(rows, opts) {
   var _a, _b, _c, _d, _e, _f, _g, _h;
@@ -6145,14 +6370,14 @@ function sanitizeWipLimit(raw) {
 function limitFor(limits, columnName) {
   return sanitizeWipLimit(limits[columnName]);
 }
-function isOverWip(count, limit) {
-  return limit !== null && count > limit;
+function isOverWip(count2, limit) {
+  return limit !== null && count2 > limit;
 }
 function dropWouldExceed(targetCount, limit) {
   return limit !== null && targetCount + 1 > limit;
 }
-function formatWipCount(count, limit) {
-  return limit !== null ? `${count} / ${limit}` : String(count);
+function formatWipCount(count2, limit) {
+  return limit !== null ? `${count2} / ${limit}` : String(count2);
 }
 
 // src/views/dnd.ts
@@ -6755,18 +6980,18 @@ var KanbanBoard = class {
         evt.stopPropagation();
         this.beginColumnRename(nameSpan, column.name, groupBy);
       });
-      const count = colLabel.createSpan({
+      const count2 = colLabel.createSpan({
         cls: "bpp-count",
         text: formatWipCount(trueCount, wipLimit)
       });
       if (wipLimit !== null) {
-        count.addClass("has-wip");
-        count.setAttr(
+        count2.addClass("has-wip");
+        count2.setAttr(
           "title",
           `${trueCount} of ${wipLimit} (WIP limit)` + (column.rows.length !== trueCount ? ` \xB7 ${column.rows.length} shown` : "")
         );
       } else if (column.rows.length !== trueCount) {
-        count.setAttr("title", `${column.rows.length} shown \xB7 ${trueCount} total`);
+        count2.setAttr("title", `${column.rows.length} shown \xB7 ${trueCount} total`);
       }
       const actions = colHead.createDiv({ cls: "bpp-column-actions" });
       if (this.canWrite) {
@@ -7189,7 +7414,7 @@ var KanbanBoard = class {
       settled = true;
       this.host.endInteraction();
       const { value, remove } = coerceFieldInput(field, input.value, previous);
-      await writeRowProperty(this.plugin, row.id, field, value, remove, { label: `Edit "${field}"` });
+      await writeRowFields(this.plugin, row, [{ key: field, value, remove }], { label: `Edit "${field}"` });
       this.host.requestRender();
     };
     input.addEventListener("click", (event) => event.stopPropagation());
@@ -7347,7 +7572,9 @@ var KanbanBoard = class {
     if (!to || to === from) return;
     const key = groupBy || "status";
     const boardRows = (_a = this.lastColumnRows.get(from)) != null ? _a : [];
-    const targets = boardRows.map((r) => r.note).filter((n) => toStr(n.frontmatter[key]) === from);
+    const targets = [...new Map(boardRows.map((r) => [r.note.path, r.note])).values()].filter(
+      (n) => toStr(n.frontmatter[key]) === from
+    );
     if (boardRows.length > 0 && targets.length === 0) {
       new import_obsidian6.Notice(`"${key}" is a formula or computed field \u2014 rename the value at its source, not from the board.`);
       return;
@@ -7410,14 +7637,21 @@ var KanbanBoard = class {
       return;
     }
     let ok = 0;
+    let skipped = 0;
     const batch = this.plugin.undo.beginBatch(
       `Bulk ${op} "${prop}" on ${rows.length} note${rows.length === 1 ? "" : "s"}`
     );
     for (const row of rows) {
       const write = op === "clear" ? { key: prop, remove: true } : op === "toggle" ? { key: prop, value: !toBool(row.scope.get(prop)) } : { key: prop, value: coerceLiteral(value) };
-      if (await writeRowProperties(this.plugin, row.id, [write], { batch })) ok++;
+      const safe = flattenElementWrites(row, [write]);
+      if (!safe) {
+        skipped++;
+        continue;
+      }
+      if (await writeRowProperties(this.plugin, row.id, safe, { batch })) ok++;
     }
     this.plugin.undo.commitBatch(batch);
+    if (skipped > 0) noticeFlattenRefused(prop, skipped);
     new import_obsidian6.Notice(`Updated "${prop}" on ${ok} note${ok === 1 ? "" : "s"}.`);
     this.host.requestRender();
   }
@@ -7609,8 +7843,14 @@ var KanbanBoard = class {
     }
     if (crossLane && laneProp !== null) writes.push(laneWrite(laneProp, laneKey));
     if (writes.length === 0) return;
+    const safe = flattenElementWrites(row, writes);
+    if (!safe) {
+      noticeFlattenRefused(key, 1);
+      this.host.requestRender();
+      return;
+    }
     const automationWrites = crossColumn ? writes.length - 1 - (crossLane ? 1 : 0) : 0;
-    const ok = await writeRowProperties(this.plugin, row.id, writes, { label: `Move to "${columnName}"` });
+    const ok = await writeRowProperties(this.plugin, row.id, safe, { label: `Move to "${columnName}"` });
     if (ok && automationWrites > 0) {
       new import_obsidian6.Notice(`Moved to "${columnName}" \xB7 ${automationWrites} automation write${automationWrites === 1 ? "" : "s"}.`);
     }
@@ -7734,7 +7974,13 @@ var KanbanBoard = class {
     }
     if (crossLane && laneProp !== null) movedWrites.push(laneWrite(laneProp, laneKey));
     if (rankById.has(rowId)) movedWrites.push({ key: rankProp, value: rankById.get(rowId) });
-    if (movedWrites.length > 0) await writeRowProperties(this.plugin, rowId, movedWrites, { batch });
+    const safeMoved = flattenElementWrites(movedRow, movedWrites);
+    if (!safeMoved) {
+      noticeFlattenRefused(group, 1);
+      this.host.requestRender();
+      return;
+    }
+    if (safeMoved.length > 0) await writeRowProperties(this.plugin, rowId, safeMoved, { batch });
     for (const write of rankWrites) {
       if (write.id === rowId) continue;
       await writeRowProperties(this.plugin, write.id, [{ key: rankProp, value: write.rank }], { batch });
@@ -7854,8 +8100,8 @@ var KanbanBoard = class {
         evt.stopPropagation();
         this.beginColumnRename(swimName, name, groupBy);
       });
-      const count = head.createSpan({ cls: "bpp-count", text: formatWipCount(trueCount, wipLimit) });
-      if (wipLimit !== null) count.addClass("has-wip");
+      const count2 = head.createSpan({ cls: "bpp-count", text: formatWipCount(trueCount, wipLimit) });
+      if (wipLimit !== null) count2.addClass("has-wip");
       head.addEventListener("contextmenu", (evt) => this.openColumnMenu(evt, name, groupBy, false, columnNames));
     }
     if (model.lanes.length === 0) {
@@ -7946,8 +8192,8 @@ var KanbanBoard = class {
           this.beginColumnRename(nameSpan, name, groupBy);
         });
       }
-      const count = label.createSpan({ cls: "bpp-count", text: formatWipCount(trueCount, wipLimit) });
-      if (wipLimit !== null) count.addClass("has-wip");
+      const count2 = label.createSpan({ cls: "bpp-count", text: formatWipCount(trueCount, wipLimit) });
+      if (wipLimit !== null) count2.addClass("has-wip");
       const actions = head.createDiv({ cls: "bpp-column-actions" });
       addOverflowButton(actions, `column ${name}`, (a) => this.openColumnMenu(a, name, groupBy, false, columnNames));
       const strip = colEl.createDiv({ cls: "bpp-nested-subcols" });
@@ -8075,6 +8321,7 @@ var KanbanBoard = class {
     }
     const batch = this.plugin.undo.beginBatch(`Move ${targetRows.length} cards to "${columnName}"`);
     let moved = 0;
+    let refused = 0;
     for (const r of targetRows) {
       const crossColumn = toStr(r.scope.get(group)) !== columnName;
       const crossLane = laneProp !== null && laneKeyOf(r, laneProp) !== laneKey;
@@ -8088,11 +8335,17 @@ var KanbanBoard = class {
         }
       }
       if (crossLane && laneProp !== null) writes.push(laneWrite(laneProp, laneKey));
-      if (writes.length > 0 && await writeRowProperties(this.plugin, r.id, writes, { batch })) moved++;
+      const safe = flattenElementWrites(r, writes);
+      if (!safe) {
+        refused++;
+        continue;
+      }
+      if (safe.length > 0 && await writeRowProperties(this.plugin, r.id, safe, { batch })) moved++;
     }
     this.plugin.undo.commitBatch(batch);
     this.selected.clear();
     new import_obsidian6.Notice(`Moved ${moved} card${moved === 1 ? "" : "s"} to "${columnName}".`);
+    if (refused > 0) noticeFlattenRefused(group, refused);
     this.host.requestRender();
   }
   /**
@@ -9355,7 +9608,7 @@ var CalendarView = class extends PowerPackView {
     const row = this.rows.find((r) => r.id === rowId);
     if (!row) return;
     const original = row.scope.get(dateProp);
-    await writeRowProperty(this.plugin, rowId, dateProp, rescheduleDateValue(original, targetKey), false, {
+    await writeRowFields(this.plugin, row, [{ key: dateProp, value: rescheduleDateValue(original, targetKey) }], {
       label: `Reschedule to ${targetKey}`
     });
     await this.render();
@@ -11386,7 +11639,7 @@ var GanttView = class extends PowerPackView {
           new import_obsidian13.Notice("Enter a date as YYYY-MM-DD.");
           return;
         }
-        void writeRowProperty(this.plugin, row.id, prop, rescheduleDateValue(raw, key), false, {
+        void writeRowFields(this.plugin, row, [{ key: prop, value: rescheduleDateValue(raw, key) }], {
           label: `Set ${which} date`
         }).then(() => this.render());
       }
@@ -11401,7 +11654,7 @@ var GanttView = class extends PowerPackView {
     const moved = moveBarDates(startIso, endIso, deltaDays);
     const writes = [{ key: startProp, value: rescheduleDateValue(startRaw, moved.start) }];
     if (moved.end !== null) writes.push({ key: endProp, value: rescheduleDateValue(endRaw, moved.end) });
-    await writeRowProperties(this.plugin, row.id, writes, { label: `Move "${row.name}"` });
+    await writeRowFields(this.plugin, row, writes, { label: `Move "${row.name}"` });
     await this.render();
   }
   async applyResize(row, startProp, endProp, deltaDays) {
@@ -11411,7 +11664,7 @@ var GanttView = class extends PowerPackView {
     if (!startIso) return void this.render();
     const endIso = valueToDateString(endRaw);
     const nextEnd = resizeBarEnd(startIso, endIso, deltaDays);
-    await writeRowProperty(this.plugin, row.id, endProp, rescheduleDateValue(endRaw, nextEnd), false, {
+    await writeRowFields(this.plugin, row, [{ key: endProp, value: rescheduleDateValue(endRaw, nextEnd) }], {
       label: `Resize "${row.name}"`
     });
     await this.render();
@@ -12346,21 +12599,21 @@ var PivotView = class extends PowerPackView {
         () => this.openDrill(() => this.rowDrill(rowKey))
       );
       model.colKeys.forEach((colKey, ci) => {
-        const count = model.counts[ri][ci];
+        const count2 = model.counts[ri][ci];
         const cell = tr.createEl("td", { cls: "bpp-pivot-cell" });
-        if (count === 0) {
+        if (count2 === 0) {
           cell.addClass("is-empty");
           cell.setText("\xB7");
         } else {
           cell.setText(model.cells[ri][ci]);
-          cell.setAttr("title", `${count} note${count === 1 ? "" : "s"}`);
+          cell.setAttr("title", `${count2} note${count2 === 1 ? "" : "s"}`);
           if (s.pivotHeat) {
             cell.addClass("is-hot");
-            cell.style.setProperty("--bpp-heat", (count / maxCount).toFixed(3));
+            cell.style.setProperty("--bpp-heat", (count2 / maxCount).toFixed(3));
           }
           this.makeDrillable(
             cell,
-            `${count} note${count === 1 ? "" : "s"}: ${rowKey} \xD7 ${colKey}`,
+            `${count2} note${count2 === 1 ? "" : "s"}: ${rowKey} \xD7 ${colKey}`,
             () => this.openDrill(() => this.cellDrill(rowKey, colKey))
           );
         }
@@ -12437,8 +12690,8 @@ var PivotView = class extends PowerPackView {
   }
   /** Panel subtitle: the note count, plus the aggregated value when it's not just
    * a count (so a "sum of hours" cell says what the number means). */
-  cellSubtitle(count, display) {
-    const noun = `${count} note${count === 1 ? "" : "s"}`;
+  cellSubtitle(count2, display) {
+    const noun = `${count2} note${count2 === 1 ? "" : "s"}`;
     const agg = this.plugin.settings.pivotAggregation;
     return agg === "count" ? noun : `${noun} \xB7 ${agg} = ${display}`;
   }
@@ -13525,11 +13778,11 @@ var BasesPowerPackPlugin = class extends import_obsidian16.Plugin {
     const entry = this.undo.pop();
     if (!entry) return;
     let ok = 0;
-    for (const note of entry.notes) {
+    for (const note of [...entry.notes].reverse()) {
       if (await writeRowProperties(this, note.path, note.writes, { record: false })) ok++;
     }
     const missed = entry.notes.length - ok;
-    const detail = missed > 0 ? ` (${missed} no longer at ${missed === 1 ? "its" : "their"} original path)` : "";
+    const detail = missed > 0 ? ` (${missed} couldn't be restored)` : "";
     new import_obsidian16.Notice(`Undid "${entry.label}" \u2014 restored ${ok} note${ok === 1 ? "" : "s"}${detail}.`);
     this.refreshViews();
   }

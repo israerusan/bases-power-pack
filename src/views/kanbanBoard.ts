@@ -21,10 +21,18 @@ import { computeRollup } from "../query/rollup";
 import { buildQuickAddTitle } from "../query/kanbanActions";
 import { coerceFieldInput, formatFieldForEdit } from "../query/inlineEdit";
 import { coerceLiteral, computeRuleWrites, rulesForTransition } from "../query/automation";
+import { flattenElementWrites } from "../query/flatten";
 import { dropWouldExceed, formatWipCount, isOverWip, limitFor, sanitizeWipLimit } from "../query/wip";
 import { parseRank, planReorder, type RankItem } from "../query/ranking";
 import { evaluateSafe, toBool, toStr } from "../engine/expression";
-import { createSeededNote, writeRowProperties, writeRowProperty, type PropertyWrite } from "./viewData";
+import {
+	createSeededNote,
+	noticeFlattenRefused,
+	writeRowFields,
+	writeRowProperties,
+	writeRowProperty,
+	type PropertyWrite,
+} from "./viewData";
 import { BulkEditModal, ConfirmModal, FloatingEditModal, PromptModal, type BulkOp } from "./modals";
 import { DND_COLUMN, DND_ROW } from "./dnd";
 import { buildSwimlanes, laneKeyOf, laneWrite, SWIMLANE_EMPTY } from "../query/swimlane";
@@ -960,7 +968,7 @@ export class KanbanBoard implements HoverParent {
 			settled = true;
 			this.host.endInteraction();
 			const { value, remove } = coerceFieldInput(field, input.value, previous);
-			await writeRowProperty(this.plugin, row.id, field, value, remove, { label: `Edit "${field}"` });
+			await writeRowFields(this.plugin, row, [{ key: field, value, remove }], { label: `Edit "${field}"` });
 			this.host.requestRender();
 		};
 		input.addEventListener("click", (event) => event.stopPropagation());
@@ -1173,7 +1181,11 @@ export class KanbanBoard implements HoverParent {
 		// membership the column shows. Only rows whose RAW frontmatter[key] equals `from`
 		// are writable (a formula/computed group-by can't be written without shadowing it).
 		const boardRows = this.lastColumnRows.get(from) ?? [];
-		const targets = boardRows.map((r) => r.note).filter((n) => toStr(n.frontmatter[key]) === from);
+		// One entry per NOTE: on a task or FLATTEN board several rows share a note,
+		// and rewriting it once per row would stack undo records for one change.
+		const targets = [...new Map(boardRows.map((r) => [r.note.path, r.note])).values()].filter(
+			(n) => toStr(n.frontmatter[key]) === from
+		);
 		if (boardRows.length > 0 && targets.length === 0) {
 			new Notice(`"${key}" is a formula or computed field — rename the value at its source, not from the board.`);
 			return;
@@ -1254,6 +1266,7 @@ export class KanbanBoard implements HoverParent {
 			return;
 		}
 		let ok = 0;
+		let skipped = 0;
 		const batch = this.plugin.undo.beginBatch(
 			`Bulk ${op} "${prop}" on ${rows.length} note${rows.length === 1 ? "" : "s"}`
 		);
@@ -1264,9 +1277,15 @@ export class KanbanBoard implements HoverParent {
 					: op === "toggle"
 						? { key: prop, value: !toBool(row.scope.get(prop)) }
 						: { key: prop, value: coerceLiteral(value) };
-			if (await writeRowProperties(this.plugin, row.id, [write], { batch })) ok++;
+			const safe = flattenElementWrites(row, [write]);
+			if (!safe) {
+				skipped++;
+				continue;
+			}
+			if (await writeRowProperties(this.plugin, row.id, safe, { batch })) ok++;
 		}
 		this.plugin.undo.commitBatch(batch);
+		if (skipped > 0) noticeFlattenRefused(prop, skipped);
 		new Notice(`Updated "${prop}" on ${ok} note${ok === 1 ? "" : "s"}.`);
 		this.host.requestRender();
 	}
@@ -1496,8 +1515,14 @@ export class KanbanBoard implements HoverParent {
 		}
 		if (crossLane && laneProp !== null) writes.push(laneWrite(laneProp, laneKey));
 		if (writes.length === 0) return;
+		const safe = flattenElementWrites(row, writes);
+		if (!safe) {
+			noticeFlattenRefused(key, 1);
+			this.host.requestRender();
+			return;
+		}
 		const automationWrites = crossColumn ? writes.length - 1 - (crossLane ? 1 : 0) : 0;
-		const ok = await writeRowProperties(this.plugin, row.id, writes, { label: `Move to "${columnName}"` });
+		const ok = await writeRowProperties(this.plugin, row.id, safe, { label: `Move to "${columnName}"` });
 		if (ok && automationWrites > 0) {
 			new Notice(`Moved to "${columnName}" · ${automationWrites} automation write${automationWrites === 1 ? "" : "s"}.`);
 		}
@@ -1654,7 +1679,13 @@ export class KanbanBoard implements HoverParent {
 		}
 		if (crossLane && laneProp !== null) movedWrites.push(laneWrite(laneProp, laneKey));
 		if (rankById.has(rowId)) movedWrites.push({ key: rankProp, value: rankById.get(rowId) });
-		if (movedWrites.length > 0) await writeRowProperties(this.plugin, rowId, movedWrites, { batch });
+		const safeMoved = flattenElementWrites(movedRow, movedWrites);
+		if (!safeMoved) {
+			noticeFlattenRefused(group, 1);
+			this.host.requestRender();
+			return;
+		}
+		if (safeMoved.length > 0) await writeRowProperties(this.plugin, rowId, safeMoved, { batch });
 
 		// Every other card touched by a renumber gets its rank only.
 		for (const write of rankWrites) {
@@ -2044,6 +2075,7 @@ export class KanbanBoard implements HoverParent {
 
 		const batch = this.plugin.undo.beginBatch(`Move ${targetRows.length} cards to "${columnName}"`);
 		let moved = 0;
+		let refused = 0;
 		for (const r of targetRows) {
 			const crossColumn = toStr(r.scope.get(group)) !== columnName;
 			const crossLane = laneProp !== null && laneKeyOf(r, laneProp) !== laneKey;
@@ -2057,11 +2089,17 @@ export class KanbanBoard implements HoverParent {
 				}
 			}
 			if (crossLane && laneProp !== null) writes.push(laneWrite(laneProp, laneKey));
-			if (writes.length > 0 && (await writeRowProperties(this.plugin, r.id, writes, { batch }))) moved++;
+			const safe = flattenElementWrites(r, writes);
+			if (!safe) {
+				refused++;
+				continue;
+			}
+			if (safe.length > 0 && (await writeRowProperties(this.plugin, r.id, safe, { batch }))) moved++;
 		}
 		this.plugin.undo.commitBatch(batch);
 		this.selected.clear();
 		new Notice(`Moved ${moved} card${moved === 1 ? "" : "s"} to "${columnName}".`);
+		if (refused > 0) noticeFlattenRefused(group, refused);
 		this.host.requestRender();
 	}
 

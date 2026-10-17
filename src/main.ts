@@ -451,13 +451,18 @@ export default class BasesPowerPackPlugin extends Plugin {
 		const entry = this.undo.pop();
 		if (!entry) return;
 		let ok = 0;
-		for (const note of entry.notes) {
+		// Newest first. A batch can write one note (or one task line) more than
+		// once (two FLATTEN copies of a note, several tasks on one host note), and
+		// each inverse holds the value the previous write left. Applied oldest
+		// first, undo would end on an intermediate value instead of the original.
+		for (const note of [...entry.notes].reverse()) {
 			if (await writeRowProperties(this, note.path, note.writes, { record: false })) ok++;
 		}
 		const missed = entry.notes.length - ok;
-		// A note may have been renamed/moved/deleted since the edit, so its inverse
-		// can't land — say so rather than reporting a clean, complete undo.
-		const detail = missed > 0 ? ` (${missed} no longer at ${missed === 1 ? "its" : "their"} original path)` : "";
+		// A note may have been renamed, moved or deleted since the edit, or a task
+		// line edited again (its undo then refuses rather than overwrite the newer
+		// text, with its own notice). Say so rather than report a clean undo.
+		const detail = missed > 0 ? ` (${missed} couldn't be restored)` : "";
 		new Notice(`Undid "${entry.label}" — restored ${ok} note${ok === 1 ? "" : "s"}${detail}.`);
 		this.refreshViews();
 	}

@@ -9,6 +9,7 @@ import {
 	type BaseDefinition,
 } from "../bases/baseDefinition";
 import type { FilterNode } from "../query/filter";
+import { flattenElementWrites, resolveListElement } from "../query/flatten";
 import { linkProps } from "../query/linkIndex";
 import { spliceTaskLine, type TaskRef } from "../query/tasks";
 import { invertWrites, type UndoBatch } from "../query/undo";
@@ -92,6 +93,10 @@ export interface PropertyWrite {
 	key: string;
 	value?: unknown;
 	remove?: boolean;
+	/** Set by {@link flattenElementWrites}: this write edits ONE element of the
+	 * list at `key` (the element a FLATTEN row carries), not the whole list. It
+	 * is resolved against the live value inside the write itself. */
+	listElement?: { value: unknown };
 }
 
 /**
@@ -117,16 +122,32 @@ export async function writeRowProperties(
 	const file = app.vault.getAbstractFileByPath(notePathOf(path));
 	if (!(file instanceof TFile)) return false;
 	let inverse: PropertyWrite[] = [];
+	let stale = false;
 	try {
 		await app.fileManager.processFrontMatter(file, (frontmatter) => {
 			const target = frontmatter as Record<string, unknown>;
-			// Capture the inverse against the pre-write state, then apply.
-			inverse = invertWrites(target, writes);
+			// Resolve FLATTEN element writes against the value as it is NOW, so a
+			// batch over two copies of one note builds on its own first write.
+			const resolved: PropertyWrite[] = [];
 			for (const write of writes) {
+				const next = resolveListElement(target[write.key], write);
+				if (next === null) {
+					stale = true;
+					return;
+				}
+				resolved.push(next);
+			}
+			// Capture the inverse against the pre-write state, then apply.
+			inverse = invertWrites(target, resolved);
+			for (const write of resolved) {
 				if (write.remove) delete target[write.key];
 				else target[write.key] = write.value;
 			}
 		});
+		if (stale) {
+			new Notice(`Bases Power Pack: didn't change "${file.basename}": that value is no longer in its list.`);
+			return false;
+		}
 		if (opts?.record !== false) plugin.undo.record(opts?.label ?? "Edit", path, inverse, opts?.batch);
 		// Patch just this note (processFrontMatter has already updated its cache)
 		// so the caller's immediate re-render reads the fresh state without the
@@ -162,12 +183,15 @@ async function writeTaskLine(
 	let inverse: PropertyWrite[] = [];
 	let applied = false;
 	let missing = false;
+	// Assigned inside the process() callback, which TS can't see through.
+	let refused = null as string | null;
 	try {
 		await app.vault.process(file, (data) => {
 			// The splice itself is pure and unit-tested (see query/tasks.ts); this
 			// path only handles the Obsidian side and the user-facing outcome.
 			const result = spliceTaskLine(data, ref, writes);
 			if (result.status === "notfound") missing = true;
+			if (result.status === "refused") refused = result.reason ?? "it couldn't be written safely";
 			// "unchanged" (the same value written twice) deliberately records no
 			// undo entry — reversing it would restore an identical line.
 			if (result.status !== "written") return data;
@@ -187,10 +211,41 @@ async function writeTaskLine(
 		);
 		return false;
 	}
+	if (refused !== null) {
+		new Notice(`Bases Power Pack: didn't change the task in "${file.basename}": ${refused}.`);
+		return false;
+	}
 	if (!applied) return false;
 	if (opts?.record !== false) plugin.undo.record(opts?.label ?? "Edit", rowId, inverse, opts?.batch);
 	plugin.patchNote(file);
 	return true;
+}
+
+/**
+ * Write a row's fields from a view that holds the Row: FLATTEN-aware, then
+ * through {@link writeRowProperties}. Use this over the id-based writer
+ * whenever the row is at hand.
+ */
+export async function writeRowFields(
+	plugin: BasesPowerPackPlugin,
+	row: Row,
+	writes: PropertyWrite[],
+	opts?: WriteOptions
+): Promise<boolean> {
+	const marked = flattenElementWrites(row, writes);
+	if (!marked) {
+		noticeFlattenRefused(row.flatten?.binding ?? "", 1);
+		return false;
+	}
+	return writeRowProperties(plugin, row.id, marked, opts);
+}
+
+/** Explain edits refused by {@link flattenElementWrites}. */
+export function noticeFlattenRefused(binding: string, count: number): void {
+	const what = count === 1 ? "This card holds" : `${count} cards hold`;
+	new Notice(
+		`${what} one value of the FLATTEN list "${binding}", which is an alias or a computed expression, so there is no property to edit. Nothing was written for ${count === 1 ? "it" : "them"}.`
+	);
 }
 
 /** Ensure every folder in `path`'s parent chain exists. */

@@ -31,41 +31,71 @@ export interface InlineField {
 	line: number;
 }
 
-/** A fence delimiter: a run of ``` or ~~~ with up to three leading spaces,
- * plus whatever follows it on the line (the info string, for an opener). */
-const FENCE_RE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+/** A fence delimiter: indentation, a run of ``` or ~~~, and whatever follows
+ * it on the line (the info string, for an opener). */
+const FENCE_RE = /^([ \t]*)(`{3,}|~{3,})(.*)$/;
+
+function indentColumns(indent: string): number {
+	let w = 0;
+	for (const ch of indent) w += ch === "\t" ? 4 : 1;
+	return w;
+}
 
 /**
- * A stateful "is this line inside a code fence?" test, shared by the field and
- * task scanners.
+ * Which lines are inside a fenced code block (delimiters included), from
+ * `from` on. Shared by the field and task scanners.
  *
- * It follows CommonMark's three rules that a naive boolean toggle gets wrong,
- * each of which ends a fence early and turns a documentation example into live
- * data — inventing properties, or worse, a writable task row:
+ * It follows CommonMark's rules that a naive boolean toggle gets wrong, each of
+ * which ends a fence early and turns a documentation example into live data —
+ * inventing properties, or worse, a writable task row:
  *   - a `~~~` line does not close a ``` fence (the character must match)
  *   - a ````-fenced block may contain ``` lines (the run must be long enough)
  *   - a CLOSER carries no info string, so ```` ```ts ```` inside a fence is
  *     content, not the end of the block
+ *   - a closer may be indented at most three columns past its opener, so an
+ *     example fence indented inside a fenced block doesn't close it
  *
- * Returns true for any line that should be ignored, fence delimiters included.
+ * Indentation is relative to the enclosing list item, which a line scanner
+ * can't see. So a fence nested under a list item (indented four or more) still
+ * counts, as long as it is closed. An opener indented four or more that never
+ * closes is an indented code line that happens to start with backticks, not a
+ * fence, and it must not hide the rest of the note.
  */
-export function makeFenceScanner(): (line: string) => boolean {
-	let open: { char: string; len: number } | null = null;
-	return (line: string): boolean => {
-		const m = FENCE_RE.exec(line);
-		if (!m) return open !== null;
-		const char = m[1][0];
-		const len = m[1].length;
-		const info = m[2];
-		if (!open) {
-			// A backtick opener's info string may not itself contain a backtick.
-			if (char === "`" && info.includes("`")) return false;
-			open = { char, len };
-			return true;
+export function fencedLines(lines: readonly string[], from = 0): boolean[] {
+	const mask: boolean[] = new Array<boolean>(lines.length).fill(false);
+	let i = from;
+	while (i < lines.length) {
+		const open = FENCE_RE.exec(lines[i]);
+		// A backtick opener's info string may not itself contain a backtick.
+		if (!open || (open[2][0] === "`" && open[3].includes("`"))) {
+			i++;
+			continue;
 		}
-		if (char === open.char && len >= open.len && info.trim().length === 0) open = null;
-		return true;
-	};
+		const indent = indentColumns(open[1]);
+		let close = -1;
+		for (let j = i + 1; j < lines.length; j++) {
+			const m = FENCE_RE.exec(lines[j]);
+			if (
+				m &&
+				m[2][0] === open[2][0] &&
+				m[2].length >= open[2].length &&
+				m[3].trim().length === 0 &&
+				indentColumns(m[1]) <= indent + 3
+			) {
+				close = j;
+				break;
+			}
+		}
+		if (close < 0 && indent > 3) {
+			i++;
+			continue;
+		}
+		// An unclosed top-level fence runs to the end of the note, as in CommonMark.
+		const end = close < 0 ? lines.length - 1 : close;
+		for (let k = i; k <= end; k++) mask[k] = true;
+		i = end + 1;
+	}
+	return mask;
 }
 
 /**
@@ -109,7 +139,7 @@ const KEY_DECORATION_RE = /^[*_`~\s]+|[*_`~\s]+$/g;
  * a markdown table cell (`|`) and anything with no letter or digit at all
  * (e.g. the `::` in an ASCII art separator).
  */
-function isValidKey(key: string): boolean {
+export function isValidKey(key: string): boolean {
 	if (key.length === 0 || key.length > 100) return false;
 	if (key.includes("|") || key.includes("\n")) return false;
 	// A URL carrying `::` inside a markdown link's `(…)` would otherwise invent a
@@ -280,10 +310,10 @@ export function scanInlineFields(body: string): InlineField[] {
 		if (j < lines.length) i = j + 1; // unterminated block → parse normally
 	}
 
-	const inFence = makeFenceScanner();
+	const fenced = fencedLines(lines, i);
 	let inComment = false;
 	for (; i < lines.length; i++) {
-		if (inFence(lines[i])) continue;
+		if (fenced[i]) continue;
 		const stripped = stripBlockComment(lines[i], inComment);
 		inComment = stripped.inComment;
 		if (stripped.text.trim().length === 0) continue;

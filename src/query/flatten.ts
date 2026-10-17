@@ -84,6 +84,8 @@ export function flattenRows(rows: readonly Row[], options: FlattenOptions, rebin
 	const expression = options.expression.trim();
 	if (expression.length === 0) return [...rows];
 	const binding = (options.as ?? "").trim() || defaultBinding(expression);
+	const meta = { binding, expression };
+	const tag = (r: Row): Row => ({ ...r, flatten: meta });
 
 	const out: Row[] = [];
 	for (const row of rows) {
@@ -92,14 +94,14 @@ export function flattenRows(rows: readonly Row[], options: FlattenOptions, rebin
 		if (kept.length === 0) {
 			// With keepEmpty, a note whose list is literally `[]` still deserves a
 			// row — bind null so it groups under "no value" rather than vanishing.
-			if (options.keepEmpty) out.push(rebind(row, row.id, binding, null));
+			if (options.keepEmpty) out.push(tag(rebind(row, row.id, binding, null)));
 			continue;
 		}
 		if (kept.length === 1) {
-			out.push(rebind(row, row.id, binding, kept[0]));
+			out.push(tag(rebind(row, row.id, binding, kept[0])));
 			continue;
 		}
-		kept.forEach((v, i) => out.push(rebind(row, `${row.id}#${i}`, binding, v)));
+		kept.forEach((v, i) => out.push(tag(rebind(row, `${row.id}#${i}`, binding, v))));
 	}
 	return out;
 }
@@ -109,4 +111,96 @@ function isEmptyValue(v: Value): boolean {
 	if (typeof v === "string") return v.trim().length === 0;
 	if (Array.isArray(v)) return v.length === 0;
 	return false;
+}
+
+/**
+ * The write that changes ONE element of a flattened list.
+ *
+ * A flattened row carries a single element of its note's list, bound to the
+ * list's own name. Writing the dragged scalar straight to that property would
+ * replace the whole list (`assignees: [Ana, Bob]` dragged from Bob to Carol
+ * would become `assignees: Carol`, and Ana would be gone). This swaps only
+ * that element. If the new value is already in the list, the element is
+ * dropped instead. A remove drops it.
+ *
+ * `source` is the property's value before flattening and `element` the value
+ * this row carries, and the swap is computed against the source as it is
+ * when the write lands (see `viewData.writeRowProperties`), so a batch that
+ * edits two copies of one note builds on its own first write. When the source
+ * isn't a list, the write is returned unchanged. Returns null when the element
+ * is no longer in the list: the note changed and there is nothing safe to swap.
+ */
+export function listElementWrite<W extends { key: string; value?: unknown; remove?: boolean }>(
+	source: unknown,
+	element: unknown,
+	write: W
+): W | null {
+	if (!Array.isArray(source)) return write;
+	// An element that is itself a list didn't come from a flatten; leave it be.
+	if (Array.isArray(element)) return write;
+	const same = (a: unknown, b: unknown): boolean => elementKey(a) === elementKey(b);
+	const at = source.findIndex((v) => same(v, element));
+	if (at < 0) {
+		// keepEmpty gives a note with an empty list one row, bound to null. A drag
+		// out of that "no value" bucket adds the first element.
+		if (source.length === 0 && (element === null || element === undefined)) {
+			return write.remove ? write : { ...write, value: [write.value], remove: false };
+		}
+		return null;
+	}
+	const next: unknown[] = [...(source as unknown[])];
+	if (write.remove || next.some((v, i) => i !== at && same(v, write.value))) next.splice(at, 1);
+	else next[at] = write.value;
+	return { ...write, value: next, remove: false };
+}
+
+function elementKey(v: unknown): string {
+	if (v instanceof Date) return v.toISOString();
+	return JSON.stringify(v) ?? "";
+}
+
+/** A field write that may carry a FLATTEN element marker. */
+export interface ElementWrite {
+	key: string;
+	value?: unknown;
+	remove?: boolean;
+	/** Edit ONE element of the list at `key`, resolved against the live value
+	 * when the write lands. Set by {@link flattenElementWrites}. */
+	listElement?: { value: unknown };
+}
+
+/**
+ * Prepare a view's writes for a row that FLATTEN produced. A write to the
+ * flatten binding is marked to edit only this row's element of the list (see
+ * {@link listElementWrite}); every other write passes through unchanged, as do
+ * all writes for a row that wasn't flattened.
+ *
+ * Returns null when the binding can't be written from a card: it is an alias
+ * (`FLATTEN assignees AS person`) or a computed expression, so there is no
+ * property of that name to edit. The caller then refuses the edit.
+ */
+export function flattenElementWrites<W extends ElementWrite>(row: Row, writes: W[]): W[] | null {
+	const flat = row.flatten;
+	if (!flat) return writes;
+	const out: W[] = [];
+	for (const write of writes) {
+		if (write.key !== flat.binding) {
+			out.push(write);
+			continue;
+		}
+		if (flat.binding !== flat.expression) return null;
+		// A dotted binding names a link traversal or nested value, unless the note
+		// really has a flat key spelled that way.
+		if (flat.binding.includes(".") && !Object.prototype.hasOwnProperty.call(row.note.frontmatter, flat.binding)) return null;
+		out.push({ ...write, listElement: { value: row.scope.get(flat.binding) } });
+	}
+	return out;
+}
+
+/** Resolve a marked write against the property's current value; unmarked
+ * writes pass through. Null means the element has left the list. */
+export function resolveListElement<W extends ElementWrite>(current: unknown, write: W): W | null {
+	if (!write.listElement) return write;
+	const { listElement, ...plain } = write;
+	return listElementWrite(current, listElement.value, plain as W);
 }

@@ -1757,7 +1757,7 @@ assert.equal(
 	"- [ ] Write the spec [due:: 2026-04-02] [owner:: Ana] #work",
 	"an existing bracketed field is rewritten in place"
 );
-assert.deepEqual(w1.inverse, [{ key: "due", value: "2026-03-01" }], "the inverse restores the previous value");
+assert.deepEqual(w1.inverse, [{ key: tasks.TASK_LINE_SWAP, value: { expect: w1.raw, restore: line0 } }], "the inverse swaps the exact previous line back in");
 assert.equal(
 	tasks.applyTaskWrites(w1.raw, w1.inverse).raw,
 	line0,
@@ -1770,7 +1770,7 @@ assert.equal(
 	"- [ ] Write the spec [due:: 2026-03-01] [owner:: Ana] #work [status:: doing]",
 	"a new field is appended as a bracketed inline field"
 );
-assert.deepEqual(w2.inverse, [{ key: "status", remove: true }], "the inverse of a new field is its removal");
+assert.deepEqual(w2.inverse, [{ key: tasks.TASK_LINE_SWAP, value: { expect: w2.raw, restore: line0 } }], "the inverse of a new field restores the line without it");
 assert.equal(tasks.applyTaskWrites(w2.raw, w2.inverse).raw, line0, "removing the appended field restores the line");
 
 const emojiLine = "- [ ] Ship it 📅 2026-03-05 ⏫";
@@ -1797,7 +1797,7 @@ assert.equal(
 );
 assert.deepEqual(
 	tasks.applyTaskWrites("- [x] Do it", [{ key: "task.done", value: false }]).inverse,
-	[{ key: "task.status", value: "x" }],
+	[{ key: tasks.TASK_LINE_SWAP, value: { expect: "- [ ] Do it", restore: "- [x] Do it" } }],
 	"the inverse of a checkbox change restores the exact previous character"
 );
 assert.equal(
@@ -2178,7 +2178,7 @@ assert.equal(
 );
 assert.deepEqual(
 	tasks.emojiSpans("x \u{1F4C5} 2026-01-02 y"),
-	[{ key: "due", value: "2026-01-02", start: 2, end: 15 }],
+	[{ key: "due", emoji: "📅", value: "2026-01-02", start: 2, end: 15 }],
 	"a validated emoji span reports the exact source range it owns"
 );
 
@@ -2222,8 +2222,8 @@ assert.equal(
 );
 assert.deepEqual(
 	mc.inverse,
-	[{ key: "due", value: "2026-01-01" }],
-	"the inverse RESTORES the old value instead of deleting the field"
+	[{ key: tasks.TASK_LINE_SWAP, value: { expect: mc.raw, restore: mixedCase } }],
+	"the inverse RESTORES the old line instead of deleting the field"
 );
 assert.equal(
 	tasks.readTaskFields(tasks.applyTaskWrites(mc.raw, mc.inverse).raw).due,
@@ -2442,8 +2442,12 @@ const dedup = tasks.applyTaskWrites("- [ ] Do it [due:: 2026-01-01]", [
 	{ key: "due", value: "2026-02-02" },
 	{ key: "Due", value: "2026-03-03" },
 ]);
-assert.equal(dedup.raw, "- [ ] Do it [due:: 2026-02-02]", "the second, differently-cased write to the same field is dropped");
-assert.deepEqual(dedup.inverse, [{ key: "due", value: "2026-01-01" }], "and only one inverse is recorded");
+assert.equal(
+	dedup.raw,
+	"- [ ] Do it [due:: 2026-03-03]",
+	"the LAST of two differently-cased writes to one field wins, as on frontmatter"
+);
+assert.deepEqual(dedup.inverse, [{ key: tasks.TASK_LINE_SWAP, value: { expect: dedup.raw, restore: "- [ ] Do it [due:: 2026-01-01]" } }], "and only one inverse is recorded");
 
 // Field keys are queryable in either case.
 assert.equal(tasks.readTaskFields("x [Due:: 2026-01-01]").due, "2026-01-01", "a capitalised field is reachable in lower case");
@@ -2476,6 +2480,262 @@ assert.deepEqual(
 	dql.convertDql("TABLE x SORT due DESC").query.sort,
 	[{ expr: "due", dir: "desc" }],
 	"a genuine SORT clause is still recognised"
+);
+
+// ---- Writeback hardening (adversarial review, Oct 2026) --------------------
+// One block per finding. Each was reproduced against the previous code.
+
+const tw = (line, writes) => tasks.applyTaskWrites(line, writes);
+function assertUndoExact(line, writes, label) {
+	const fwd = tw(line, writes);
+	assert.ok(!fwd.refused, `${label}: the forward write is accepted (${fwd.refused})`);
+	assert.notEqual(fwd.raw, line, `${label}: the forward write changes the line`);
+	assert.equal(tw(fwd.raw, fwd.inverse).raw, line, `${label}: undo restores the line byte for byte`);
+}
+
+// Wikilink values survive a write and an undo (they used to become {{Beta}}).
+assert.equal(
+	tw("- [ ] T [project:: [[Alpha]]]", [{ key: "project", value: "[[Beta]]" }]).raw,
+	"- [ ] T [project:: [[Beta]]]",
+	"a wikilink value is written as a wikilink"
+);
+assert.equal(
+	tw("- [ ] T", [{ key: "project", value: "[[Beta|the beta]]" }]).raw,
+	"- [ ] T [project:: [[Beta|the beta]]]",
+	"an appended aliased wikilink is kept intact"
+);
+assert.equal(tasks.readTaskFields("T [project:: [[Beta]]]").project, "[[Beta]]", "and it reads back as the link");
+assert.equal(
+	tw("- [ ] T", [{ key: "note", value: "a ]b [[ok]] c[" }]).raw,
+	"- [ ] T [note:: a }b [[ok]] c{]",
+	"unpaired brackets next to a link are still neutralised"
+);
+
+// Undo restores the exact text, including values the parser normalises.
+for (const [line, key, value] of [
+	["- [ ] T [order:: 007]", "order", "9"],
+	["- [ ] T [est:: 1.50]", "est", "2"],
+	["- [ ] T [flag:: TRUE]", "flag", false],
+	["- [ ] T [who:: Ana,Bob]", "who", ["Carol"]],
+	["- [ ] T [cmd:: `npm test`]", "cmd", "x"],
+	["- [ ] T [project:: [[Alpha]]]", "project", "[[Beta]]"],
+	["- [ ] T ⌛ 2026-01-01", "scheduled", "2026-02-02"],
+	["- [ ] Run `ls  -la` 📅 2026-01-01", "due", "2026-02-02"],
+]) {
+	assertUndoExact(line, [{ key, value }], line);
+}
+assertUndoExact("- [ ] T [due:: 2026-01-01] 📅 2026-02-02", [{ key: "due", remove: true }], "remove with two sources");
+
+// Undo is compare-and-swap: it never overwrites a later edit, and order matters.
+const casFwd = tw("- [ ] T [due:: 2026-01-01]", [{ key: "due", value: "2026-02-02" }]);
+const casLater = "- [ ] T [due:: 2026-02-02] [owner:: Ana]";
+const casUndo = tw(casLater, casFwd.inverse);
+assert.ok(casUndo.refused, "undo is refused once the line was edited after the change");
+assert.equal(casUndo.raw, casLater, "and the newer edit is left in place");
+const seq0 = "- [ ] T [who:: Ana]";
+const seq1 = tw(seq0, [{ key: "who", value: "Bob" }]);
+const seq2 = tw(seq1.raw, [{ key: "who", value: "Carol" }]);
+assert.equal(tw(tw(seq2.raw, seq2.inverse).raw, seq1.inverse).raw, seq0, "newest-first undo of two writes restores the original");
+assert.ok(tw(seq2.raw, seq1.inverse).refused, "an out-of-order undo is refused, not applied to the wrong state");
+assert.equal(
+	tasks.spliceTaskLine(`x\n${casLater}`, refFor(`x\n${casLater}`), casFwd.inverse).status,
+	"refused",
+	"spliceTaskLine reports a refused undo as refused, with the text untouched"
+);
+
+// Twins: an id must not drift onto the other twin when lines shift.
+const twinsDoc = "x\n- [ ] Review\n- [ ] Review";
+const twinIds = tasks.parseTasks(twinsDoc, "n.md", "n").map((t) => t.id);
+assert.notEqual(twinIds[0], twinIds[1], "identical twins get distinct ids");
+const secondTwin = tasks.parseTaskId(twinIds[1]);
+assert.equal(
+	tasks.spliceTaskLine(twinsDoc, secondTwin, [{ key: "x", value: "1" }]).text,
+	"x\n- [ ] Review\n- [ ] Review [x:: 1]",
+	"an unshifted twin is written in place"
+);
+assert.equal(
+	tasks.spliceTaskLine(`new\n${twinsDoc}`, secondTwin, [{ key: "x", value: "1" }]).status,
+	"notfound",
+	"after a line is inserted above, the recorded line holds the OTHER twin, so the write is refused"
+);
+assert.equal(
+	tasks.parseTaskId(tasks.parseTasks("- [ ] Solo", "n.md", "n")[0].id).hash,
+	tasks.hashTaskText("Solo"),
+	"a task without twins keeps its plain text hash, so existing ids are unchanged"
+);
+
+// Relocation only considers tasks the reader shows: never a fenced or commented copy.
+const liveLine = "- [ ] Write tests [due:: 2026-01-01]";
+for (const [wrapOpen, wrapClose, what] of [["```md", "```", "fenced"], ["%%", "%%", "commented"]]) {
+	const doc = `${liveLine}\n${wrapOpen}\n${liveLine}\n${wrapClose}`;
+	const ref = refFor(doc);
+	const edited = doc.replace(liveLine, "- [ ] Write more tests [due:: 2026-01-01]");
+	assert.equal(
+		tasks.spliceTaskLine(edited, ref, [{ key: "due", value: "2026-02-02" }]).status,
+		"notfound",
+		`a stale write does not land on a ${what} copy of the task`
+	);
+}
+assert.deepEqual(
+	tasks.parseTasks("- Item\n    ```\n    - [ ] example\n    ```", "n.md", "n"),
+	[],
+	"a checkbox inside a fence indented under a list item is code, not a task"
+);
+assert.deepEqual(
+	tasks.parseTasks("- Item\n\t```\n\t- [ ] example\n\t```", "n.md", "n"),
+	[],
+	"the same with a tab-indented fence"
+);
+
+// A whole-line `key:: value` on a task line is task text, not a field.
+assert.equal(tasks.readTaskFields("due:: 2026-01-01").due, undefined, "the whole-line form is not read as a task field");
+assert.equal(
+	tw("- [ ] due:: 2026-01-01", [{ key: "due", value: "2026-02-02" }]).raw,
+	"- [ ] due:: 2026-01-01 [due:: 2026-02-02]",
+	"so a write adds a real field instead of a value the reader then ignores"
+);
+
+// Values that would re-scope the line or the note are neutralised.
+const CR = String.fromCharCode(13);
+assert.equal(tw("- [ ] T", [{ key: "note", value: "a`b" }]).raw, "- [ ] T [note:: a'b]", "a backtick can't open a code span");
+assert.equal(tw("- [ ] T", [{ key: "note", value: "50%%" }]).raw, "- [ ] T [note:: 50% %]", "a %% can't open a comment");
+assert.equal(tw("- [ ] T", [{ key: "note", value: `a${CR}b` }]).raw, "- [ ] T [note:: a b]", "a lone CR can't split the line");
+const afterPct = `${tw("- [ ] A", [{ key: "note", value: "50%%" }]).raw}\n- [ ] B`;
+assert.equal(tasks.parseTasks(afterPct, "n.md", "n").length, 2, "a later task in the note stays visible");
+
+// Keys are validated, and computed task.* keys are read-only.
+for (const key of ["a]b", "a|b", "a::b", "`k`", " pad", "task.section", "task.text", tasks.TASK_LINE_SWAP]) {
+	const r = tw("- [ ] T", [{ key, value: "x" }]);
+	assert.ok(r.refused, `the key ${JSON.stringify(key)} is refused`);
+	assert.equal(r.raw, "- [ ] T", `and the line is untouched for ${JSON.stringify(key)}`);
+}
+assert.equal(tw("- [ ] T", [{ key: "task.done", value: true }]).raw, "- [x] T", "checkbox keys are still writable");
+
+// Edits are local: only the bytes being changed move.
+assert.equal(
+	tw("- [ ] Run `ls  -la` 📅 2026-01-01", [{ key: "due", value: "2026-02-02" }]).raw,
+	"- [ ] Run `ls  -la` 📅 2026-02-02",
+	"a reschedule leaves spacing inside inline code alone"
+);
+assert.equal(
+	tw("- [ ] Run `ls  -la` 📅 2026-01-01 #x", [{ key: "due", remove: true }]).raw,
+	"- [ ] Run `ls  -la` #x",
+	"a removal only closes its own gap"
+);
+assert.equal(
+	tw("- [ ] T ⌛ 2026-01-01", [{ key: "scheduled", value: "2026-02-02" }]).raw,
+	"- [ ] T ⌛ 2026-02-02",
+	"the user's own scheduled emoji is kept"
+);
+assert.equal(
+	tw("- [ ] T [due:: 2026-01-01] 📅 2026-02-02", [{ key: "due", remove: true }]).raw,
+	"- [ ] T",
+	"removing a field removes every source of it"
+);
+
+// An emoji checkbox status has no single-character form; refuse, don't split it.
+assert.equal(tasks.statusCharFor("task.status", "🔥"), null, "an astral status character is rejected");
+assert.ok(tw("- [ ] T", [{ key: "task.status", value: "🔥" }]).refused, "so the write is refused");
+assert.equal(tasks.statusCharFor("task.status", "/"), "/", "a plain status character still works");
+
+// FLATTEN: a drag edits one element of the list, never the whole list.
+const lw = (src, el, w) => flatten.listElementWrite(src, el, w);
+assert.deepEqual(lw(["Ana", "Bob"], "Bob", { key: "a", value: "Carol" }).value, ["Ana", "Carol"], "only the dragged element changes");
+assert.deepEqual(lw(["Ana", "Bob"], "Bob", { key: "a", value: "Ana" }).value, ["Ana"], "moving onto a value already listed drops the copy");
+assert.deepEqual(lw(["Ana", "Bob"], "Bob", { key: "a", remove: true }).value, ["Ana"], "a remove drops just that element");
+assert.equal(lw(["Ana", "Bob"], "Bob", { key: "a", remove: true }).remove, false, "and is written as the shorter list, not a delete");
+assert.equal(lw(["Ana"], "Bob", { key: "a", value: "Carol" }), null, "an element no longer in the list is refused");
+assert.deepEqual(lw("Bob", "Bob", { key: "a", value: "Carol" }), { key: "a", value: "Carol" }, "a scalar source passes through");
+
+// ---- Writeback hardening, round 2 (review of the round-1 diff) -------------
+
+// FLATTEN rows carry their binding, so only they get element-aware writes.
+const elemRows = flatten.flattenRows(
+	[{ id: "A.md", name: "A", note: { path: "A.md", frontmatter: { assignees: ["Ana", "Bob"] } }, scope: { get: (k) => (k === "assignees" ? ["Ana", "Bob"] : undefined) } }],
+	{ expression: "assignees" }
+);
+assert.deepEqual(elemRows.map((r) => r.flatten), [
+	{ binding: "assignees", expression: "assignees" },
+	{ binding: "assignees", expression: "assignees" },
+], "every flattened row records its binding");
+const plainRow = { id: "B.md", name: "B", note: { path: "B.md", frontmatter: {} }, scope: { get: () => ["Ana"] } };
+assert.deepEqual(
+	flatten.flattenElementWrites(plainRow, [{ key: "assignees", value: "Carol" }]),
+	[{ key: "assignees", value: "Carol" }],
+	"a row that wasn't flattened (e.g. the native Bases view) writes as before"
+);
+const marked = flatten.flattenElementWrites(elemRows[1], [{ key: "assignees", value: "Carol" }, { key: "status", value: "x" }]);
+assert.deepEqual(marked[0].listElement, { value: "Bob" }, "a write to the binding is marked with this row's element");
+assert.equal(marked[1].listElement, undefined, "other writes are left alone");
+const aliased = { ...elemRows[1], flatten: { binding: "person", expression: "assignees" } };
+assert.equal(flatten.flattenElementWrites(aliased, [{ key: "person", value: "Carol" }]), null, "an aliased binding has no property to write");
+
+// The swap is resolved against the LIVE value, so two copies in one batch compose.
+function applyBatch(start, rowsAndWrites) {
+	let live = start;
+	for (const [row, write] of rowsAndWrites) {
+		const [m] = flatten.flattenElementWrites(row, [write]);
+		const r = flatten.resolveListElement(live, m);
+		assert.ok(r, "each element write resolves");
+		live = r.remove ? undefined : r.value;
+	}
+	return live;
+}
+assert.deepEqual(
+	applyBatch(["Ana", "Bob"], [[elemRows[0], { key: "assignees", value: "Carol" }], [elemRows[1], { key: "assignees", value: "Carol" }]]),
+	["Carol"],
+	"moving both copies to Carol leaves exactly [Carol]"
+);
+assert.deepEqual(
+	applyBatch(["Ana", "Bob"], [[elemRows[0], { key: "assignees", remove: true }], [elemRows[1], { key: "assignees", remove: true }]]),
+	[],
+	"bulk-clearing both copies empties the list"
+);
+
+// keepEmpty's "no value" row can be dragged into a column.
+assert.deepEqual(flatten.listElementWrite([], null, { key: "a", value: "Ana" }).value, ["Ana"], "an empty list gains the first element");
+assert.deepEqual(flatten.listElementWrite(["Ana"], ["Ana"], { key: "a", value: "Bob" }), { key: "a", value: "Bob" }, "a list element is not a flatten element");
+
+// Task lines resolve the marker against the line itself.
+const listTask = "- [ ] T [who:: Ana, Bob]";
+assert.equal(
+	tw(listTask, [{ key: "who", value: "Carol", listElement: { value: "Bob" } }]).raw,
+	"- [ ] T [who:: Ana, Carol]",
+	"a task-line list swaps only the element"
+);
+assert.ok(tw(listTask, [{ key: "who", value: "Carol", listElement: { value: "Zed" } }]).refused, "a stale element is refused");
+assert.equal(
+	tw("- [ ] T", [{ key: "who", value: "Carol", listElement: { value: "Bob" } }]).raw,
+	"- [ ] T [who:: Carol]",
+	"a list inherited from the note becomes a task-level value; the note is untouched"
+);
+
+// A value can't smuggle in a field the write didn't name.
+assert.ok(tw("- [ ] T (x:: a)", [{ key: "x", value: "[due:: 2020-01-01]" }]).refused, "a nested field inside a round field is refused");
+assert.ok(tw("- [ ] T", [{ key: "note", value: "⏫ asap" }]).refused, "a priority emoji inside a value is refused");
+
+// Fences: an indented closer can't end an outer fence, and an unclosed indented
+// "opener" doesn't hide the rest of the note.
+const nestedExample = ["```markdown", "- item", "    ```", "- [ ] example task", "    ```", "```", "- [ ] real"].join("\n");
+assert.deepEqual(
+	tasks.parseTasks(nestedExample, "n.md", "n").map((t) => t.text),
+	["real"],
+	"a fence example indented inside a fenced block stays code"
+);
+assert.deepEqual(
+	tasks.parseTasks(["- item", "    ```js", "- [ ] after"].join("\n"), "n.md", "n").map((t) => t.text),
+	["after"],
+	"an unclosed, indented backtick line doesn't hide later tasks"
+);
+assert.deepEqual(
+	tasks.parseTasks(["- item", "    ```", "    - [ ] example", "    ```", "- [ ] after"].join("\n"), "n.md", "n").map((t) => t.text),
+	["after"],
+	"a closed fence nested under a list item is still code"
+);
+assert.equal(
+	inlineFields.parseInlineFields(["- item", "    ~~~", "after:: yes"].join("\n")).after,
+	"yes",
+	"inline fields after an unclosed indented ~~~ line are still read"
 );
 
 fs.unlinkSync(outfile);

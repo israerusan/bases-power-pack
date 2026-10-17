@@ -4,7 +4,7 @@ import type { Row } from "../model/row";
 import { parseImageRef } from "../query/gallery";
 import { coerceFieldInput, formatFieldForEdit } from "../query/inlineEdit";
 import { resolveRowColor } from "../query/colorRules";
-import { writeRowProperty } from "./viewData";
+import { writeRowFields } from "./viewData";
 import { notePathOf } from "../model/rowId";
 import { PromptModal, ConfirmModal } from "./modals";
 
@@ -63,7 +63,7 @@ export function editFieldViaModal(env: RowActionEnv, row: Row, field: string, af
 		placeholder: field,
 		onSubmit: (v) => {
 			const { value, remove } = coerceFieldInput(field, v, previous);
-			void writeRowProperty(env.plugin, row.id, field, value, remove, { label: `Edit "${field}"` }).then(after);
+			void writeRowFields(env.plugin, row, [{ key: field, value, remove }], { label: `Edit "${field}"` }).then(after);
 		},
 	}).open();
 }

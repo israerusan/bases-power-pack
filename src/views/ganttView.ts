@@ -14,7 +14,7 @@ import {
 	type GanttBar,
 } from "../query/gantt";
 import { rescheduleDateValue, toIsoDateKey, todayIso } from "../query/dates";
-import { writeRowProperties, writeRowProperty } from "./viewData";
+import { writeRowFields } from "./viewData";
 import { renderContextControls, renderPropertySelect, renderRollupBar } from "./viewChrome";
 
 export const VIEW_TYPE_GANTT = "bpp-gantt-view";
@@ -459,7 +459,7 @@ export class GanttView extends PowerPackView {
 					new Notice("Enter a date as YYYY-MM-DD.");
 					return;
 				}
-				void writeRowProperty(this.plugin, row.id, prop, rescheduleDateValue(raw, key), false, {
+				void writeRowFields(this.plugin, row, [{ key: prop, value: rescheduleDateValue(raw, key) }], {
 					label: `Set ${which} date`,
 				}).then(() => this.render());
 			},
@@ -477,7 +477,7 @@ export class GanttView extends PowerPackView {
 		// (start and end are distinct keys, so no same-key-twice ambiguity).
 		const writes = [{ key: startProp, value: rescheduleDateValue(startRaw, moved.start) }];
 		if (moved.end !== null) writes.push({ key: endProp, value: rescheduleDateValue(endRaw, moved.end) });
-		await writeRowProperties(this.plugin, row.id, writes, { label: `Move "${row.name}"` });
+		await writeRowFields(this.plugin, row, writes, { label: `Move "${row.name}"` });
 		await this.render();
 	}
 
@@ -488,7 +488,7 @@ export class GanttView extends PowerPackView {
 		if (!startIso) return void this.render();
 		const endIso = valueToDateString(endRaw);
 		const nextEnd = resizeBarEnd(startIso, endIso, deltaDays);
-		await writeRowProperty(this.plugin, row.id, endProp, rescheduleDateValue(endRaw, nextEnd), false, {
+		await writeRowFields(this.plugin, row, [{ key: endProp, value: rescheduleDateValue(endRaw, nextEnd) }], {
 			label: `Resize "${row.name}"`,
 		});
 		await this.render();
