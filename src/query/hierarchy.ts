@@ -82,7 +82,11 @@ export function baseName(path: string): string {
  * is returned; otherwise the cleaned value is returned as-is so an unresolved
  * reference can still be detected as a missing parent. Empty → null.
  */
-export function resolveParentRef(raw: unknown, knownPaths: Set<string>): string | null {
+export function resolveParentRef(
+	raw: unknown,
+	knownPaths: Set<string>,
+	opts?: { basename?: boolean }
+): string | null {
 	if (typeof raw !== "string") return null;
 	let s = raw.trim();
 	if (!s) return null;
@@ -94,7 +98,31 @@ export function resolveParentRef(raw: unknown, knownPaths: Set<string>): string 
 	if (!s) return null;
 	if (knownPaths.has(s)) return s;
 	if (!/\.md$/i.test(s) && knownPaths.has(`${s}.md`)) return `${s}.md`;
+	// `[[My Project]]` (how the property editor writes a link) names a note by
+	// basename, wherever it lives. Resolve it when exactly one note has that name;
+	// an ambiguous or unknown name stays unresolved (a missing parent), never guessed.
+	if (opts?.basename && !s.includes("/")) {
+		const hit = basenameIndex(knownPaths).get(s.replace(/\.md$/i, "").toLowerCase());
+		if (hit) return hit;
+	}
 	return s;
+}
+
+const basenameIndexes = new WeakMap<Set<string>, Map<string, string | null>>();
+
+/** Lower-cased basename → its one path (null when several notes share it). Built
+ * once per known-path set, so resolving every row stays linear. */
+function basenameIndex(knownPaths: Set<string>): Map<string, string | null> {
+	let index = basenameIndexes.get(knownPaths);
+	if (index) return index;
+	index = new Map();
+	for (const path of knownPaths) {
+		if (!/\.md$/i.test(path)) continue;
+		const key = baseName(path).toLowerCase();
+		index.set(key, index.has(key) ? null : path);
+	}
+	basenameIndexes.set(knownPaths, index);
+	return index;
 }
 
 function emptyMetrics(): BranchMetrics {

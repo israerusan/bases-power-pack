@@ -114,8 +114,10 @@ export function makeScope(
 
 	const scope: EvalScope = {
 		get(name: string): unknown {
-			if (name in base) return base[name];
-			if (name in formulas) {
+			// Own keys only: `in` also sees Object.prototype, so a property named
+			// `constructor` / `toString` resolved to an inherited function.
+			if (hasOwn(base, name)) return base[name];
+			if (hasOwn(formulas, name)) {
 				if (memo.has(name)) return memo.get(name);
 				if (inProgress.has(name)) return null; // cycle guard
 				inProgress.add(name);
@@ -150,4 +152,8 @@ export function makeRow(
 	overlay?: Record<string, unknown>
 ): Row {
 	return { id: note.path, name: note.name, note, scope: makeScope(note, formulas, ctx, overlay) };
+}
+
+function hasOwn(obj: object, key: string): boolean {
+	return Object.prototype.hasOwnProperty.call(obj, key);
 }

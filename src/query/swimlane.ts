@@ -108,22 +108,30 @@ export function buildSwimlanes(rows: Row[], options: BuildSwimlanesOptions): Swi
 	// created for a value that actually appears (like the flat board's columns);
 	// there is no "empty lane" tile because a lane value with no card has no
 	// natural identity to render.
-	const laneKeysSeen: string[] = [];
-	const seen = new Set<string>();
+	// Bucket rows by lane in ONE pass (insertion order preserved inside each lane).
+	// Filtering all rows once per lane was quadratic on a high-cardinality lane
+	// property — seconds per render at a few thousand notes.
+	const rowsByLane = new Map<string, Row[]>();
 	for (const row of rows) {
 		const key = laneKeyOf(row, laneProp);
-		if (!seen.has(key)) {
-			seen.add(key);
-			laneKeysSeen.push(key);
-		}
+		const bucket = rowsByLane.get(key);
+		if (bucket) bucket.push(row);
+		else rowsByLane.set(key, [row]);
 	}
-	const ordered = orderLaneKeys(laneKeysSeen, options.laneOrder ?? []);
+	const ordered = orderLaneKeys([...rowsByLane.keys()], options.laneOrder ?? []);
 
 	const build = (key: string): Swimlane => {
-		const laneRows = rows.filter((r) => laneKeyOf(r, laneProp) === key);
+		const laneRows = rowsByLane.get(key) ?? [];
+		const byColumn = new Map<string, Row[]>();
+		for (const r of laneRows) {
+			const col = toStr(r.scope.get(groupBy));
+			const bucket = byColumn.get(col);
+			if (bucket) bucket.push(r);
+			else byColumn.set(col, [r]);
+		}
 		let total = 0;
 		const columns: KanbanColumn[] = columnNames.map((name) => {
-			let cell = laneRows.filter((r) => toStr(r.scope.get(groupBy)) === name);
+			let cell = byColumn.get(name) ?? [];
 			if (search) cell = cell.filter((r) => rowMatchesKanbanSearch(r, search, name));
 			total += cell.length;
 			return { name, rows: sortKanbanColumn(cell, sortBy, rankProp) };
@@ -134,7 +142,14 @@ export function buildSwimlanes(rows: Row[], options: BuildSwimlanesOptions): Swi
 	// A lane with no visible cards (all filtered out by search or hide-done) is
 	// dropped, exactly as an empty column is — you never see a blank band. The cap is
 	// applied to what actually shows, so `truncatedLanes` reflects visible lanes.
-	const visible = ordered.map(build).filter((lane) => lane.total > 0);
+	// Lanes past the cap are never built: one extra visible lane proves truncation.
+	const visible: Swimlane[] = [];
+	for (const key of ordered) {
+		const lane = build(key);
+		if (lane.total === 0) continue;
+		visible.push(lane);
+		if (visible.length > maxLanes) break;
+	}
 	const truncatedLanes = visible.length > maxLanes;
 	const lanes = truncatedLanes ? visible.slice(0, maxLanes) : visible;
 

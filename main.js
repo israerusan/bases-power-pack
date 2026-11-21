@@ -2636,9 +2636,12 @@ function compare(a, b) {
     if (da !== null && db !== null) return da === db ? 0 : da < db ? -1 : 1;
   }
   if (!looksDateLike(a) && !looksDateLike(b)) {
-    const na = toNumber(a);
-    const nb = toNumber(b);
+    const na = arithNumber(a);
+    const nb = arithNumber(b);
     if (!Number.isNaN(na) && !Number.isNaN(nb)) return na === nb ? 0 : na < nb ? -1 : 1;
+    const pa = toNumber(a);
+    const pb = toNumber(b);
+    if (!Number.isNaN(pa) && !Number.isNaN(pb) && pa !== pb) return pa < pb ? -1 : 1;
   }
   const sa = toStr(a);
   const sb = toStr(b);
@@ -3216,7 +3219,7 @@ function compareRankValue(a, b) {
   return av - bv;
 }
 function compareRowsByRank(a, b, rankProp) {
-  return compareRankValue(a.scope.get(rankProp), b.scope.get(rankProp)) || compareText(a.name, b.name);
+  return compareRankValue(a.scope.get(rankProp), b.scope.get(rankProp));
 }
 function compareNumberValue(a, b) {
   const av = numberOrNull(a);
@@ -3643,6 +3646,192 @@ function renderRollupBar(container, plugin, rows) {
 
 // src/views/rowActions.ts
 var import_obsidian4 = require("obsidian");
+
+// src/query/relations.ts
+function parseLinks(value) {
+  const parts = Array.isArray(value) ? value.map((v) => toStr(v)) : toStr(value).split(",");
+  return parts.map((p) => p.trim().replace(/^\[\[/, "").replace(/\]\]$/, "").trim()).map((p) => {
+    var _a;
+    return p.includes("|") ? (_a = p.split("|")[0]) != null ? _a : p : p;
+  }).map((p) => {
+    var _a;
+    return ((_a = p.split(/[/\\]/).pop()) != null ? _a : p).replace(/\.md$/i, "").trim();
+  }).filter(Boolean);
+}
+function indexByName(rows) {
+  const map = /* @__PURE__ */ new Map();
+  for (const row of rows) map.set(row.name.toLowerCase(), row);
+  return map;
+}
+function computeBlockers(row, dependsProp, byName, isDone) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const name of parseLinks(row.scope.get(dependsProp))) {
+    const dep = byName.get(name.toLowerCase());
+    if (dep && dep.id !== row.id && !seen.has(dep.id) && !isDone(dep)) {
+      seen.add(dep.id);
+      out.push(dep);
+    }
+  }
+  return out;
+}
+function indexChildren(rows, parentProp) {
+  const map = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    for (const pname of parseLinks(row.scope.get(parentProp))) {
+      const key = pname.toLowerCase();
+      const arr = map.get(key);
+      if (arr) arr.push(row);
+      else map.set(key, [row]);
+    }
+  }
+  return map;
+}
+function childStats(children, isDone) {
+  let done = 0;
+  for (const c of children) if (isDone(c)) done++;
+  return { done, total: children.length };
+}
+
+// src/query/linkIndex.ts
+function buildLinkGraph(resolved) {
+  const outlinks = /* @__PURE__ */ new Map();
+  const inlinks = /* @__PURE__ */ new Map();
+  for (const [src, targets] of Object.entries(resolved)) {
+    const list = Object.keys(targets);
+    outlinks.set(src, list);
+    for (const dest of list) {
+      const arr = inlinks.get(dest);
+      if (arr) arr.push(src);
+      else inlinks.set(dest, [src]);
+    }
+  }
+  return { outlinks, inlinks };
+}
+function linkProps(path, graph) {
+  var _a, _b;
+  const out = (_a = graph.outlinks.get(path)) != null ? _a : [];
+  const inc = (_b = graph.inlinks.get(path)) != null ? _b : [];
+  return {
+    "file.outlinks": withBasenames(out),
+    "file.inlinks": withBasenames(inc),
+    "file.inlinkCount": inc.length,
+    "file.outlinkCount": out.length
+  };
+}
+function basename(path) {
+  var _a;
+  return ((_a = path.split("/").pop()) != null ? _a : path).replace(/\.md$/i, "");
+}
+function withBasenames(paths) {
+  const seen = new Set(paths);
+  const out = [...paths];
+  for (const p of paths) {
+    const b = basename(p);
+    if (seen.has(b)) continue;
+    seen.add(b);
+    out.push(b);
+  }
+  return out;
+}
+var MAX_LINK_HOPS = 4;
+var activeDepth = 0;
+function traverseLink(scope, dotted, lookup, hops = MAX_LINK_HOPS) {
+  if (hops <= 0 || activeDepth >= MAX_LINK_HOPS) return void 0;
+  const dot = dotted.indexOf(".");
+  if (dot <= 0 || dot === dotted.length - 1) return void 0;
+  const head = dotted.slice(0, dot);
+  const rest = dotted.slice(dot + 1);
+  const raw = scope.get(head);
+  if (raw === void 0 || raw === null) return void 0;
+  const names = parseLinks(raw);
+  if (names.length === 0) return void 0;
+  const target = lookup(names[0]);
+  if (!target) return void 0;
+  activeDepth++;
+  try {
+    const direct = target.get(rest);
+    if (direct !== void 0) return direct;
+    return rest.includes(".") ? traverseLink(target, rest, lookup, hops - 1) : void 0;
+  } finally {
+    activeDepth--;
+  }
+}
+
+// src/model/row.ts
+var COMPUTED_FILE_PROPS = /* @__PURE__ */ new Set([
+  "file.name",
+  "file.path",
+  "file.folder",
+  "file.ext",
+  "file.tags",
+  "file.ctime",
+  "file.mtime",
+  "file.size",
+  "file.inlinks",
+  "file.outlinks",
+  "file.inlinkCount",
+  "file.outlinkCount",
+  "file.taskCount",
+  "file.doneTaskCount",
+  "file.openTaskCount"
+]);
+function fileProps(note) {
+  const props = {
+    "file.name": note.name,
+    "file.path": note.path,
+    "file.folder": note.folder,
+    "file.ext": note.ext,
+    "file.tags": note.tags,
+    "file.ctime": note.ctime,
+    "file.mtime": note.mtime,
+    "file.size": note.size
+  };
+  if (note.links) Object.assign(props, note.links);
+  if (note.tasks) {
+    const done = note.tasks.filter((t) => t.done).length;
+    props["file.taskCount"] = note.tasks.length;
+    props["file.doneTaskCount"] = done;
+    props["file.openTaskCount"] = note.tasks.length - done;
+  }
+  return props;
+}
+function makeScope(note, formulas = {}, ctx, overlay) {
+  var _a;
+  const base = { ...(_a = note.inline) != null ? _a : {}, ...note.frontmatter, ...fileProps(note), ...overlay };
+  const memo = /* @__PURE__ */ new Map();
+  const inProgress = /* @__PURE__ */ new Set();
+  const scope = {
+    get(name) {
+      if (hasOwn(base, name)) return base[name];
+      if (hasOwn(formulas, name)) {
+        if (memo.has(name)) return memo.get(name);
+        if (inProgress.has(name)) return null;
+        inProgress.add(name);
+        let result = null;
+        try {
+          result = compileExpression(formulas[name]).eval(scope);
+        } catch (e) {
+          result = null;
+        }
+        inProgress.delete(name);
+        memo.set(name, result);
+        return result;
+      }
+      if ((ctx == null ? void 0 : ctx.lookup) && name.includes(".")) {
+        return traverseLink(scope, name, ctx.lookup);
+      }
+      return void 0;
+    }
+  };
+  return scope;
+}
+function makeRow(note, formulas = {}, ctx, overlay) {
+  return { id: note.path, name: note.name, note, scope: makeScope(note, formulas, ctx, overlay) };
+}
+function hasOwn(obj, key) {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
 
 // src/query/gallery.ts
 function parseString(input) {
@@ -4188,7 +4377,7 @@ function collectInlineFields(fields) {
   const out = {};
   const repeated = /* @__PURE__ */ new Set();
   for (const f of fields) {
-    if (!(f.key in out)) {
+    if (!Object.prototype.hasOwnProperty.call(out, f.key)) {
       out[f.key] = f.value;
       continue;
     }
@@ -4209,117 +4398,6 @@ function addLowercaseAliases(fields) {
 }
 function parseInlineFields(body) {
   return collectInlineFields(scanInlineFields(body));
-}
-
-// src/query/relations.ts
-function parseLinks(value) {
-  const parts = Array.isArray(value) ? value.map((v) => toStr(v)) : toStr(value).split(",");
-  return parts.map((p) => p.trim().replace(/^\[\[/, "").replace(/\]\]$/, "").trim()).map((p) => {
-    var _a;
-    return p.includes("|") ? (_a = p.split("|")[0]) != null ? _a : p : p;
-  }).map((p) => {
-    var _a;
-    return ((_a = p.split(/[/\\]/).pop()) != null ? _a : p).replace(/\.md$/i, "").trim();
-  }).filter(Boolean);
-}
-function indexByName(rows) {
-  const map = /* @__PURE__ */ new Map();
-  for (const row of rows) map.set(row.name.toLowerCase(), row);
-  return map;
-}
-function computeBlockers(row, dependsProp, byName, isDone) {
-  const out = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const name of parseLinks(row.scope.get(dependsProp))) {
-    const dep = byName.get(name.toLowerCase());
-    if (dep && dep.id !== row.id && !seen.has(dep.id) && !isDone(dep)) {
-      seen.add(dep.id);
-      out.push(dep);
-    }
-  }
-  return out;
-}
-function indexChildren(rows, parentProp) {
-  const map = /* @__PURE__ */ new Map();
-  for (const row of rows) {
-    for (const pname of parseLinks(row.scope.get(parentProp))) {
-      const key = pname.toLowerCase();
-      const arr = map.get(key);
-      if (arr) arr.push(row);
-      else map.set(key, [row]);
-    }
-  }
-  return map;
-}
-function childStats(children, isDone) {
-  let done = 0;
-  for (const c of children) if (isDone(c)) done++;
-  return { done, total: children.length };
-}
-
-// src/query/linkIndex.ts
-function buildLinkGraph(resolved) {
-  const outlinks = /* @__PURE__ */ new Map();
-  const inlinks = /* @__PURE__ */ new Map();
-  for (const [src, targets] of Object.entries(resolved)) {
-    const list = Object.keys(targets);
-    outlinks.set(src, list);
-    for (const dest of list) {
-      const arr = inlinks.get(dest);
-      if (arr) arr.push(src);
-      else inlinks.set(dest, [src]);
-    }
-  }
-  return { outlinks, inlinks };
-}
-function linkProps(path, graph) {
-  var _a, _b;
-  const out = (_a = graph.outlinks.get(path)) != null ? _a : [];
-  const inc = (_b = graph.inlinks.get(path)) != null ? _b : [];
-  return {
-    "file.outlinks": withBasenames(out),
-    "file.inlinks": withBasenames(inc),
-    "file.inlinkCount": inc.length,
-    "file.outlinkCount": out.length
-  };
-}
-function basename(path) {
-  var _a;
-  return ((_a = path.split("/").pop()) != null ? _a : path).replace(/\.md$/i, "");
-}
-function withBasenames(paths) {
-  const seen = new Set(paths);
-  const out = [...paths];
-  for (const p of paths) {
-    const b = basename(p);
-    if (seen.has(b)) continue;
-    seen.add(b);
-    out.push(b);
-  }
-  return out;
-}
-var MAX_LINK_HOPS = 4;
-var activeDepth = 0;
-function traverseLink(scope, dotted, lookup, hops = MAX_LINK_HOPS) {
-  if (hops <= 0 || activeDepth >= MAX_LINK_HOPS) return void 0;
-  const dot = dotted.indexOf(".");
-  if (dot <= 0 || dot === dotted.length - 1) return void 0;
-  const head = dotted.slice(0, dot);
-  const rest = dotted.slice(dot + 1);
-  const raw = scope.get(head);
-  if (raw === void 0 || raw === null) return void 0;
-  const names = parseLinks(raw);
-  if (names.length === 0) return void 0;
-  const target = lookup(names[0]);
-  if (!target) return void 0;
-  activeDepth++;
-  try {
-    const direct = target.get(rest);
-    if (direct !== void 0) return direct;
-    return rest.includes(".") ? traverseLink(target, rest, lookup, hops - 1) : void 0;
-  } finally {
-    activeDepth--;
-  }
 }
 
 // src/model/taskRow.ts
@@ -4869,78 +4947,6 @@ function notePathOf(id) {
 }
 function taskRefOf(id) {
   return parseTaskId(sourceRowId(id));
-}
-
-// src/model/row.ts
-var COMPUTED_FILE_PROPS = /* @__PURE__ */ new Set([
-  "file.name",
-  "file.path",
-  "file.folder",
-  "file.ext",
-  "file.tags",
-  "file.ctime",
-  "file.mtime",
-  "file.size",
-  "file.inlinks",
-  "file.outlinks",
-  "file.inlinkCount",
-  "file.outlinkCount",
-  "file.taskCount",
-  "file.doneTaskCount",
-  "file.openTaskCount"
-]);
-function fileProps(note) {
-  const props = {
-    "file.name": note.name,
-    "file.path": note.path,
-    "file.folder": note.folder,
-    "file.ext": note.ext,
-    "file.tags": note.tags,
-    "file.ctime": note.ctime,
-    "file.mtime": note.mtime,
-    "file.size": note.size
-  };
-  if (note.links) Object.assign(props, note.links);
-  if (note.tasks) {
-    const done = note.tasks.filter((t) => t.done).length;
-    props["file.taskCount"] = note.tasks.length;
-    props["file.doneTaskCount"] = done;
-    props["file.openTaskCount"] = note.tasks.length - done;
-  }
-  return props;
-}
-function makeScope(note, formulas = {}, ctx, overlay) {
-  var _a;
-  const base = { ...(_a = note.inline) != null ? _a : {}, ...note.frontmatter, ...fileProps(note), ...overlay };
-  const memo = /* @__PURE__ */ new Map();
-  const inProgress = /* @__PURE__ */ new Set();
-  const scope = {
-    get(name) {
-      if (name in base) return base[name];
-      if (name in formulas) {
-        if (memo.has(name)) return memo.get(name);
-        if (inProgress.has(name)) return null;
-        inProgress.add(name);
-        let result = null;
-        try {
-          result = compileExpression(formulas[name]).eval(scope);
-        } catch (e) {
-          result = null;
-        }
-        inProgress.delete(name);
-        memo.set(name, result);
-        return result;
-      }
-      if ((ctx == null ? void 0 : ctx.lookup) && name.includes(".")) {
-        return traverseLink(scope, name, ctx.lookup);
-      }
-      return void 0;
-    }
-  };
-  return scope;
-}
-function makeRow(note, formulas = {}, ctx, overlay) {
-  return { id: note.path, name: note.name, note, scope: makeScope(note, formulas, ctx, overlay) };
 }
 
 // src/query/filter.ts
@@ -5639,9 +5645,10 @@ function addCommonRowMenuItems(env, menu, row, fields, after) {
   menu.addItem(
     (i) => i.setTitle("Open to the right").setIcon("separator-vertical").onClick(() => openRowToRight(env, row))
   );
-  if (fields.length > 0) {
+  const editable = fields.filter((field) => !COMPUTED_FILE_PROPS.has(field));
+  if (editable.length > 0) {
     menu.addSeparator();
-    for (const field of fields) {
+    for (const field of editable) {
       menu.addItem(
         (i) => i.setTitle(`Edit ${field}\u2026`).setIcon("pencil").onClick(() => editFieldViaModal(env, row, field, after))
       );
@@ -6415,28 +6422,41 @@ function buildSwimlanes(rows, options) {
   const rankProp = options.rankProp || "rank";
   const maxLanes = (_c = options.maxLanes) != null ? _c : DEFAULT_MAX_LANES;
   const columnNames = buildKanbanColumns(rows, options).map((c) => c.name);
-  const laneKeysSeen = [];
-  const seen = /* @__PURE__ */ new Set();
+  const rowsByLane = /* @__PURE__ */ new Map();
   for (const row of rows) {
     const key = laneKeyOf(row, laneProp);
-    if (!seen.has(key)) {
-      seen.add(key);
-      laneKeysSeen.push(key);
-    }
+    const bucket = rowsByLane.get(key);
+    if (bucket) bucket.push(row);
+    else rowsByLane.set(key, [row]);
   }
-  const ordered = orderLaneKeys(laneKeysSeen, (_d = options.laneOrder) != null ? _d : []);
+  const ordered = orderLaneKeys([...rowsByLane.keys()], (_d = options.laneOrder) != null ? _d : []);
   const build = (key) => {
-    const laneRows = rows.filter((r) => laneKeyOf(r, laneProp) === key);
+    var _a2;
+    const laneRows = (_a2 = rowsByLane.get(key)) != null ? _a2 : [];
+    const byColumn = /* @__PURE__ */ new Map();
+    for (const r of laneRows) {
+      const col = toStr(r.scope.get(groupBy));
+      const bucket = byColumn.get(col);
+      if (bucket) bucket.push(r);
+      else byColumn.set(col, [r]);
+    }
     let total = 0;
     const columns = columnNames.map((name) => {
-      let cell = laneRows.filter((r) => toStr(r.scope.get(groupBy)) === name);
+      var _a3;
+      let cell = (_a3 = byColumn.get(name)) != null ? _a3 : [];
       if (search) cell = cell.filter((r) => rowMatchesKanbanSearch(r, search, name));
       total += cell.length;
       return { name, rows: sortKanbanColumn(cell, sortBy, rankProp) };
     });
     return { key, columns, total };
   };
-  const visible = ordered.map(build).filter((lane) => lane.total > 0);
+  const visible = [];
+  for (const key of ordered) {
+    const lane = build(key);
+    if (lane.total === 0) continue;
+    visible.push(lane);
+    if (visible.length > maxLanes) break;
+  }
   const truncatedLanes = visible.length > maxLanes;
   const lanes = truncatedLanes ? visible.slice(0, maxLanes) : visible;
   return { columnNames, lanes, truncatedLanes };
@@ -6635,8 +6655,8 @@ var TouchDragController = class {
     this.lastTarget = { cell, card };
   }
   resolveTarget(x, y) {
-    const { cell, card } = this.hitTest(x, y);
-    if (!cell) return null;
+    const { cell, card, onSelf } = this.hitTest(x, y);
+    if (onSelf || !cell) return null;
     const columnName = cell.getAttribute("data-bpp-col");
     if (columnName === null) return null;
     const laneKey = cell.getAttribute("data-bpp-lane");
@@ -6657,11 +6677,12 @@ var TouchDragController = class {
     var _a;
     const doc = (_a = this.activeCard) == null ? void 0 : _a.ownerDocument;
     const el = doc == null ? void 0 : doc.elementFromPoint(x, y);
-    if (!(el instanceof HTMLElement)) return { cell: null, card: null };
+    if (!(el instanceof HTMLElement)) return { cell: null, card: null, onSelf: false };
     const cell = el.closest("[data-bpp-col]");
     let card = el.closest("[data-bpp-row]");
-    if (card && card.getAttribute("data-bpp-row") === this.activeRowId) card = null;
-    return { cell, card };
+    const onSelf = card !== null && card.getAttribute("data-bpp-row") === this.activeRowId;
+    if (onSelf) card = null;
+    return { cell, card, onSelf };
   }
   inTopHalf(el, y) {
     const rect = el.getBoundingClientRect();
@@ -6857,6 +6878,10 @@ var KanbanBoard = class {
   render(input) {
     var _a, _b, _c, _d, _e;
     this.input = input;
+    if (this.selected.size > 0) {
+      const live = new Set(input.rows.map((r) => r.id));
+      for (const id of [...this.selected]) if (!live.has(id)) this.selected.delete(id);
+    }
     const groupBy = input.groupBy || "status";
     const container = this.host.containerEl;
     const extraColumns = (_a = this.plugin.settings.kanbanExtraColumns[groupBy]) != null ? _a : [];
@@ -7161,6 +7186,7 @@ var KanbanBoard = class {
       card.addClass("is-dragging");
       this.cardDragActive = true;
       this.dismissCardHover();
+      this.host.beginInteraction();
       (_a2 = event.dataTransfer) == null ? void 0 : _a2.setData("text/plain", row.id);
       (_b2 = event.dataTransfer) == null ? void 0 : _b2.setData(DND_ROW, row.id);
       if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
@@ -7170,6 +7196,7 @@ var KanbanBoard = class {
       card.removeClass("is-dragging");
       this.cardDragActive = false;
       (_a2 = this.boardScroller) == null ? void 0 : _a2.stop();
+      this.host.endInteraction();
     });
     if (ctx.reorderEnabled && this.canWrite) this.wireCardReorder(card, row, columnName, ctx.groupBy, ctx.laneKey);
     card.addEventListener("click", (evt) => {
@@ -7180,7 +7207,7 @@ var KanbanBoard = class {
         this.openCardDefault(row);
       }
     });
-    makeItemAccessible(card, row.name, () => openRow(this.host.rowEnv, row), openMenu);
+    makeItemAccessible(card, row.name, () => this.openCardDefault(row), openMenu);
     card.addEventListener("contextmenu", (evt) => openMenu(evt));
     card.addEventListener("keydown", (evt) => {
       if (evt.target === card && evt.key === "F2") {
@@ -7222,7 +7249,7 @@ var KanbanBoard = class {
     let settled = false;
     const finish = () => {
       this.host.endInteraction();
-      card.draggable = true;
+      card.draggable = this.canWrite;
     };
     const commit = async () => {
       var _a;
@@ -7327,6 +7354,10 @@ var KanbanBoard = class {
    * variant shares the same click-to-edit wiring.
    */
   renderEditableField(card, row, field, display, ctx) {
+    if (this.isComputedField(this.input.formulas, field)) {
+      this.renderFieldContent(card.createDiv({ cls: "bpp-card-meta" }), row, field, display, ctx);
+      return;
+    }
     const line = card.createDiv({ cls: "bpp-card-meta bpp-card-meta-editable" });
     this.renderFieldContent(line, row, field, display, ctx);
     line.setAttr("title", "Click to edit");
@@ -8013,24 +8044,26 @@ var KanbanBoard = class {
   /** Wire edge auto-scroll for mouse (HTML5) drags: feed the scroller the pointer
    * position on dragover, stop it when the drag leaves or drops. */
   wireBoardAutoScroll(board) {
+    var _a;
+    (_a = this.boardScroller) == null ? void 0 : _a.stop();
     this.boardScroller = null;
     const ensure = () => {
       if (!this.boardScroller) this.boardScroller = new DragScroller(this.scrollContainerFor(board));
       return this.boardScroller;
     };
     board.addEventListener("dragover", (event) => {
-      var _a, _b;
-      const types = (_b = (_a = event.dataTransfer) == null ? void 0 : _a.types) != null ? _b : [];
+      var _a2, _b;
+      const types = (_b = (_a2 = event.dataTransfer) == null ? void 0 : _a2.types) != null ? _b : [];
       if (!types.includes(DND_ROW) && !types.includes(DND_COLUMN)) return;
       ensure().update(event.clientX, event.clientY);
     });
     board.addEventListener("drop", () => {
-      var _a;
-      return (_a = this.boardScroller) == null ? void 0 : _a.stop();
+      var _a2;
+      return (_a2 = this.boardScroller) == null ? void 0 : _a2.stop();
     });
     board.addEventListener("dragleave", (event) => {
-      var _a;
-      if (dragTrulyLeft(board, event)) (_a = this.boardScroller) == null ? void 0 : _a.stop();
+      var _a2;
+      if (dragTrulyLeft(board, event)) (_a2 = this.boardScroller) == null ? void 0 : _a2.stop();
     });
   }
   /** Build the touch-drag layer for this render. Its drop resolves back through the same
@@ -8050,6 +8083,11 @@ var KanbanBoard = class {
       return;
     }
     const laneProp = target.laneKey === null ? null : swimProp || null;
+    if (!this.reorderEnabled) {
+      const row = this.input.rows.find((r) => r.id === rowId);
+      if (row) await this.moveRowToColumn(row, groupBy, target.columnName, laneProp, target.laneKey);
+      return;
+    }
     let targetRow = null;
     if (target.beforeRowId) {
       targetRow = (_a = this.input.rows.find((r) => r.id === target.beforeRowId)) != null ? _a : null;
@@ -8683,7 +8721,7 @@ function atLineStart(src, i) {
   }
   return true;
 }
-function clauseAt(src, i) {
+function clauseAt(src, i, lowerStyle = false) {
   const before = i === 0 ? " " : src[i - 1];
   if (/[\w.$]/.test(before)) return null;
   const upper = src.toUpperCase();
@@ -8693,6 +8731,7 @@ function clauseAt(src, i) {
     if (after !== void 0 && /[\w.$]/.test(after)) continue;
     if (/^\s*(?:[=!<>]|\)|,|\|\||&&)/.test(src.slice(i + kw.length))) continue;
     if (src.startsWith(kw, i) || atLineStart(src, i)) return kw;
+    if (lowerStyle && src.startsWith(kw.toLowerCase(), i)) return kw;
   }
   return null;
 }
@@ -8702,6 +8741,7 @@ function splitClauses(src) {
   let quote2 = null;
   let start = 0;
   let keyword = "";
+  const lowerStyle = /^\s*(?:table|list|task|calendar)(?![\w.$])/.test(src);
   for (let i = 0; i < src.length; i++) {
     const ch = src[i];
     if (quote2) {
@@ -8722,7 +8762,7 @@ function splitClauses(src) {
       continue;
     }
     if (depth !== 0) continue;
-    const kw = clauseAt(src, i);
+    const kw = clauseAt(src, i, lowerStyle);
     if (!kw) continue;
     if (keyword) out.push({ keyword, body: src.slice(start, i).trim() });
     else if (src.slice(0, i).trim().length > 0) out.push({ keyword: "", body: src.slice(0, i).trim() });
@@ -8803,12 +8843,12 @@ var FUNCTION_ALIASES = {
   icontains: "contains",
   containsword: "contains",
   choice: "if",
-  striptime: "string",
   ldefault: "default",
   nonnull: "default",
   lower: "lower",
   upper: "upper"
 };
+var APPROXIMATE_ALIASES = /* @__PURE__ */ new Set(["econtains", "containsword"]);
 function mapOutsideStrings(src, fn) {
   let out = "";
   let quote2 = null;
@@ -8835,30 +8875,40 @@ function mapOutsideStrings(src, fn) {
 function translateExpression(src) {
   const warnings = [];
   const unsupported = [];
-  let out = mapOutsideStrings(src, (chunk) => {
+  let usedNow = false;
+  const approximated = /* @__PURE__ */ new Set();
+  const out = mapOutsideStrings(src, (chunk) => {
     let c = chunk;
-    c = c.replace(/\bthis\./g, "");
     c = c.replace(/\band\b/gi, "&&").replace(/\bor\b/gi, "||").replace(/\bnot\b/gi, "!");
     c = c.replace(/(^|[^=!<>])=(?!=)/g, "$1==");
+    c = c.replace(/\bdate\s*\(\s*today\s*\)/gi, "today()");
+    c = c.replace(/\bdate\s*\(\s*now\s*\)/gi, () => {
+      usedNow = true;
+      return "today()";
+    });
+    c = c.replace(/\bdate\s*\(\s*(\d{4}-\d{2}-\d{2}(?:T[\d:.]+)?)\s*\)/g, 'date("$1")');
+    c = c.replace(/\b([A-Za-z_]\w*)\s*\(/g, (match, name) => {
+      const lower = name.toLowerCase();
+      const alias = FUNCTION_ALIASES[lower];
+      if (!alias) return match;
+      if (APPROXIMATE_ALIASES.has(lower)) approximated.add(name);
+      return `${alias}(`;
+    });
     return c;
   });
-  out = out.replace(/\bdate\s*\(\s*today\s*\)/gi, "today()");
-  if (/\bdate\s*\(\s*now\s*\)/i.test(out)) {
-    warnings.push("`date(now)` has no time-of-day equivalent \u2014 converted to `today()` (whole days).");
-    out = out.replace(/\bdate\s*\(\s*now\s*\)/gi, "today()");
+  if (usedNow) warnings.push("`date(now)` has no time-of-day equivalent \u2014 converted to `today()` (whole days).");
+  for (const name of approximated) {
+    warnings.push(`\`${name}()\` was converted to \`contains()\`, a case-insensitive substring match \u2014 results may differ.`);
   }
-  out = out.replace(/\b([A-Za-z_]\w*)\s*\(/g, (match, name) => {
-    const alias = FUNCTION_ALIASES[name.toLowerCase()];
-    return alias ? `${alias}(` : match;
-  });
+  const code = out.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '""');
   const callRe = /\b([A-Za-z_]\w*)\s*\(/g;
   let m;
-  while ((m = callRe.exec(out)) !== null) {
+  while ((m = callRe.exec(code)) !== null) {
     const name = m[1].toLowerCase();
     if (!KNOWN_FUNCTIONS.has(name)) unsupported.push(`${m[1]}()`);
   }
-  for (const token of ["file.tasks", "file.lists", "file.day", "file.starred", "rows."]) {
-    if (out.includes(token)) unsupported.push(token);
+  for (const token of ["this.", "file.tasks", "file.lists", "file.day", "file.cday", "file.mday", "file.starred", "rows."]) {
+    if (code.includes(token)) unsupported.push(token);
   }
   return { expr: out.trim(), warnings, unsupported: [...new Set(unsupported)] };
 }
@@ -8990,7 +9040,10 @@ function buildFrom(tokens, warnings, errors) {
       continue;
     }
     if (tok.t === "paren") {
-      out += tok.v;
+      if (tok.v === "(" && pendingNot) {
+        out += "!(";
+        pendingNot = false;
+      } else out += tok.v;
       continue;
     }
     const expr = atomToExpr(tok.v, warnings, errors);
@@ -9001,7 +9054,12 @@ function buildFrom(tokens, warnings, errors) {
     out += pendingNot ? `!(${expr})` : expr;
     pendingNot = false;
   }
-  return out.replace(/\(\s*\)/g, "").replace(/(^|\()\s*(?:&&|\|\|)\s*/g, "$1").replace(/\s*(?:&&|\|\|)\s*($|\))/g, "$1").trim();
+  let prev = "";
+  while (prev !== out) {
+    prev = out;
+    out = out.replace(/!?\(\s*\)/g, "").replace(/(&&|\|\|)\s*(&&|\|\|)/g, "$2").replace(/(^|\()\s*(?:&&|\|\|)\s*/g, "$1").replace(/\s*(?:&&|\|\|)\s*($|\))/g, "$1").trim();
+  }
+  return out;
 }
 function quote(s) {
   return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
@@ -9879,6 +9937,7 @@ var DqlConvertModal = class extends import_obsidian10.Modal {
     const filters = JSON.stringify((_c = conversion.filters) != null ? _c : "");
     if (filters.includes("file.outlinks") || filters.includes("file.inlinks")) s.linkTraversal = true;
     await this.plugin.saveSettings();
+    this.plugin.refreshViews();
   }
 };
 function viewTypeFor(view) {
@@ -10009,6 +10068,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian11.PluginSettingTab 
         this.plugin.settings.licenseKey = value;
         void this.plugin.refreshLicense(true).then((changed) => {
           if (changed) this.display();
+          else showLicenseError();
         });
       })
     );
@@ -10028,13 +10088,15 @@ var BasesPowerPackSettingTab = class extends import_obsidian11.PluginSettingTab 
       });
       link.setAttr("target", "_blank");
     }
-    if (!this.plugin.settings.isPro && this.plugin.settings.licenseKey && this.plugin.licenseError) {
+    const licenseErrorEl = status.createEl("p", { cls: "bpp-license-error" });
+    const showLicenseError = () => {
+      const { isPro, licenseKey } = this.plugin.settings;
       const reason = this.plugin.licenseError;
-      status.createEl("p", {
-        cls: "bpp-license-error",
-        text: `Key not accepted: ${typeof reason === "string" ? reason : ""}`
-      });
-    }
+      const show = !isPro && !!licenseKey && !!reason;
+      licenseErrorEl.setText(show ? `Key not accepted: ${reason}` : "");
+      licenseErrorEl.toggleClass("bpp-hidden", !show);
+    };
+    showLicenseError();
     new import_obsidian11.Setting(containerEl).setName("Kanban view (Lite)").setHeading();
     new import_obsidian11.Setting(containerEl).setName("Group by property").setDesc(
       "Frontmatter property (or, with premium, a formula) used to build kanban columns. The Outline view also reads it to decide which notes count as done."
@@ -10435,7 +10497,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian11.PluginSettingTab 
         premiumIn(
           parent,
           "Outline parent property",
-          "Frontmatter property holding the vault-relative path of a note's parent (builds the Outline tree).",
+          "Frontmatter property holding a note's parent \u2014 a vault-relative path or a [[link]] (builds the Outline tree).",
           (setting) => {
             setting.addText(
               (text) => this.keySuggest(text).setPlaceholder("parent").setValue(this.plugin.settings.hierarchyParentProp).onChange((value) => {
@@ -11591,6 +11653,11 @@ var GanttView = class extends PowerPackView {
       barEl.removeClass("is-dragging");
       if (barEl.hasPointerCapture(evt.pointerId)) barEl.releasePointerCapture(evt.pointerId);
       this.endInteraction();
+      if (evt.type === "pointercancel") {
+        barEl.setCssProps({ transform: "", width: "" });
+        void this.render();
+        return;
+      }
       if (Math.abs(dx) < CLICK_SLOP) {
         barEl.setCssProps({ transform: "" });
         if (currentKind === "move") this.openRow(row);
@@ -11714,7 +11781,7 @@ function baseName(path) {
   const tail = (_a = path.split("/").pop()) != null ? _a : path;
   return tail.replace(/\.md$/i, "");
 }
-function resolveParentRef(raw, knownPaths) {
+function resolveParentRef(raw, knownPaths, opts) {
   if (typeof raw !== "string") return null;
   let s = raw.trim();
   if (!s) return null;
@@ -11726,7 +11793,24 @@ function resolveParentRef(raw, knownPaths) {
   if (!s) return null;
   if (knownPaths.has(s)) return s;
   if (!/\.md$/i.test(s) && knownPaths.has(`${s}.md`)) return `${s}.md`;
+  if ((opts == null ? void 0 : opts.basename) && !s.includes("/")) {
+    const hit = basenameIndex(knownPaths).get(s.replace(/\.md$/i, "").toLowerCase());
+    if (hit) return hit;
+  }
   return s;
+}
+var basenameIndexes = /* @__PURE__ */ new WeakMap();
+function basenameIndex(knownPaths) {
+  let index = basenameIndexes.get(knownPaths);
+  if (index) return index;
+  index = /* @__PURE__ */ new Map();
+  for (const path of knownPaths) {
+    if (!/\.md$/i.test(path)) continue;
+    const key = baseName(path).toLowerCase();
+    index.set(key, index.has(key) ? null : path);
+  }
+  basenameIndexes.set(knownPaths, index);
+  return index;
 }
 function emptyMetrics() {
   return { descendantCount: 0, leafTotal: 0, leafDone: 0, progress: 0 };
@@ -11902,6 +11986,7 @@ function canReparent(childId, newParentId, byId) {
 
 // src/views/hierarchyView.ts
 var VIEW_TYPE_HIERARCHY = "bpp-hierarchy-view";
+var LINK_NAMES = { basename: true };
 var HierarchyView = class extends PowerPackView {
   constructor() {
     super(...arguments);
@@ -11966,7 +12051,7 @@ var HierarchyView = class extends PowerPackView {
       return {
         id: row.id,
         name: row.name,
-        parentRef: resolveParentRef(row.scope.get(parentProp), knownPaths),
+        parentRef: resolveParentRef(row.scope.get(parentProp), knownPaths, LINK_NAMES),
         order,
         done: this.isDone(row, doneProp)
       };
@@ -12036,7 +12121,7 @@ var HierarchyView = class extends PowerPackView {
     const inputs = rows.map((row) => ({
       id: row.id,
       name: row.name,
-      parentRef: resolveParentRef(row.scope.get(parentProp), knownPaths),
+      parentRef: resolveParentRef(row.scope.get(parentProp), knownPaths, LINK_NAMES),
       order: null,
       done: false
     }));
@@ -12239,12 +12324,16 @@ var HierarchyView = class extends PowerPackView {
   }
   /** Apply a validated reparent: write (or clear) the child's parent property. */
   async reparent(childId, newParentId, parentProp) {
+    if (notePathOf(childId) !== childId || newParentId !== null && notePathOf(newParentId) !== newParentId) {
+      new import_obsidian14.Notice("Reparenting works on whole-note rows only \u2014 switch Row source to Notes and clear Flatten property to move notes in the Outline.");
+      return;
+    }
     const snapshot = this.plugin.getNotesSnapshot();
     const knownPaths = new Set(snapshot.map((n) => n.path));
     const inputs = snapshot.map((n) => ({
       id: n.path,
       name: n.name,
-      parentRef: resolveParentRef(n.frontmatter[parentProp], knownPaths),
+      parentRef: resolveParentRef(n.frontmatter[parentProp], knownPaths, LINK_NAMES),
       order: null,
       done: false
     }));
@@ -12276,7 +12365,7 @@ var HierarchyView = class extends PowerPackView {
           return;
         }
         const knownPaths = new Set(this.plugin.getNotesSnapshot().map((n) => n.path));
-        void this.reparent(id, resolveParentRef(clean, knownPaths), parentProp);
+        void this.reparent(id, resolveParentRef(clean, knownPaths, LINK_NAMES), parentProp);
       }
     }).open();
   }
@@ -13541,7 +13630,9 @@ var BasesPowerPackPlugin = class extends import_obsidian16.Plugin {
     );
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof import_obsidian16.TFile && file.extension === "base") this.invalidateResolved();
+        if (!(file instanceof import_obsidian16.TFile) || file.extension !== "base") return;
+        this.invalidateResolved();
+        if (this.settings.isPro && file.path === this.settings.activeBasePath) this.refreshViews();
       })
     );
     this.registerView(VIEW_TYPE_KANBAN, (leaf) => new KanbanView(leaf, this));
@@ -13983,6 +14074,7 @@ status: ${status}
     const data = await this.loadData();
     const loaded = data !== null && typeof data === "object" ? data : {};
     this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
+    this.settings.purchaseUrl = DEFAULT_SETTINGS.purchaseUrl;
     this.settings.savedFilters = sanitizeSavedFilters(this.settings.savedFilters);
     this.settings.kanbanColumnSets = sanitizeColumnSets(this.settings.kanbanColumnSets);
     if (this.settings.kanbanCardClickAction !== "floating") this.settings.kanbanCardClickAction = "tab";

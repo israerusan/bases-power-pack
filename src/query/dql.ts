@@ -87,7 +87,7 @@ function atLineStart(src: string, i: number): boolean {
  * the lower-case `list` and silently lose the condition — a wrong filter is the
  * one outcome this converter must never produce.
  */
-function clauseAt(src: string, i: number): string | null {
+function clauseAt(src: string, i: number, lowerStyle = false): string | null {
 	const before = i === 0 ? " " : src[i - 1];
 	if (/[\w.$]/.test(before)) return null;
 	const upper = src.toUpperCase();
@@ -100,6 +100,10 @@ function clauseAt(src: string, i: number): string | null {
 		// alone can't tell them apart — what follows can.
 		if (/^\s*(?:[=!<>]|\)|,|\|\||&&)/.test(src.slice(i + kw.length))) continue;
 		if (src.startsWith(kw, i) || atLineStart(src, i)) return kw;
+		// A query that itself opens with a lower-case `list` / `table` / … writes all
+		// its keywords that way (Dataview keywords are case-insensitive), so
+		// `list from #p where x = 1` on one line must still split into clauses.
+		if (lowerStyle && src.startsWith(kw.toLowerCase(), i)) return kw;
 	}
 	return null;
 }
@@ -115,6 +119,7 @@ export function splitClauses(src: string): Clause[] {
 	let quote: string | null = null;
 	let start = 0;
 	let keyword = "";
+	const lowerStyle = /^\s*(?:table|list|task|calendar)(?![\w.$])/.test(src);
 
 	for (let i = 0; i < src.length; i++) {
 		const ch = src[i];
@@ -137,7 +142,7 @@ export function splitClauses(src: string): Clause[] {
 		}
 		if (depth !== 0) continue;
 
-		const kw = clauseAt(src, i);
+		const kw = clauseAt(src, i, lowerStyle);
 		if (!kw) continue;
 		if (keyword) out.push({ keyword, body: src.slice(start, i).trim() });
 		else if (src.slice(0, i).trim().length > 0) out.push({ keyword: "", body: src.slice(0, i).trim() });
@@ -199,12 +204,15 @@ const FUNCTION_ALIASES: Record<string, string> = {
 	icontains: "contains",
 	containsword: "contains",
 	choice: "if",
-	striptime: "string",
 	ldefault: "default",
 	nonnull: "default",
 	lower: "lower",
 	upper: "upper",
 };
+
+/** Aliases that are close to, but not the same as, the Dataview function — converting
+ * one says so instead of silently changing what the filter matches. */
+const APPROXIMATE_ALIASES = new Set(["econtains", "containsword"]);
 
 export interface TranslatedExpression {
 	expr: string;
@@ -247,41 +255,55 @@ export function translateExpression(src: string): TranslatedExpression {
 	const warnings: string[] = [];
 	const unsupported: string[] = [];
 
-	let out = mapOutsideStrings(src, (chunk) => {
+	// Every rewrite runs OUTSIDE string literals only, so `status = "blocked (or not)"`
+	// keeps its value byte-for-byte.
+	let usedNow = false;
+	const approximated = new Set<string>();
+	const out = mapOutsideStrings(src, (chunk) => {
 		let c = chunk;
-		// `this.file.name` → `file.name`.
-		c = c.replace(/\bthis\./g, "");
 		// Keyword operators.
 		c = c.replace(/\band\b/gi, "&&").replace(/\bor\b/gi, "||").replace(/\bnot\b/gi, "!");
 		// Lone `=` becomes `==` (leave ==, !=, <=, >= alone).
 		c = c.replace(/(^|[^=!<>])=(?!=)/g, "$1==");
+		// `date(today)` / `date(now)` are Dataview's clock, ours is `today()`.
+		c = c.replace(/\bdate\s*\(\s*today\s*\)/gi, "today()");
+		c = c.replace(/\bdate\s*\(\s*now\s*\)/gi, () => {
+			usedNow = true;
+			return "today()";
+		});
+		// A bare Dataview date literal, `date(2026-06-01)`: our tokenizer would read
+		// it as the subtraction 2026 - 6 - 1. Quote it so it stays a date.
+		c = c.replace(/\bdate\s*\(\s*(\d{4}-\d{2}-\d{2}(?:T[\d:.]+)?)\s*\)/g, 'date("$1")');
+		// Function aliases.
+		c = c.replace(/\b([A-Za-z_]\w*)\s*\(/g, (match, name: string) => {
+			const lower = name.toLowerCase();
+			const alias = FUNCTION_ALIASES[lower];
+			if (!alias) return match;
+			if (APPROXIMATE_ALIASES.has(lower)) approximated.add(name);
+			return `${alias}(`;
+		});
 		return c;
 	});
-
-	// `date(today)` / `date(now)` are Dataview's clock, ours is `today()`.
-	out = out.replace(/\bdate\s*\(\s*today\s*\)/gi, "today()");
-	if (/\bdate\s*\(\s*now\s*\)/i.test(out)) {
-		warnings.push("`date(now)` has no time-of-day equivalent — converted to `today()` (whole days).");
-		out = out.replace(/\bdate\s*\(\s*now\s*\)/gi, "today()");
+	if (usedNow) warnings.push("`date(now)` has no time-of-day equivalent — converted to `today()` (whole days).");
+	for (const name of approximated) {
+		warnings.push(`\`${name}()\` was converted to \`contains()\`, a case-insensitive substring match — results may differ.`);
 	}
-
-	// Function aliases.
-	out = out.replace(/\b([A-Za-z_]\w*)\s*\(/g, (match, name: string) => {
-		const alias = FUNCTION_ALIASES[name.toLowerCase()];
-		return alias ? `${alias}(` : match;
-	});
 
 	// Anything still calling an unknown function can't be evaluated — our engine
 	// throws, `evaluateSafe` swallows it to null, and the row silently vanishes.
-	// Report it so the caller drops the clause instead.
+	// Report it so the caller drops the clause instead. Scan code only: a
+	// parenthesis or dotted word inside a string value is data.
+	const code = out.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '""');
 	const callRe = /\b([A-Za-z_]\w*)\s*\(/g;
 	let m: RegExpExecArray | null;
-	while ((m = callRe.exec(out)) !== null) {
+	while ((m = callRe.exec(code)) !== null) {
 		const name = m[1].toLowerCase();
 		if (!KNOWN_FUNCTIONS.has(name)) unsupported.push(`${m[1]}()`);
 	}
-	for (const token of ["file.tasks", "file.lists", "file.day", "file.starred", "rows."]) {
-		if (out.includes(token)) unsupported.push(token);
+	// `this.` is the file HOSTING the query, which a base has no notion of.
+	// Stripping it silently turned the clause into a test on each row itself.
+	for (const token of ["this.", "file.tasks", "file.lists", "file.day", "file.cday", "file.mday", "file.starred", "rows."]) {
+		if (code.includes(token)) unsupported.push(token);
 	}
 
 	return { expr: out.trim(), warnings, unsupported: [...new Set(unsupported)] };
@@ -441,7 +463,11 @@ function buildFrom(tokens: readonly FromToken[], warnings: string[], errors: str
 			continue;
 		}
 		if (tok.t === "paren") {
-			out += tok.v;
+			// `-(#a OR #b)` negates the whole group, not just its first atom.
+			if (tok.v === "(" && pendingNot) {
+				out += "!(";
+				pendingNot = false;
+			} else out += tok.v;
 			continue;
 		}
 		const expr = atomToExpr(tok.v, warnings, errors);
@@ -452,12 +478,20 @@ function buildFrom(tokens: readonly FromToken[], warnings: string[], errors: str
 		out += pendingNot ? `!(${expr})` : expr;
 		pendingNot = false;
 	}
-	// A dropped atom can leave a dangling `&&` / `||` or an empty group.
-	return out
-		.replace(/\(\s*\)/g, "")
-		.replace(/(^|\()\s*(?:&&|\|\|)\s*/g, "$1")
-		.replace(/\s*(?:&&|\|\|)\s*($|\))/g, "$1")
-		.trim();
+	// A dropped atom can leave a dangling `&&` / `||`, two operators in a row, or
+	// an empty group — any of which makes the whole filter fail to parse and hide
+	// every row. Repeat until stable: one cleanup can expose another.
+	let prev = "";
+	while (prev !== out) {
+		prev = out;
+		out = out
+			.replace(/!?\(\s*\)/g, "")
+			.replace(/(&&|\|\|)\s*(&&|\|\|)/g, "$2")
+			.replace(/(^|\()\s*(?:&&|\|\|)\s*/g, "$1")
+			.replace(/\s*(?:&&|\|\|)\s*($|\))/g, "$1")
+			.trim();
+	}
+	return out;
 }
 
 function quote(s: string): string {

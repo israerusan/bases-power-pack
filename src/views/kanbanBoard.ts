@@ -297,6 +297,13 @@ export class KanbanBoard implements HoverParent {
 	 */
 	render(input: BoardInput): void {
 		this.input = input;
+		// Drop selected ids that are no longer rows on this board (note deleted or
+		// renamed, filtered out by the base): the bar would otherwise keep counting
+		// cards that a selection move can't touch.
+		if (this.selected.size > 0) {
+			const live = new Set(input.rows.map((r) => r.id));
+			for (const id of [...this.selected]) if (!live.has(id)) this.selected.delete(id);
+		}
 		const groupBy = input.groupBy || "status";
 		const container = this.host.containerEl;
 
@@ -660,6 +667,11 @@ export class KanbanBoard implements HoverParent {
 			// top of the card and swallow the drag.
 			this.cardDragActive = true;
 			this.dismissCardHover();
+			// Hold background re-renders for the drag, as the touch path does: a
+			// metadata event mid-drag would destroy the source card (losing its
+			// dragend cleanup) and orphan the auto-scroll loop. A render that does
+			// run (e.g. the drop's own) clears the hold itself.
+			this.host.beginInteraction();
 			event.dataTransfer?.setData("text/plain", row.id);
 			event.dataTransfer?.setData(DND_ROW, row.id);
 			if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
@@ -668,6 +680,7 @@ export class KanbanBoard implements HoverParent {
 			card.removeClass("is-dragging");
 			this.cardDragActive = false;
 			this.boardScroller?.stop();
+			this.host.endInteraction();
 		});
 		// Hand-order sort: each card is a precise drop target so a drag lands BETWEEN two
 		// cards, writing a rank that sorts it there.
@@ -683,7 +696,7 @@ export class KanbanBoard implements HoverParent {
 			}
 		});
 		// Focusable + Enter-to-open + Shift+F10/ContextMenu-to-menu (keyboard path).
-		rowActions.makeItemAccessible(card, row.name, () => rowActions.openRow(this.host.rowEnv, row), openMenu);
+		rowActions.makeItemAccessible(card, row.name, () => this.openCardDefault(row), openMenu);
 		card.addEventListener("contextmenu", (evt) => openMenu(evt));
 		// F2 renames the note in place when the card (not a nested input) is focused.
 		card.addEventListener("keydown", (evt) => {
@@ -734,7 +747,7 @@ export class KanbanBoard implements HoverParent {
 		let settled = false;
 		const finish = (): void => {
 			this.host.endInteraction();
-			card.draggable = true;
+			card.draggable = this.canWrite;
 		};
 		const commit = async (): Promise<void> => {
 			if (settled) return;
@@ -853,6 +866,12 @@ export class KanbanBoard implements HoverParent {
 		display: string,
 		ctx: { today: string; dueState: boolean }
 	): void {
+		// A computed field (file.tags, file.folder, a base formula) has no property to
+		// write: editing it would create a bogus frontmatter key shadowing the real value.
+		if (this.isComputedField(this.input.formulas, field)) {
+			this.renderFieldContent(card.createDiv({ cls: "bpp-card-meta" }), row, field, display, ctx);
+			return;
+		}
 		const line = card.createDiv({ cls: "bpp-card-meta bpp-card-meta-editable" });
 		this.renderFieldContent(line, row, field, display, ctx);
 		line.setAttr("title", "Click to edit");
@@ -1724,6 +1743,9 @@ export class KanbanBoard implements HoverParent {
 	/** Wire edge auto-scroll for mouse (HTML5) drags: feed the scroller the pointer
 	 * position on dragover, stop it when the drag leaves or drops. */
 	private wireBoardAutoScroll(board: HTMLElement): void {
+		// Stop the previous render's scroller before dropping it: its board is gone,
+		// so no later dragend/drop could ever stop its rAF loop.
+		this.boardScroller?.stop();
 		this.boardScroller = null;
 		const ensure = (): DragScroller => {
 			if (!this.boardScroller) this.boardScroller = new DragScroller(this.scrollContainerFor(board));
@@ -1762,6 +1784,14 @@ export class KanbanBoard implements HoverParent {
 			return;
 		}
 		const laneProp = target.laneKey === null ? null : swimProp || null;
+		// Under a name/due/priority/mtime sort the position within a column is not the
+		// user's to set: like the mouse path, a drop only changes column/lane and never
+		// writes the manual-order property (which would renumber the whole column).
+		if (!this.reorderEnabled) {
+			const row = this.input.rows.find((r) => r.id === rowId);
+			if (row) await this.moveRowToColumn(row, groupBy, target.columnName, laneProp, target.laneKey);
+			return;
+		}
 		let targetRow: Row | null = null;
 		if (target.beforeRowId) {
 			targetRow = this.input.rows.find((r) => r.id === target.beforeRowId) ?? null;

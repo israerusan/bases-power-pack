@@ -230,12 +230,15 @@ function compareRankValue(a: unknown, b: unknown): number {
 
 /**
  * Order two rows the way the manual "rank" sort displays them — by numeric rank
- * (unranked last), ties broken by name. Shared by the board's drag-to-reorder planning
- * so the rendered order and the reorder plan agree. Composes the same
- * {@link compareRankValue}/{@link compareText} the column sort uses.
+ * (unranked last), ties left at 0. Shared by the board's drag-to-reorder planning
+ * so the rendered order and the reorder plan agree: used with a stable sort over
+ * the same row order the column was built from, equal/missing ranks keep their
+ * natural (base/vault) order exactly as {@link sortRows} shows them. A name
+ * tie-break here once made the plan disagree with the board, so a drop onto an
+ * unranked column could be a silent no-op or reshuffle the whole column.
  */
 export function compareRowsByRank(a: Row, b: Row, rankProp: string): number {
-	return compareRankValue(a.scope.get(rankProp), b.scope.get(rankProp)) || compareText(a.name, b.name);
+	return compareRankValue(a.scope.get(rankProp), b.scope.get(rankProp));
 }
 
 function compareNumberValue(a: unknown, b: unknown): number {

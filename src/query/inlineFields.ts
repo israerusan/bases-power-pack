@@ -331,7 +331,9 @@ export function collectInlineFields(fields: readonly InlineField[]): Record<stri
 	const out: Record<string, unknown> = {};
 	const repeated = new Set<string>();
 	for (const f of fields) {
-		if (!(f.key in out)) {
+		// Own keys only: `in` also sees Object.prototype, so `constructor:: x`
+		// was collected as [Function Object, "x"].
+		if (!Object.prototype.hasOwnProperty.call(out, f.key)) {
 			out[f.key] = f.value;
 			continue;
 		}

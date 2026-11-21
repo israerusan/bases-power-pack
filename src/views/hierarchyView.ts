@@ -19,6 +19,10 @@ import { renderContextControls, renderPropertySelect, renderRollupBar } from "./
 export const VIEW_TYPE_HIERARCHY = "bpp-hierarchy-view";
 
 import { DND_TREE } from "./dnd";
+import { notePathOf } from "../model/rowId";
+
+/** Resolve `[[Name]]` parents by unique basename, as Obsidian links do. */
+const LINK_NAMES = { basename: true } as const;
 
 /**
  * Hierarchy / Outline view (PREMIUM). Renders the notes as an indented tree
@@ -98,7 +102,7 @@ export class HierarchyView extends PowerPackView {
 			return {
 				id: row.id,
 				name: row.name,
-				parentRef: resolveParentRef(row.scope.get(parentProp), knownPaths),
+				parentRef: resolveParentRef(row.scope.get(parentProp), knownPaths, LINK_NAMES),
 				order,
 				done: this.isDone(row, doneProp),
 			};
@@ -176,7 +180,7 @@ export class HierarchyView extends PowerPackView {
 		const inputs: HierInput[] = rows.map((row) => ({
 			id: row.id,
 			name: row.name,
-			parentRef: resolveParentRef(row.scope.get(parentProp), knownPaths),
+			parentRef: resolveParentRef(row.scope.get(parentProp), knownPaths, LINK_NAMES),
 			order: null,
 			done: false,
 		}));
@@ -411,6 +415,12 @@ export class HierarchyView extends PowerPackView {
 
 	/** Apply a validated reparent: write (or clear) the child's parent property. */
 	private async reparent(childId: string, newParentId: string | null, parentProp: string): Promise<void> {
+		// The parent property lives on the NOTE. A task-line or FLATTEN row id isn't a
+		// note path, so validation below used to fail with a misleading "unknown note".
+		if (notePathOf(childId) !== childId || (newParentId !== null && notePathOf(newParentId) !== newParentId)) {
+			new Notice("Reparenting works on whole-note rows only — switch Row source to Notes and clear Flatten property to move notes in the Outline.");
+			return;
+		}
 		// Validate against the FULL vault tree (not the filtered view) so cycle
 		// detection is complete and a filtered-out (ghost) parent is still a valid
 		// target — a reparent must never create a cycle the current filter hides.
@@ -419,7 +429,7 @@ export class HierarchyView extends PowerPackView {
 		const inputs: HierInput[] = snapshot.map((n) => ({
 			id: n.path,
 			name: n.name,
-			parentRef: resolveParentRef(n.frontmatter[parentProp], knownPaths),
+			parentRef: resolveParentRef(n.frontmatter[parentProp], knownPaths, LINK_NAMES),
 			order: null,
 			done: false,
 		}));
@@ -453,7 +463,7 @@ export class HierarchyView extends PowerPackView {
 				// Canonicalize a typed value (wikilink / extension-less) to a real path
 				// so it isn't rejected as "unknown parent" when it names an actual note.
 				const knownPaths = new Set(this.plugin.getNotesSnapshot().map((n) => n.path));
-				void this.reparent(id, resolveParentRef(clean, knownPaths), parentProp);
+				void this.reparent(id, resolveParentRef(clean, knownPaths, LINK_NAMES), parentProp);
 			},
 		}).open();
 	}

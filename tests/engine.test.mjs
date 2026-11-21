@@ -926,6 +926,15 @@ assert.equal(H.resolveParentRef("[[Projects/Alpha.md|Alpha]]", known), "Projects
 assert.equal(H.resolveParentRef("Projects/Alpha", known), "Projects/Alpha.md", "bare path gets .md when that resolves");
 assert.equal(H.resolveParentRef("", known), null, "empty ref is null");
 assert.equal(H.resolveParentRef("Ghost/Nope.md", known), "Ghost/Nope.md", "unknown ref returned as-is for missing detection");
+// A basename wikilink (what the property editor writes) resolves to the one note
+// with that name, in any folder — but only when asked, and never when ambiguous.
+{
+	const k2 = new Set(["Projects/My Project.md", "A/Dup.md", "B/Dup.md"]);
+	assert.equal(H.resolveParentRef("[[My Project]]", k2, { basename: true }), "Projects/My Project.md", "basename link resolves to its folder path");
+	assert.equal(H.resolveParentRef("[[my project|MP]]", k2, { basename: true }), "Projects/My Project.md", "case-insensitive, alias stripped");
+	assert.equal(H.resolveParentRef("[[Dup]]", k2, { basename: true }), "Dup", "an ambiguous basename stays unresolved");
+	assert.equal(H.resolveParentRef("[[My Project]]", k2), "My Project", "without the option, behavior is unchanged");
+}
 
 // Forest: two roots, nesting, a leaf.
 const f1 = H.buildForest([
@@ -1402,8 +1411,19 @@ const rk = (name, rank) => srow(name, rank === undefined ? { status: "Todo" } : 
 assert.ok(kanban.compareRowsByRank(rk("A", 0), rk("B", 1), "rank") < 0, "lower rank sorts first");
 assert.ok(kanban.compareRowsByRank(rk("A", 2), rk("B", 1), "rank") > 0, "higher rank sorts later");
 assert.ok(kanban.compareRowsByRank(rk("A"), rk("B", 5), "rank") > 0, "unranked sorts after ranked");
-assert.ok(kanban.compareRowsByRank(rk("B"), rk("A"), "rank") > 0, "two unranked fall back to name (B after A)");
+assert.equal(kanban.compareRowsByRank(rk("B"), rk("A"), "rank"), 0, "two unranked tie (keep natural order, like the display)");
 assert.equal(kanban.compareRowsByRank(rk("x", 3), rk("x", 3), "rank"), 0, "equal rank + name → 0");
+// Regression: the reorder plan must order a column exactly as the manual sort
+// displays it. Unranked cards in vault order [C, A, B] display as C, A, B; the
+// plan used to break ties by name (A, B, C), so a drop computed against the
+// wrong neighbours.
+{
+	const cab = [rk("C"), rk("A"), rk("B"), rk("D", 1)];
+	const shown = kanban.sortKanbanColumn(cab, "manual", "rank").map((r) => r.name);
+	const planned = [...cab].sort((a, b) => kanban.compareRowsByRank(a, b, "rank")).map((r) => r.name);
+	assert.deepEqual(shown, ["D", "C", "A", "B"], "manual sort: ranked first, unranked in natural order");
+	assert.deepEqual(planned, shown, "reorder plan order == displayed order");
+}
 
 // laneKeyOf: blank/missing lane value → the "(empty)" sentinel band.
 assert.equal(swimlane.laneKeyOf(srow("n", { owner: "Sam" }), "owner"), "Sam", "present lane value is the key");
@@ -2107,6 +2127,51 @@ assert.equal(c4.filters, 'file.name == "Alpha"', "a lone `=` becomes `==`");
 const c5 = dql.convertDql('TABLE x WHERE regexmatch("^a", file.name)');
 assert.equal(c5.filters, null, "an unconvertible WHERE clause is dropped, not mistranslated");
 assert.equal(c5.errors.length, 1, "and the drop is reported");
+
+// ---- DQL regressions (1.29.x polish) --------------------------------------
+{
+	// A bare date literal stays a date — it used to tokenize as 2026 - 6 - 1.
+	const d = dql.translateExpression("due >= date(2026-06-01)");
+	assert.deepEqual(d.unsupported, [], "date(YYYY-MM-DD) is supported");
+	const dueScope = (due) => ({ get: (k) => (k === "due" ? due : undefined) });
+	assert.equal(expr.evaluateSafe(d.expr, dueScope("2026-07-01")), true, "a later due date passes the converted filter");
+	assert.equal(expr.evaluateSafe(d.expr, dueScope("2020-01-01")), false, "an earlier due date no longer passes (was compared to 2019)");
+
+	// `this.` refers to the query's host file: drop and report, never strip.
+	const t = dql.convertDql('TABLE status WHERE contains(file.outlinks, this.file.name)');
+	assert.equal(t.filters, null, "a this.-clause is dropped");
+	assert.ok(t.errors.length >= 1, "and the drop is reported");
+
+	// Parentheses inside a string value are data, not a function call.
+	const s = dql.convertDql('TABLE status WHERE status = "blocked (waiting)"');
+	assert.equal(s.filters, 'status == "blocked (waiting)"', "a string value with parens is kept intact");
+	assert.equal(s.errors.length, 0, "and nothing is reported as dropped");
+
+	// A negated group negates the whole group.
+	assert.equal(
+		dql.convertDql("LIST FROM -(#a OR #b)").filters,
+		'!(hastag(file.tags, "a") || hastag(file.tags, "b"))',
+		"-(A OR B) negates both atoms"
+	);
+
+	// Dropping a middle FROM atom must not leave two operators in a row.
+	const mid = dql.convertDql("LIST FROM #a AND bogus OR #b");
+	assert.ok(!/(&&|\|\|)\s*(&&|\|\|)/.test(String(mid.filters)), "no back-to-back operators after a drop");
+	const midScope = { get: (k) => (k === "file.tags" ? ["b"] : undefined) };
+	assert.notEqual(expr.evaluateSafe(String(mid.filters), midScope), null, "the cleaned FROM filter still parses");
+
+	// striptime has no faithful equivalent; it is dropped, not aliased to string().
+	assert.ok(dql.translateExpression("striptime(due) = date(today)").unsupported.includes("striptime()"), "striptime is reported");
+
+	// Lower-case, one-line DQL splits into clauses like the upper-case form.
+	const lc = dql.convertDql('list from #project where status = "open"');
+	assert.deepEqual(lc.filters, { and: ['hastag(file.tags, "project")', 'status == "open"'] }, "lower-case FROM/WHERE are clauses");
+	assert.deepEqual(lc.formulas, {}, "and no bogus formula column is invented");
+	// …while an upper-case query keeps a lower-case word as an identifier.
+	assert.equal(dql.convertDql("LIST WHERE list = 1").filters, "list == 1", "WHERE list = 1 stays one clause");
+	// Approximate aliases warn instead of silently changing semantics.
+	assert.equal(dql.translateExpression('econtains(tags, "x")').warnings.length, 1, "econtains → contains warns");
+}
 assert.ok(c5.errors[0].includes("regexmatch()"), "the report names the construct that failed");
 
 const c6 = dql.convertDql('TABLE x WHERE due < date(today) AND status != "done"');
@@ -2740,3 +2805,44 @@ assert.equal(
 
 fs.unlinkSync(outfile);
 console.log("engine tests passed");
+
+// ---- prototype keys are not properties ------------------------------------
+{
+	const collected = inlineFields.collectInlineFields([
+		{ key: "constructor", value: "alpha", line: 0 },
+		{ key: "toString", value: "x", line: 1 },
+	]);
+	assert.equal(collected.constructor, "alpha", "an inline `constructor::` field is a plain scalar, not [Function, value]");
+	assert.equal(collected.toString, "x", "an inline `toString::` field is a plain scalar");
+	const note = { path: "n.md", name: "n", folder: "", ext: "md", tags: [], ctime: 0, mtime: 0, size: 0, frontmatter: {} };
+	const sc = rowmod.makeScope(note);
+	assert.equal(sc.get("constructor"), undefined, "a missing `constructor` property is undefined, not Object");
+	assert.equal(sc.get("toString"), undefined, "a missing `toString` property is undefined, not a function");
+}
+
+// ---- ordering compares the whole value, not its leading number ------------
+{
+	const v = (x) => ({ get: (k) => (k === "v" ? x : undefined) });
+	assert.equal(expr.evaluateSafe('v < "10:45"', v("10:30")), true, "times order by the full value");
+	assert.equal(expr.evaluateSafe('v >= "10:45"', v("10:30")), false, "10:30 is not >= 10:45");
+	assert.equal(expr.evaluateSafe('v < "2026-06"', v("2026-05")), true, "year-months order chronologically");
+	assert.equal(expr.evaluateSafe('v > "2026-06"', v("2026-12")), true, "2026-12 > 2026-06");
+	assert.equal(expr.evaluateSafe('v < "1.2.9"', v("1.2.3")), true, "semvers don't collapse to 1.2");
+	assert.equal(expr.evaluateSafe('v > "40%"', v("60%")), true, "unit strings still compare numerically");
+	assert.equal(expr.evaluateSafe("v < 10", v("9")), true, "numeric strings still compare numerically");
+	// A differing leading number still decides — lexical order would get these backwards.
+	assert.equal(expr.evaluateSafe('v < "10:30"', v("9:30")), true, "9:30 < 10:30 (unpadded hour)");
+	assert.equal(expr.evaluateSafe('v < "10:30"', v(5)), true, "a number vs a numeric-leading string compares numerically");
+}
+
+// ---- swimlanes scale linearly with a high-cardinality lane property --------
+{
+	const many = [];
+	for (let i = 0; i < 8000; i++) many.push(srow(`n${i}`, { status: i % 2 ? "Todo" : "Done", owner: `o${i}` }));
+	const t0 = Date.now();
+	const model = swimlane.buildSwimlanes(many, { groupBy: "status", laneProp: "owner" });
+	const ms = Date.now() - t0;
+	assert.equal(model.lanes.length, 30, "lanes are capped");
+	assert.equal(model.truncatedLanes, true, "and the cap is reported");
+	assert.ok(ms < 1000, `8000 unique-lane rows build in well under a second (took ${ms}ms; was ~1.9s when quadratic)`);
+}

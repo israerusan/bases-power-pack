@@ -1,6 +1,6 @@
 import { App, Menu, Notice, TFile, normalizePath } from "obsidian";
 import type BasesPowerPackPlugin from "../main";
-import type { Row } from "../model/row";
+import { COMPUTED_FILE_PROPS, type Row } from "../model/row";
 import { parseImageRef } from "../query/gallery";
 import { coerceFieldInput, formatFieldForEdit } from "../query/inlineEdit";
 import { resolveRowColor } from "../query/colorRules";
@@ -125,9 +125,12 @@ export function addCommonRowMenuItems(
 	menu.addItem((i) =>
 		i.setTitle("Open to the right").setIcon("separator-vertical").onClick(() => openRowToRight(env, row))
 	);
-	if (fields.length > 0) {
+	// Computed file.* accessors have no property to write (an edit would add a bogus
+	// `file.tags` frontmatter key), so they get no edit item.
+	const editable = fields.filter((field) => !COMPUTED_FILE_PROPS.has(field));
+	if (editable.length > 0) {
 		menu.addSeparator();
-		for (const field of fields) {
+		for (const field of editable) {
 			menu.addItem((i) =>
 				i.setTitle(`Edit ${field}…`).setIcon("pencil").onClick(() => editFieldViaModal(env, row, field, after))
 			);

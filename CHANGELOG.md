@@ -3,6 +3,47 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.29.2] - 2026-11-21
+
+**Does what it says.** A fix-only pass checking every documented behaviour against the
+code. No new features.
+
+### Fixed
+- **Kanban manual order:** dragging or Move up/down on cards with no rank now follows the
+  order shown on screen. Ties used to be planned by name, so a drop could be ignored or the
+  whole column renumbered into alphabetical order.
+- **Kanban touch drag:** putting a card back where you picked it up is a no-op (it used to
+  jump to the bottom of the column); under name/due/priority/modified sorts a touch drop
+  only changes column/lane and no longer writes rank to the whole column.
+- **Kanban mouse drag:** background refreshes are held for the drag, and the edge
+  auto-scroll loop is always stopped, so a refresh mid-drag can't strand it.
+- **Kanban:** selection count drops cards that were deleted or renamed; computed fields
+  (`file.tags`, `file.folder`, formulas) are read-only instead of writing a bogus
+  property; Enter on a focused card honours "Card click opens"; renaming a card on a
+  read-only board no longer makes it draggable.
+- **Gantt:** a cancelled touch/pen gesture snaps the bar back instead of committing a move.
+- **Filters:** `<`/`>` on strings that share a leading number (`"10:30"` vs `"10:45"`,
+  `"2026-05"` vs `"2026-06"`, `"1.2.3"` vs `"1.2.9"`) now compare the whole value.
+- Properties named `constructor`/`toString` (frontmatter or inline) no longer resolve to
+  built-in functions.
+- **Outline:** `parent: "[[My Project]]"` links resolve when the note lives in a subfolder
+  (unique name only; ambiguous names stay unresolved). Reparenting task/FLATTEN rows now
+  explains that it needs whole-note rows instead of failing with "unknown note".
+- **Swimlanes:** building lanes is linear (was quadratic — seconds per render with a
+  high-cardinality lane property) and lanes past the cap are never built.
+- **DQL importer:** `date(2026-06-01)` stays a date; `this.`, `striptime`, `file.cday` and
+  `file.mday` are reported as unsupported instead of silently changing the filter;
+  `econtains`/`containsword` warn that matching is approximate; string values containing
+  parentheses are kept; `FROM -(#a OR #b)` negates the whole group; dropping a middle FROM
+  source no longer produces an unparsable filter; lower-case one-line queries split into
+  clauses.
+- Editing the active `.base` file repaints open views; "Create base and open view" refreshes
+  an already-open view.
+- A rejected license key shows its reason immediately; the buy link always uses the
+  current URL instead of one saved by an early install.
+- README: Calendar layouts are month/week/agenda (there is no day view); the "New Kanban
+  board" command is listed.
+
 ## [1.29.1] - 2026-10-16
 
 **Writeback safety.** Two independent code reviews of 1.29.0's task and FLATTEN

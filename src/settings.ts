@@ -365,6 +365,10 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 						// even when the premium status didn't flip.
 						void this.plugin.refreshLicense(true).then((changed) => {
 							if (changed) this.display();
+							// Status didn't flip (e.g. Lite → still Lite on a pasted bad
+							// key): update the rejection reason in place, or it would
+							// only appear after the tab is reopened.
+							else showLicenseError();
 						});
 					})
 			);
@@ -389,13 +393,15 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 		}
 
 		// Explain WHY a supplied key was rejected, rather than silently staying Lite.
-		if (!this.plugin.settings.isPro && this.plugin.settings.licenseKey && this.plugin.licenseError) {
+		const licenseErrorEl = status.createEl("p", { cls: "bpp-license-error" });
+		const showLicenseError = (): void => {
+			const { isPro, licenseKey } = this.plugin.settings;
 			const reason = this.plugin.licenseError;
-			status.createEl("p", {
-				cls: "bpp-license-error",
-				text: `Key not accepted: ${typeof reason === "string" ? reason : ""}`,
-			});
-		}
+			const show = !isPro && !!licenseKey && !!reason;
+			licenseErrorEl.setText(show ? `Key not accepted: ${reason}` : "");
+			licenseErrorEl.toggleClass("bpp-hidden", !show);
+		};
+		showLicenseError();
 
 		// (The purchase URL is an author/config concern, not a buyer setting — it's
 		// hardcoded via DEFAULT_SETTINGS.purchaseUrl rather than exposed as an editable
@@ -967,7 +973,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 				premiumIn(
 					parent,
 					"Outline parent property",
-					"Frontmatter property holding the vault-relative path of a note's parent (builds the Outline tree).",
+					"Frontmatter property holding a note's parent — a vault-relative path or a [[link]] (builds the Outline tree).",
 					(setting) => {
 						setting.addText((text) =>
 							this.keySuggest(text)

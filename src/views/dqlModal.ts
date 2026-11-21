@@ -162,6 +162,10 @@ export class DqlConvertModal extends Modal {
 		const filters = JSON.stringify(conversion.filters ?? "");
 		if (filters.includes("file.outlinks") || filters.includes("file.inlinks")) s.linkTraversal = true;
 		await this.plugin.saveSettings();
+		// activateView only reveals an already-open view, and neither creating a
+		// .base nor a settings change fires the metadata event views repaint on, so
+		// an open board would keep showing the previous data source.
+		this.plugin.refreshViews();
 	}
 }
 

@@ -81,7 +81,7 @@ _Move work cleanly from Review to Done without opening a note or babysitting fro
 ## All views at a glance
 
 - **Kanban** — group work by a property like `status`, drag cards, reorder them, and edit metadata in place.
-- **Calendar** — see work by day/week/month and drag events to reschedule them.
+- **Calendar** — see work in a month, week, or agenda layout and drag events to reschedule them.
 - **Gantt** — plan spans and milestones on a timeline; drag bars to move or resize them.
 - **Outline** — turn parent/child notes into a real hierarchy with progress roll-ups.
 - **Pivot** — cross-tabulate rows × columns like a lightweight spreadsheet.
@@ -146,6 +146,7 @@ absent.
 Available from the command palette:
 
 - **Open Kanban view (Lite)**
+- **New Kanban board** — scaffolds a `Tasks` folder with three sample notes and opens the board grouped by `status`
 - **Open Calendar view (Premium)**
 - **Open Gantt view (Premium)**
 - **Open Outline view (Premium)**

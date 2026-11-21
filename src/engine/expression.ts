@@ -415,7 +415,7 @@ export function arithNumber(v: Value): number {
  * Ordinal comparison for `<`, `>`, `<=`, `>=`. Date-like strings compare
  * lexically (which is chronological for `YYYY-MM-DD`); any other pair that both
  * coerce to numbers — including numeric-with-unit strings like `"50%"` or
- * `"5 pts"` via lenient `toNumber` — compare numerically; otherwise lexically.
+ * `"5 pts"` via {@link arithNumber} — compare numerically; otherwise lexically.
  */
 function compare(a: Value, b: Value): number {
 	// A date() instance compares by ISO day, never by its toString() form
@@ -433,9 +433,18 @@ function compare(a: Value, b: Value): number {
 		if (da !== null && db !== null) return da === db ? 0 : da < db ? -1 : 1;
 	}
 	if (!looksDateLike(a) && !looksDateLike(b)) {
-		const na = toNumber(a);
-		const nb = toNumber(b);
+		// arithNumber, not the parseFloat-based toNumber: "10:30" vs "10:45",
+		// "2026-05" vs "2026-06" or "1.2.3" vs "1.2.9" must not collapse to their
+		// equal leading number. Unit strings ("50%", "5 pts") still coerce.
+		const na = arithNumber(a);
+		const nb = arithNumber(b);
 		if (!Number.isNaN(na) && !Number.isNaN(nb)) return na === nb ? 0 : na < nb ? -1 : 1;
+		// Numeric-LEADING strings ("9:30", "1.10.0", "3 - 5"): when the leading
+		// numbers differ they still decide ("9:30" < "10:30", where lexical order
+		// would be backwards). Only an equal leading number falls through to lexical.
+		const pa = toNumber(a);
+		const pb = toNumber(b);
+		if (!Number.isNaN(pa) && !Number.isNaN(pb) && pa !== pb) return pa < pb ? -1 : 1;
 	}
 	const sa = toStr(a);
 	const sb = toStr(b);

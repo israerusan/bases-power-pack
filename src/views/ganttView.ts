@@ -410,6 +410,13 @@ export class GanttView extends PowerPackView {
 			if (barEl.hasPointerCapture(evt.pointerId)) barEl.releasePointerCapture(evt.pointerId);
 			this.endInteraction();
 
+			// A cancelled gesture (OS/browser takeover, palm rejection) is not a drop:
+			// its coordinates aren't a point the user chose. Snap back, write nothing.
+			if (evt.type === "pointercancel") {
+				barEl.setCssProps({ transform: "", width: "" });
+				void this.render();
+				return;
+			}
 			if (Math.abs(dx) < CLICK_SLOP) {
 				barEl.setCssProps({ transform: "" });
 				if (currentKind === "move") this.openRow(row);

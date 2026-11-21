@@ -159,7 +159,12 @@ export default class BasesPowerPackPlugin extends Plugin {
 		// event (it isn't markdown), so invalidate the resolve cache on its modify.
 		this.registerEvent(
 			this.app.vault.on("modify", (file) => {
-				if (file instanceof TFile && file.extension === "base") this.invalidateResolved();
+				if (!(file instanceof TFile) || file.extension !== "base") return;
+				this.invalidateResolved();
+				// Open views repaint on metadata events, which a .base edit never
+				// fires; without this they kept the old filters/formulas until some
+				// unrelated note changed.
+				if (this.settings.isPro && file.path === this.settings.activeBasePath) this.refreshViews();
 			})
 		);
 
@@ -693,6 +698,11 @@ export default class BasesPowerPackPlugin extends Plugin {
 		const loaded =
 			data !== null && typeof data === "object" ? (data as Partial<BasesPowerPackSettings>) : {};
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded);
+		// The purchase URL is not a user setting, but it was persisted into data.json
+		// by every save, so an early install would keep serving a retired link
+		// (a placeholder store URL, then a README anchor) forever. Always use the
+		// shipped one.
+		this.settings.purchaseUrl = DEFAULT_SETTINGS.purchaseUrl;
 
 		this.settings.savedFilters = sanitizeSavedFilters(this.settings.savedFilters);
 		this.settings.kanbanColumnSets = sanitizeColumnSets(this.settings.kanbanColumnSets);

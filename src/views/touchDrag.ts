@@ -199,8 +199,11 @@ export class TouchDragController {
 	}
 
 	private resolveTarget(x: number, y: number): TouchDropTarget | null {
-		const { cell, card } = this.hitTest(x, y);
-		if (!cell) return null;
+		const { cell, card, onSelf } = this.hitTest(x, y);
+		// Released over the card being dragged (picked up, then put back): a no-op.
+		// Without this the cell still resolved, with no before-card, and the drop
+		// appended the card to the END of its column.
+		if (onSelf || !cell) return null;
 		const columnName = cell.getAttribute("data-bpp-col");
 		if (columnName === null) return null;
 		const laneKey = cell.getAttribute("data-bpp-lane");
@@ -218,15 +221,16 @@ export class TouchDragController {
 
 	/** Find the column cell and (optionally) the card under a viewport point. The
 	 * ghost is `pointer-events: none`, so it never occludes the hit-test. */
-	private hitTest(x: number, y: number): { cell: HTMLElement | null; card: HTMLElement | null } {
+	private hitTest(x: number, y: number): { cell: HTMLElement | null; card: HTMLElement | null; onSelf: boolean } {
 		const doc = this.activeCard?.ownerDocument;
 		const el = doc?.elementFromPoint(x, y);
-		if (!(el instanceof HTMLElement)) return { cell: null, card: null };
+		if (!(el instanceof HTMLElement)) return { cell: null, card: null, onSelf: false };
 		const cell = el.closest<HTMLElement>("[data-bpp-col]");
 		let card = el.closest<HTMLElement>("[data-bpp-row]");
 		// Ignore the card being dragged as its own drop target.
-		if (card && card.getAttribute("data-bpp-row") === this.activeRowId) card = null;
-		return { cell, card };
+		const onSelf = card !== null && card.getAttribute("data-bpp-row") === this.activeRowId;
+		if (onSelf) card = null;
+		return { cell, card, onSelf };
 	}
 
 	private inTopHalf(el: HTMLElement, y: number): boolean {
