@@ -3,6 +3,24 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Gantt dependencies, edited on the timeline (#2).** Dependencies now draw as arrows
+  from a predecessor's end to its successor's start (finish-to-start). Create one by
+  dragging the dot after a bar onto another bar, or from a bar's menu (**Add predecessor…** /
+  **Add successor…** open a task picker). Click an arrow to open either note or remove the
+  link; the bar menu also lists **Remove dependency on …**. Arrows update immediately.
+- **Schedule warnings.** A successor that starts on or before its predecessor's last day
+  gets a red outline and a dashed red arrow; a task waiting on a predecessor that isn't
+  done is striped. Both are explained in the bar's tooltip and screen-reader label.
+- **Circular dependencies are refused** with a notice naming the loop, and the picker
+  never offers a task that would create one.
+- The dependency property is the same one the Kanban **Blocked** badge uses, now also
+  pickable from the Gantt toolbar (**Depends on**). Writes keep your existing entries
+  verbatim (wikilinks, paths, aliases) and store a list, so multi-dependency notes and
+  ordinary frontmatter keep working. Every edit is undoable.
+
 ## [1.29.2] - 2026-11-21
 
 **Does what it says.** A fix-only pass checking every documented behaviour against the

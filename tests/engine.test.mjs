@@ -25,6 +25,7 @@ await build({
 			export * as swimlane from "./src/query/swimlane.ts";
 			export * as cardLayout from "./src/query/cardLayout.ts";
 			export * as relations from "./src/query/relations.ts";
+			export * as ganttLinks from "./src/query/ganttLinks.ts";
 			export * as analytics from "./src/query/analytics.ts";
 			export * as autoscroll from "./src/views/autoscroll.ts";
 			export * as colorRules from "./src/query/colorRules.ts";
@@ -57,7 +58,7 @@ await build({
 });
 
 const m = await import(`file://${outfile.replace(/\\/g, "/")}`);
-const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, hierarchy, kanban, swimlane, cardLayout, relations, analytics, autoscroll, colorRules, pivot, dashboard, gallery, ranking, exporter, feed, kanbanActions, base, resolve, rowmod, inlineFields, tasks, flatten, linkIndex, dql, taskRow, rowId } = m;
+const { expr, filter, rollup, gantt, dates, inlineEdit, automation, undo, search, wip, hierarchy, kanban, swimlane, cardLayout, relations, ganttLinks, analytics, autoscroll, colorRules, pivot, dashboard, gallery, ranking, exporter, feed, kanbanActions, base, resolve, rowmod, inlineFields, tasks, flatten, linkIndex, dql, taskRow, rowId } = m;
 
 /** Build a Row-like object with the given frontmatter/name for the pure engines. */
 function makeTestRow(name, fm) {
@@ -2802,6 +2803,65 @@ assert.equal(
 	"yes",
 	"inline fields after an unclosed indented ~~~ line are still read"
 );
+
+// ---- Gantt dependency links (issue #2) --------------------------------------
+{
+	const nodes = [
+		{ id: "a.md", name: "Design", deps: "" },
+		{ id: "b.md", name: "Build", deps: "[[Design]]" },
+		{ id: "c.md", name: "Test", deps: ["[[Build]]", "[[Missing]]", "[[Test]]"] },
+		{ id: "d.md", name: "Ship", deps: "[[projects/Build|the build]], Test" },
+	];
+	const edges = ganttLinks.buildDependencyEdges(nodes);
+	assert.deepEqual(
+		edges.map((e) => `${e.from}>${e.to}`),
+		["a.md>b.md", "b.md>c.md", "b.md>d.md", "c.md>d.md"],
+		"edges resolve wikilinks, paths, aliases, comma strings; drop missing + self links"
+	);
+	// A task row named like a note is never resolved AS a link target (target:false).
+	const withTask = [...nodes, { id: "a.md#L9", name: "Design", deps: "", target: false }];
+	assert.deepEqual(
+		ganttLinks.buildDependencyEdges(withTask).filter((e) => e.from === "a.md#L9"),
+		[],
+		"non-target rows never become predecessors"
+	);
+
+	// Cycles: Ship → Design would close Design→Build→Ship.
+	assert.equal(ganttLinks.wouldCreateCycle(edges, "d.md", "a.md"), true, "closing a loop is a cycle");
+	assert.equal(ganttLinks.wouldCreateCycle(edges, "a.md", "a.md"), true, "self-link is a cycle");
+	assert.equal(ganttLinks.wouldCreateCycle(edges, "a.md", "d.md"), false, "a redundant forward link is not a cycle");
+	assert.equal(ganttLinks.wouldCreateCycle([], "x", "y"), false, "no edges, no cycle");
+	const chain = [];
+	for (let i = 0; i < 20000; i++) chain.push({ from: `n${i}`, to: `n${i + 1}` });
+	assert.equal(ganttLinks.wouldCreateCycle(chain, "n20000", "n0"), true, "a long chain is walked without blowing the stack");
+
+	// Schedule conflicts: inclusive end days, successor must start AFTER the predecessor's end.
+	const dates = new Map([
+		["a.md", { startDay: 0, endDay: 4 }],
+		["b.md", { startDay: 4, endDay: 6 }], // starts on Design's last day → conflict
+		["c.md", { startDay: 7, endDay: 8 }], // starts the day after Build ends → fine
+	]);
+	const conflicts = ganttLinks.scheduleConflicts(edges, dates);
+	assert.deepEqual([...conflicts], [ganttLinks.edgeKey({ from: "a.md", to: "b.md" })], "only the overlapping edge conflicts");
+
+	// add/remove preserve the user's entries verbatim and always produce a list.
+	assert.deepEqual(ganttLinks.addDependency("", "Design"), ["[[Design]]"], "empty → one-item list");
+	assert.deepEqual(ganttLinks.addDependency(undefined, "Design"), ["[[Design]]"], "missing → one-item list");
+	assert.deepEqual(
+		ganttLinks.addDependency("[[projects/Build|the build]]", "Test"),
+		["[[projects/Build|the build]]", "[[Test]]"],
+		"a single-link string becomes a list; the existing alias/path form is kept"
+	);
+	assert.deepEqual(ganttLinks.addDependency("Build, Test", "Ship"), ["Build", "Test", "[[Ship]]"], "comma string → list");
+	assert.equal(ganttLinks.addDependency(["[[design]]"], "Design"), null, "already listed (case-insensitive) → no write");
+	assert.deepEqual(
+		ganttLinks.removeDependency(["[[Build]]", "[[folder/Test|T]]"], "test"),
+		["[[Build]]"],
+		"remove matches the link target through path + alias"
+	);
+	assert.deepEqual(ganttLinks.removeDependency("[[Design]]", "Design"), [], "removing the last link leaves an empty list");
+	assert.equal(ganttLinks.removeDependency(["[[Build]]"], "Nope"), null, "absent → no write");
+}
 
 fs.unlinkSync(outfile);
 console.log("engine tests passed");

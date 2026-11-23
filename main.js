@@ -10154,7 +10154,7 @@ var BasesPowerPackSettingTab = class extends import_obsidian11.PluginSettingTab 
       })
     );
     new import_obsidian11.Setting(containerEl).setName("Dependency property").setDesc(
-      `Optional property listing a card's dependencies as [[links]] (e.g. blockedBy, depends). A card whose dependency isn't at the "done" value shows a Blocked badge naming what's still blocking it. Leave blank for off.`
+      `Optional property listing a card's dependencies as [[links]] (e.g. blockedBy, depends). A card whose dependency isn't at the "done" value shows a Blocked badge naming what's still blocking it. The Gantt view draws these as arrows and can add or remove them. Leave blank for off.`
     ).addText(
       (text) => this.keySuggest(text).setPlaceholder("(none)").setValue(this.plugin.settings.kanbanDependsProp).onChange((value) => {
         this.plugin.settings.kanbanDependsProp = value.trim();
@@ -11351,6 +11351,84 @@ var KanbanBasesView = class extends import_obsidian12.BasesView {
 
 // src/views/ganttView.ts
 var import_obsidian13 = require("obsidian");
+
+// src/query/ganttLinks.ts
+function edgeKey(edge) {
+  return `${edge.from}\0${edge.to}`;
+}
+function buildDependencyEdges(nodes) {
+  const byName = /* @__PURE__ */ new Map();
+  for (const n of nodes) if (n.target !== false) byName.set(n.name.toLowerCase(), n.id);
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const n of nodes) {
+    for (const name of parseLinks(n.deps)) {
+      const from = byName.get(name.toLowerCase());
+      if (!from || from === n.id) continue;
+      const edge = { from, to: n.id };
+      const key = edgeKey(edge);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(edge);
+    }
+  }
+  return out;
+}
+function wouldCreateCycle(edges, from, to) {
+  var _a;
+  if (from === to) return true;
+  const next = /* @__PURE__ */ new Map();
+  for (const e of edges) {
+    const arr = next.get(e.from);
+    if (arr) arr.push(e.to);
+    else next.set(e.from, [e.to]);
+  }
+  const stack = [to];
+  const visited = /* @__PURE__ */ new Set();
+  while (stack.length > 0) {
+    const cur = stack.pop();
+    if (cur === from) return true;
+    if (visited.has(cur)) continue;
+    visited.add(cur);
+    for (const n of (_a = next.get(cur)) != null ? _a : []) stack.push(n);
+  }
+  return false;
+}
+function scheduleConflicts(edges, dates) {
+  const out = /* @__PURE__ */ new Set();
+  for (const e of edges) {
+    const pred = dates.get(e.from);
+    const succ = dates.get(e.to);
+    if (pred && succ && succ.startDay <= pred.endDay) out.add(edgeKey(e));
+  }
+  return out;
+}
+function dependencyLink(name) {
+  return `[[${name}]]`;
+}
+function entriesOf(raw) {
+  if (raw === void 0 || raw === null) return [];
+  if (Array.isArray(raw)) return raw.map((v) => toStr(v)).filter((s) => s.trim() !== "");
+  return toStr(raw).split(",").map((s) => s.trim()).filter(Boolean);
+}
+function targetOf(entry) {
+  var _a;
+  return ((_a = parseLinks(entry)[0]) != null ? _a : "").toLowerCase();
+}
+function addDependency(raw, name) {
+  const entries = entriesOf(raw);
+  const want = name.toLowerCase();
+  if (entries.some((e) => targetOf(e) === want)) return null;
+  return [...entries, dependencyLink(name)];
+}
+function removeDependency(raw, name) {
+  const entries = entriesOf(raw);
+  const want = name.toLowerCase();
+  const kept = entries.filter((e) => targetOf(e) !== want);
+  return kept.length === entries.length ? null : kept;
+}
+
+// src/views/ganttView.ts
 var VIEW_TYPE_GANTT = "bpp-gantt-view";
 var ZOOM_PRESETS = [
   { label: "Quarter", px: 4 },
@@ -11378,6 +11456,16 @@ var GanttView = class extends PowerPackView {
      * container, which would drop focus to the body). Same pattern as the
      * Outline's focusRowId. */
     this.focusBarId = null;
+    /** Dependency state of the last render (issue #2). `allEdges` spans every resolved row
+     * (not just the search-filtered ones) so a cycle check can't be fooled by a search;
+     * `allRows` feeds the predecessor/successor picker. */
+    this.allEdges = [];
+    this.allRows = [];
+    /** Redraws the arrows when the chart's size changes (incl. a hidden leaf becoming
+     * visible — arrows can't be measured while the view has no layout). */
+    this.arrowObserver = null;
+    /** Per-view suffix for the SVG marker ids, so two open Gantt leaves can't collide. */
+    this.arrowSeq = Math.random().toString(36).slice(2, 8);
   }
   getViewType() {
     return VIEW_TYPE_GANTT;
@@ -11389,13 +11477,16 @@ var GanttView = class extends PowerPackView {
     return "gantt-chart";
   }
   async onClose() {
+    var _a;
     this.scrollEl = null;
     this.pendingCenterDay = null;
     this.lastRenderPx = 0;
+    (_a = this.arrowObserver) == null ? void 0 : _a.disconnect();
+    this.arrowObserver = null;
     await super.onClose();
   }
   async render() {
-    var _a;
+    var _a, _b;
     const token = ++this.renderToken;
     const container = this.contentEl;
     if (!this.plugin.settings.isPro) {
@@ -11410,6 +11501,7 @@ var GanttView = class extends PowerPackView {
           "Drag a bar to reschedule, drag its edge to change duration",
           "Zoom from days to months",
           "Progress fills and milestone markers",
+          "Link tasks with dependency arrows and spot schedule conflicts",
           "Keyboard-nudge bars and jump to today"
         ]
       );
@@ -11424,6 +11516,8 @@ var GanttView = class extends PowerPackView {
     }
     this.pendingCenterDay = this.scrollEl && this.lastRenderPx > 0 ? (this.scrollEl.scrollLeft + this.scrollEl.clientWidth / 2) / this.lastRenderPx : null;
     this.captureSearchState();
+    (_a = this.arrowObserver) == null ? void 0 : _a.disconnect();
+    this.arrowObserver = null;
     container.empty();
     container.addClass("bpp-view");
     const startProp = this.plugin.settings.ganttStartProp || "start";
@@ -11439,6 +11533,17 @@ var GanttView = class extends PowerPackView {
       this.plugin.settings.ganttEndProp = value || "end";
       void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.render());
     });
+    const dependsProp = this.plugin.settings.kanbanDependsProp.trim();
+    renderSelect(
+      toolbar,
+      "Depends on",
+      [{ value: "", label: "(none)" }, ...(keys.includes(dependsProp) || !dependsProp ? keys : [dependsProp, ...keys]).map((k) => ({ value: k, label: k }))],
+      dependsProp,
+      (value) => {
+        this.plugin.settings.kanbanDependsProp = value.trim();
+        void this.plugin.saveSettings({ invalidateResolved: false }).then(() => this.plugin.refreshViews());
+      }
+    );
     const zoom = toolbar.createDiv({ cls: "bpp-segmented" });
     for (const preset of ZOOM_PRESETS) {
       const btn = zoom.createEl("button", { text: preset.label, cls: "bpp-seg-btn" });
@@ -11455,7 +11560,7 @@ var GanttView = class extends PowerPackView {
     this.renderHintBar(
       container,
       "gantt",
-      "Drag a bar to move it \u2022 Drag its right edge to resize \u2022 Use the Today button to jump back to now"
+      "Drag a bar to move it \u2022 Drag its right edge to resize \u2022 Drag the dot after a bar onto another bar to make it a dependency \u2022 Click an arrow to remove it"
     );
     renderContextControls(container, this.plugin, resolved, () => void this.render());
     renderRollupBar(container, this.plugin, resolved.rows);
@@ -11490,14 +11595,15 @@ var GanttView = class extends PowerPackView {
       }
       return;
     }
-    this.renderChart(container, model, rowByPath, startProp, endProp);
+    const deps = this.computeDeps(resolved.rows, model, dependsProp);
+    this.renderChart(container, model, rowByPath, startProp, endProp, deps);
     if (this.pendingCenterDay !== null && this.scrollEl) {
       this.scrollEl.scrollLeft = Math.max(0, this.pendingCenterDay * this.zoomPx - this.scrollEl.clientWidth / 2);
     }
     this.pendingCenterDay = null;
     if (this.focusBarId) {
       const sel = `[data-bpp-id="${CSS.escape(this.focusBarId)}"]`;
-      (_a = container.querySelector(sel)) == null ? void 0 : _a.focus();
+      (_b = container.querySelector(sel)) == null ? void 0 : _b.focus();
       this.focusBarId = null;
     }
     if (model.skipped > 0) {
@@ -11513,7 +11619,8 @@ var GanttView = class extends PowerPackView {
       });
     }
   }
-  renderChart(container, model, rowByPath, startProp, endProp) {
+  renderChart(container, model, rowByPath, startProp, endProp, deps) {
+    var _a;
     const total = model.days.length;
     const px = this.zoomPx;
     const scroll = container.createDiv({ cls: "bpp-gantt-scroll" });
@@ -11531,8 +11638,263 @@ var GanttView = class extends PowerPackView {
       marker.setCssProps({ left: `${todayOffset * px}px` });
     }
     for (const bar of model.bars) {
-      this.renderBar(chart, bar, px, todayOffset, rowByPath.get(bar.id), startProp, endProp);
+      this.renderBar(chart, bar, px, todayOffset, rowByPath.get(bar.id), startProp, endProp, deps);
     }
+    const svg = chart.createSvg("svg", { cls: "bpp-gantt-links" });
+    const draw = () => this.drawArrows(chart, svg, deps);
+    draw();
+    const RO = (_a = chart.ownerDocument.defaultView) == null ? void 0 : _a.ResizeObserver;
+    if (RO) {
+      this.arrowObserver = new RO(() => draw());
+      this.arrowObserver.observe(chart);
+    }
+  }
+  // ---- dependencies (issue #2) ----------------------------------------------
+  /** Edges among the visible bars, which of them break the schedule, and each bar's
+   * conflict/blocked warnings. Empty when no dependency property is set. */
+  computeDeps(allRows, model, prop) {
+    this.allRows = allRows;
+    const byId = new Map(allRows.map((r) => [r.id, r]));
+    const empty = { prop, byId, edges: [], conflicts: /* @__PURE__ */ new Set(), conflictsOf: /* @__PURE__ */ new Map(), blockedBy: /* @__PURE__ */ new Map() };
+    if (!prop) {
+      this.allEdges = [];
+      return empty;
+    }
+    this.allEdges = buildDependencyEdges(
+      allRows.map((r) => ({ id: r.id, name: r.name, deps: r.scope.get(prop), target: isLinkTarget(r) }))
+    );
+    const dates = /* @__PURE__ */ new Map();
+    for (const b of model.bars) {
+      const s = toDayNumber(b.startDate);
+      const e = toDayNumber(b.endDate);
+      if (s !== null && e !== null) dates.set(b.id, { startDay: s, endDay: e });
+    }
+    const edges = this.allEdges.filter((e) => dates.has(e.from) && dates.has(e.to));
+    const conflicts = scheduleConflicts(edges, dates);
+    const conflictsOf = /* @__PURE__ */ new Map();
+    for (const e of edges) {
+      const pred = byId.get(e.from);
+      if (!pred || !conflicts.has(edgeKey(e))) continue;
+      const arr = conflictsOf.get(e.to);
+      if (arr) arr.push(pred);
+      else conflictsOf.set(e.to, [pred]);
+    }
+    const statusProp = this.plugin.settings.kanbanGroupBy;
+    const doneValue = this.plugin.settings.kanbanDoneValue;
+    const blockedBy = /* @__PURE__ */ new Map();
+    for (const e of this.allEdges) {
+      const pred = byId.get(e.from);
+      if (!pred || !dates.has(e.to) || isRowDone(pred, statusProp, doneValue)) continue;
+      const arr = blockedBy.get(e.to);
+      if (arr) arr.push(pred);
+      else blockedBy.set(e.to, [pred]);
+    }
+    return { prop, byId, edges, conflicts, conflictsOf, blockedBy };
+  }
+  /** Draw one elbow arrow per visible edge, predecessor's end → successor's start. */
+  drawArrows(chart, svg, deps) {
+    svg.empty();
+    const box = chart.getBoundingClientRect();
+    if (box.width === 0 || deps.edges.length === 0) return;
+    svg.setAttr("width", String(chart.scrollWidth));
+    svg.setAttr("height", String(chart.scrollHeight));
+    const defs = svg.createSvg("defs");
+    const markerId = (conflict) => `bpp-arrowhead-${conflict ? "bad" : "ok"}-${this.arrowSeq}`;
+    for (const conflict of [false, true]) {
+      const marker = defs.createSvg("marker", {
+        attr: { id: markerId(conflict), viewBox: "0 0 8 8", refX: "7", refY: "4", markerWidth: "7", markerHeight: "7", orient: "auto" }
+      });
+      marker.createSvg("path", {
+        cls: conflict ? ["bpp-gantt-arrowhead", "is-conflict"] : "bpp-gantt-arrowhead",
+        attr: { d: "M0,0 L8,4 L0,8 z" }
+      });
+    }
+    const rectOf = (id) => {
+      var _a, _b;
+      return (_b = (_a = chart.querySelector(`[data-bpp-id="${CSS.escape(id)}"]`)) == null ? void 0 : _a.getBoundingClientRect()) != null ? _b : null;
+    };
+    for (const edge of deps.edges) {
+      const a = rectOf(edge.from);
+      const b = rectOf(edge.to);
+      const pred = deps.byId.get(edge.from);
+      const succ = deps.byId.get(edge.to);
+      if (!a || !b || !pred || !succ) continue;
+      const x1 = a.right - box.left;
+      const y1 = a.top + a.height / 2 - box.top;
+      const x2 = b.left - box.left;
+      const y2 = b.top + b.height / 2 - box.top;
+      const d = elbowPath(x1, y1, x2, y2);
+      const conflict = deps.conflicts.has(edgeKey(edge));
+      const label = conflict ? `${pred.name} \u2192 ${succ.name} (starts before ${pred.name} finishes)` : `${pred.name} \u2192 ${succ.name}`;
+      const group = svg.createSvg("g", { cls: conflict ? ["bpp-gantt-link", "is-conflict"] : "bpp-gantt-link" });
+      group.createSvg("title").textContent = `${label} \u2014 click to edit`;
+      group.createSvg("path", { cls: "bpp-gantt-link-line", attr: { d, "marker-end": `url(#${markerId(conflict)})` } });
+      const hit = group.createSvg("path", { cls: "bpp-gantt-link-hit", attr: { d } });
+      hit.addEventListener("click", (evt) => this.openLinkMenu(evt, pred, succ));
+      hit.addEventListener("contextmenu", (evt) => this.openLinkMenu(evt, pred, succ));
+    }
+  }
+  openLinkMenu(evt, pred, succ) {
+    evt.preventDefault();
+    evt.stopPropagation();
+    const menu = new import_obsidian13.Menu();
+    menu.addItem((i) => i.setTitle(`Open "${pred.name}"`).setIcon("file").onClick(() => this.openRow(pred)));
+    menu.addItem((i) => i.setTitle(`Open "${succ.name}"`).setIcon("file").onClick(() => this.openRow(succ)));
+    menu.addSeparator();
+    menu.addItem(
+      (i) => i.setTitle(`Remove dependency: ${succ.name} on ${pred.name}`).setIcon("unlink").onClick(() => void this.unlinkRows(pred, succ))
+    );
+    menu.showAtMouseEvent(evt);
+  }
+  /** Make `succ` depend on `pred` (finish-to-start), refusing self-links and cycles. */
+  async linkRows(pred, succ) {
+    const prop = await this.ensureDependsProp();
+    if (!prop) return;
+    if (!isLinkTarget(pred)) {
+      new import_obsidian13.Notice(`"${pred.name}" isn't a note, so it can't be linked as a dependency.`);
+      return;
+    }
+    if (wouldCreateCycle(this.allEdges, pred.id, succ.id)) {
+      new import_obsidian13.Notice(
+        pred.id === succ.id ? "A task can't depend on itself." : `Not linked: "${pred.name}" already depends on "${succ.name}", so this would create a circular dependency.`
+      );
+      return;
+    }
+    const next = addDependency(succ.scope.get(prop), pred.name);
+    if (next === null) {
+      new import_obsidian13.Notice(`"${succ.name}" already depends on "${pred.name}".`);
+      return;
+    }
+    await writeRowFields(this.plugin, succ, [{ key: prop, value: next }], {
+      label: `Link "${succ.name}" after "${pred.name}"`
+    });
+    await this.render();
+  }
+  async unlinkRows(pred, succ) {
+    const prop = this.plugin.settings.kanbanDependsProp.trim();
+    if (!prop) return;
+    const next = removeDependency(succ.scope.get(prop), pred.name);
+    if (next === null) return void this.render();
+    await writeRowFields(this.plugin, succ, [{ key: prop, value: next }], {
+      label: `Unlink "${succ.name}" from "${pred.name}"`
+    });
+    await this.render();
+  }
+  /** The dependency property, asking for one (and saving it) the first time. */
+  ensureDependsProp() {
+    const current = this.plugin.settings.kanbanDependsProp.trim();
+    if (current) return Promise.resolve(current);
+    return new Promise((resolve) => {
+      let settled = false;
+      const modal = new PromptModal(this.app, {
+        title: "Which property lists a task's dependencies?",
+        value: "depends",
+        placeholder: "e.g. depends, blockedBy",
+        cta: "Use property",
+        onSubmit: (v) => {
+          const prop = v.trim();
+          settled = true;
+          if (!prop) return resolve("");
+          this.plugin.settings.kanbanDependsProp = prop;
+          void this.plugin.saveSettings({ invalidateResolved: false }).then(() => resolve(prop));
+        }
+      });
+      const close = modal.onClose.bind(modal);
+      modal.onClose = () => {
+        close();
+        window.setTimeout(() => {
+          if (!settled) resolve("");
+        }, 0);
+      };
+      modal.open();
+    });
+  }
+  /** Pick a predecessor (or successor) for `row` from every other linkable row,
+   * leaving out ones already linked and ones that would create a cycle. */
+  pickLink(row, direction) {
+    const prop = this.plugin.settings.kanbanDependsProp.trim();
+    const linked = new Set(
+      this.allEdges.filter((e) => direction === "predecessor" ? e.to === row.id : e.from === row.id).map((e) => direction === "predecessor" ? e.from : e.to)
+    );
+    const candidates = this.allRows.filter((r) => {
+      if (r.id === row.id || linked.has(r.id)) return false;
+      if (direction === "predecessor") return isLinkTarget(r) && !wouldCreateCycle(this.allEdges, r.id, row.id);
+      return isLinkTarget(row) && !wouldCreateCycle(this.allEdges, row.id, r.id);
+    });
+    if (candidates.length === 0) {
+      new import_obsidian13.Notice(`No other tasks can be added as a ${direction}${prop ? "" : " yet"}.`);
+      return;
+    }
+    new RowPickerModal(
+      this.app,
+      candidates,
+      direction === "predecessor" ? `"${row.name}" depends on\u2026` : `\u2026depends on "${row.name}"`,
+      (picked) => void (direction === "predecessor" ? this.linkRows(picked, row) : this.linkRows(row, picked))
+    ).open();
+  }
+  /**
+   * The connector dot after a bar: drag it onto another bar to make that bar depend
+   * on this one. Pointer capture keeps move/up on the dot (popout-safe, no document
+   * listeners); the drop target is hit-tested with elementFromPoint.
+   */
+  enableLinkDrag(dot, row) {
+    let active = false;
+    let line = null;
+    let origin = { x: 0, y: 0 };
+    const chart = () => dot.closest(".bpp-gantt");
+    const local = (evt) => {
+      var _a;
+      const box = (_a = chart()) == null ? void 0 : _a.getBoundingClientRect();
+      return box ? { x: evt.clientX - box.left, y: evt.clientY - box.top } : { x: 0, y: 0 };
+    };
+    dot.addEventListener("pointerdown", (evt) => {
+      var _a, _b;
+      if (evt.button !== 0) return;
+      evt.preventDefault();
+      evt.stopPropagation();
+      active = true;
+      dot.setPointerCapture(evt.pointerId);
+      this.beginInteraction();
+      origin = local(evt);
+      const svg = (_a = chart()) == null ? void 0 : _a.querySelector(".bpp-gantt-links");
+      if (svg) {
+        const c = chart();
+        if (c) {
+          svg.setAttr("width", String(c.scrollWidth));
+          svg.setAttr("height", String(c.scrollHeight));
+        }
+        line = svg.createSvg("line", {
+          cls: "bpp-gantt-link-draft",
+          attr: { x1: String(origin.x), y1: String(origin.y), x2: String(origin.x), y2: String(origin.y) }
+        });
+      }
+      (_b = chart()) == null ? void 0 : _b.addClass("is-linking");
+    });
+    dot.addEventListener("pointermove", (evt) => {
+      if (!active || !line) return;
+      const p = local(evt);
+      line.setAttr("x2", String(p.x));
+      line.setAttr("y2", String(p.y));
+    });
+    const finish = (evt) => {
+      var _a;
+      if (!active) return;
+      active = false;
+      if (dot.hasPointerCapture(evt.pointerId)) dot.releasePointerCapture(evt.pointerId);
+      line == null ? void 0 : line.remove();
+      line = null;
+      (_a = chart()) == null ? void 0 : _a.removeClass("is-linking");
+      this.endInteraction();
+      if (evt.type === "pointercancel") return;
+      const hit = dot.ownerDocument.elementFromPoint(evt.clientX, evt.clientY);
+      const targetEl = hit instanceof Element ? hit.closest("[data-bpp-id]") : null;
+      const targetId = targetEl == null ? void 0 : targetEl.getAttribute("data-bpp-id");
+      if (!targetId || targetId === row.id) return;
+      const target = this.allRows.find((r) => r.id === targetId);
+      if (target) void this.linkRows(row, target);
+    };
+    dot.addEventListener("pointerup", finish);
+    dot.addEventListener("pointercancel", finish);
   }
   /** Faint month boundary ticks + labels along the axis. */
   renderMonthTicks(axisTrack, days, px) {
@@ -11543,9 +11905,26 @@ var GanttView = class extends PowerPackView {
       tick.createSpan({ cls: "bpp-muted", text: days[i].slice(0, 7) });
     }
   }
-  renderBar(chart, bar, px, todayOffset, row, startProp, endProp) {
+  renderBar(chart, bar, px, todayOffset, row, startProp, endProp, deps) {
+    var _a, _b;
     const rowEl = chart.createDiv({ cls: "bpp-gantt-row" });
-    const openMenu = row ? (a) => this.openBarMenu(a, row, startProp, endProp) : null;
+    const openMenu = row ? (a) => this.openBarMenu(a, row, startProp, endProp, deps) : null;
+    const conflictsWith = (_a = deps.conflictsOf.get(bar.id)) != null ? _a : [];
+    const blockedBy = (_b = deps.blockedBy.get(bar.id)) != null ? _b : [];
+    const names = (rs) => rs.map((r) => r.name).join(", ");
+    const warning = [
+      conflictsWith.length ? `Starts before ${names(conflictsWith)} finishes` : "",
+      blockedBy.length ? `Blocked by ${names(blockedBy)}` : ""
+    ].filter(Boolean).join(" \xB7 ");
+    const decorate = (el, baseLabel) => {
+      var _a2, _b2;
+      if (conflictsWith.length) el.addClass("is-conflict");
+      if (blockedBy.length) el.addClass("is-blocked");
+      if (!warning) return;
+      el.setAttr("title", `${(_a2 = el.getAttr("title")) != null ? _a2 : baseLabel}
+${warning}`);
+      el.setAttr("aria-label", `${(_b2 = el.getAttr("aria-label")) != null ? _b2 : baseLabel}. ${warning}`);
+    };
     const name = rowEl.createDiv({ cls: "bpp-gantt-name" });
     const nameLabel = name.createSpan({ cls: "bpp-gantt-name-label", text: bar.name });
     if (row && openMenu) {
@@ -11580,7 +11959,9 @@ var GanttView = class extends PowerPackView {
           }
         });
         diamond.addEventListener("contextmenu", (evt) => openMenu(evt));
+        this.addLinkDot(track, row, bar.startIndex * px + 10);
       }
+      decorate(diamond, bar.name);
       return;
     }
     const barEl = track.createDiv({ cls: "bpp-gantt-bar" });
@@ -11614,7 +11995,19 @@ var GanttView = class extends PowerPackView {
           openMenu(barEl);
         }
       });
+      this.addLinkDot(track, row, (bar.startIndex + Math.max(1, bar.span)) * px + 3);
     }
+    decorate(barEl, bar.name);
+  }
+  /** The drag-to-link connector just past a bar's end (shown on row hover). */
+  addLinkDot(track, row, leftPx) {
+    if (!isLinkTarget(row)) return;
+    const dot = track.createDiv({
+      cls: "bpp-gantt-link-dot",
+      attr: { title: `Drag onto another bar to make it depend on "${row.name}"`, "aria-hidden": "true" }
+    });
+    dot.setCssProps({ left: `${leftPx}px` });
+    this.enableLinkDrag(dot, row);
   }
   // ---- interaction ----------------------------------------------------------
   /**
@@ -11677,7 +12070,7 @@ var GanttView = class extends PowerPackView {
   }
   /** Right-click menu on a Gantt bar — a non-drag path to set the dates, plus the
    * shared note actions (open / edit field / rename / delete). */
-  openBarMenu(anchor, row, startProp, endProp) {
+  openBarMenu(anchor, row, startProp, endProp, deps) {
     if (anchor instanceof MouseEvent) anchor.preventDefault();
     const after = () => void this.render();
     const menu = new import_obsidian13.Menu();
@@ -11687,6 +12080,36 @@ var GanttView = class extends PowerPackView {
     menu.addItem(
       (i) => i.setTitle("Set end date\u2026").setIcon("calendar").onClick(() => this.setDateViaPrompt(row, endProp, "end"))
     );
+    menu.addSeparator();
+    menu.addItem(
+      (i) => i.setTitle("Add predecessor\u2026").setIcon("arrow-left-to-line").onClick(() => {
+        void this.ensureDependsProp().then((p) => p && this.pickLink(row, "predecessor"));
+      })
+    );
+    if (isLinkTarget(row)) {
+      menu.addItem(
+        (i) => i.setTitle("Add successor\u2026").setIcon("arrow-right-to-line").onClick(() => {
+          void this.ensureDependsProp().then((p) => p && this.pickLink(row, "successor"));
+        })
+      );
+    }
+    for (const e of this.allEdges) {
+      if (e.to === row.id) {
+        const pred = deps.byId.get(e.from);
+        if (pred) {
+          menu.addItem(
+            (i) => i.setTitle(`Remove dependency on "${pred.name}"`).setIcon("unlink").onClick(() => void this.unlinkRows(pred, row))
+          );
+        }
+      } else if (e.from === row.id) {
+        const succ = deps.byId.get(e.to);
+        if (succ) {
+          menu.addItem(
+            (i) => i.setTitle(`Remove "${succ.name}" depending on this`).setIcon("unlink").onClick(() => void this.unlinkRows(row, succ))
+          );
+        }
+      }
+    }
     menu.addSeparator();
     this.addCommonRowMenuItems(menu, row, this.plugin.settings.kanbanCardFields, after);
     this.showMenuAtAnchor(menu, anchor);
@@ -11765,6 +12188,35 @@ var GanttView = class extends PowerPackView {
     const prop = this.plugin.settings.ganttProgressProp.trim();
     if (!prop) return null;
     return normalizeProgress(row.scope.get(prop));
+  }
+};
+function isLinkTarget(row) {
+  return row.id === row.note.path && !row.flatten;
+}
+function elbowPath(x1, y1, x2, y2) {
+  const gap = 8;
+  if (x2 - x1 >= gap * 2) {
+    const mx = x1 + gap;
+    return `M${x1},${y1} H${mx} V${y2} H${x2}`;
+  }
+  const midY = (y1 + y2) / 2;
+  return `M${x1},${y1} H${x1 + gap} V${midY} H${x2 - gap} V${y2} H${x2}`;
+}
+var RowPickerModal = class extends import_obsidian13.FuzzySuggestModal {
+  constructor(app, rows, placeholder, onPick) {
+    super(app);
+    this.rows = rows;
+    this.onPick = onPick;
+    this.setPlaceholder(placeholder);
+  }
+  getItems() {
+    return this.rows;
+  }
+  getItemText(row) {
+    return row.name;
+  }
+  onChooseItem(row) {
+    this.onPick(row);
   }
 };
 function valueToDateString(value) {

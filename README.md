@@ -82,7 +82,7 @@ _Move work cleanly from Review to Done without opening a note or babysitting fro
 
 - **Kanban** — group work by a property like `status`, drag cards, reorder them, and edit metadata in place.
 - **Calendar** — see work in a month, week, or agenda layout and drag events to reschedule them.
-- **Gantt** — plan spans and milestones on a timeline; drag bars to move or resize them.
+- **Gantt** — plan spans and milestones on a timeline; drag bars to move or resize them, and drag between bars to link dependencies (arrows, conflict warnings, cycle protection).
 - **Outline** — turn parent/child notes into a real hierarchy with progress roll-ups.
 - **Pivot** — cross-tabulate rows × columns like a lightweight spreadsheet.
 - **Dashboard** — KPI cards and distribution charts over your current dataset.

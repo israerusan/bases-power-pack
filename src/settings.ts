@@ -514,7 +514,7 @@ export class BasesPowerPackSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName("Dependency property")
 			.setDesc(
-				"Optional property listing a card's dependencies as [[links]] (e.g. blockedBy, depends). A card whose dependency isn't at the \"done\" value shows a Blocked badge naming what's still blocking it. Leave blank for off."
+				"Optional property listing a card's dependencies as [[links]] (e.g. blockedBy, depends). A card whose dependency isn't at the \"done\" value shows a Blocked badge naming what's still blocking it. The Gantt view draws these as arrows and can add or remove them. Leave blank for off."
 			)
 			.addText((text) =>
 				this.keySuggest(text)
