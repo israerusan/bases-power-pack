@@ -3,7 +3,7 @@
 All notable changes to Bases Power Pack are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.30.0] - 2026-11-22
 
 ### Added
 - **Gantt dependencies, edited on the timeline (#2).** Dependencies now draw as arrows
